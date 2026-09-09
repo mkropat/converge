@@ -1,0 +1,1790 @@
+#!/usr/bin/env bash
+# Run autonomous agent iterations until a project satisfies its requirements.
+#
+# See docs/converge-requirements.md for the required behavior.
+set -uo pipefail
+
+# The script uses bash 4 syntax. macOS supplies bash 3.2. This test must stay
+# above the first use of that syntax, because bash parses a script as it runs.
+if ((BASH_VERSINFO[0] < 4)); then
+  echo "converge: bash ${BASH_VERSION} is too old; bash 4 or later is needed" >&2
+  echo "converge: on macOS, run 'brew install bash'" >&2
+  exit 2
+fi
+
+HARNESS=""
+MODEL=""
+COACH_MODEL=""
+REVIEW_MODEL=""
+CONSENSUS=2
+COACH_EVERY=5
+COACH_ENABLED=1
+REVIEW_EVERY=5
+REVIEW_ENABLED=1
+TIMEOUT=3600
+MAX_ITERATIONS=""
+FOREGROUND=0
+PASSTHROUGH=()
+ORIGINAL_ARGS="$*"
+# The client starts the loop again, in the background, with the same options.
+ORIGINAL_ARGV=("$@")
+SELF="$(cd "$(dirname "$0")" && pwd)/${0##*/}"
+# bin/cbugs lives beside this script. Every agent needs it on its PATH, so
+# that a worker that finds a bug can run cbugs add, and a worker that starts
+# an iteration can run cbugs list.
+BIN_DIR="$(dirname "$SELF")"
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: converge [options] [scope ...] [-- harness args]
+
+Options:
+  --harness <name>        Agent command: claude or opencode. Default: the
+                          harness of the last run here, else $CONVERGE_HARNESS,
+                          else claude.
+  --model <model>         Worker model. Default: the harness environment
+                          variable, then the harness default.
+  --coach-model <model>   Coach model. Default: the harness environment
+                          variable, then the harness default.
+  --review-model <model>  Reviewer model. Default: the harness environment
+                          variable, then the harness default.
+  --consensus <N>         Consecutive done votes that stop the loop. Default: 2.
+  --coach-every <K>       Worker iterations between coach runs. Default: 5.
+  --no-coach              Disable the coach.
+  --review-every <R>      Worker iterations between review passes. Default: 5.
+  --no-review             Disable the reviewer.
+  --timeout <seconds>     Maximum duration of one invocation. Default: 3600.
+  --max-iterations <N>    Maximum worker iterations. Default: unbounded.
+  --foreground            Run the loop in this terminal, not in the background.
+
+A positional argument before -- names a requirements document file or a
+directory of them. This is the scope: the agents work on those documents
+only. With no positional argument, the scope is empty and the agents find
+the requirements documents of the whole repository themselves.
+
+Everything after the first -- goes to the harness, unchanged.
+
+Model environment variables use the uppercase harness name:
+CONVERGE_<HARNESS>_MODEL, CONVERGE_<HARNESS>_COACH_MODEL, and
+CONVERGE_<HARNESS>_REVIEW_MODEL.
+
+The loop runs in the background and survives a lost terminal. Run converge
+again in the same directory to attach to it. Press Ctrl-C to stop the loop.
+EOF
+}
+
+need_value() {
+  if (($2 < 2)); then
+    echo "converge: $1 needs a value" >&2
+    exit 2
+  fi
+}
+
+SCOPE=()
+while (($#)); do
+  case $1 in
+    # Everything after the first -- belongs to the harness. The script must
+    # consume none of it, and must read none of it as an option of its own.
+    --) shift; PASSTHROUGH=("$@"); break ;;
+    --harness) need_value "$1" $#; HARNESS=$2; shift 2 ;;
+    --harness=*) HARNESS=${1#*=}; shift ;;
+    --model) need_value "$1" $#; MODEL=$2; shift 2 ;;
+    --model=*) MODEL=${1#*=}; shift ;;
+    --coach-model) need_value "$1" $#; COACH_MODEL=$2; shift 2 ;;
+    --coach-model=*) COACH_MODEL=${1#*=}; shift ;;
+    --review-model) need_value "$1" $#; REVIEW_MODEL=$2; shift 2 ;;
+    --review-model=*) REVIEW_MODEL=${1#*=}; shift ;;
+    --consensus) need_value "$1" $#; CONSENSUS=$2; shift 2 ;;
+    --consensus=*) CONSENSUS=${1#*=}; shift ;;
+    --coach-every) need_value "$1" $#; COACH_EVERY=$2; shift 2 ;;
+    --coach-every=*) COACH_EVERY=${1#*=}; shift ;;
+    --no-coach) COACH_ENABLED=0; shift ;;
+    --review-every) need_value "$1" $#; REVIEW_EVERY=$2; shift 2 ;;
+    --review-every=*) REVIEW_EVERY=${1#*=}; shift ;;
+    --no-review) REVIEW_ENABLED=0; shift ;;
+    --timeout) need_value "$1" $#; TIMEOUT=$2; shift 2 ;;
+    --timeout=*) TIMEOUT=${1#*=}; shift ;;
+    --max-iterations) need_value "$1" $#; MAX_ITERATIONS=$2; shift 2 ;;
+    --max-iterations=*) MAX_ITERATIONS=${1#*=}; shift ;;
+    --foreground) FOREGROUND=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    # An option before -- that this script does not know is a typo, not a
+    # harness option. Only the arguments after -- reach the harness.
+    -*)
+      echo "converge: unknown option '$1'" >&2
+      exit 2
+      ;;
+    # A positional argument before -- names part of the requirements scope.
+    *)
+      SCOPE+=("$1")
+      shift
+      ;;
+  esac
+done
+
+# Each scope path must exist, resolved against the working directory of the
+# operator. A typo must not become a run that silently ignores the scope.
+#
+# The client checks this, once, in the directory the operator ran it from.
+# The background loop is a second invocation of this same script, spawned by
+# the client after the client has already changed directory to the
+# repository root (see "cd "$REPO"" below), so a repeat of this check here
+# would run from the wrong directory and could reject a path the operator's
+# own check already accepted. CONVERGE_DAEMON marks that second invocation,
+# so only the client, which alone knows the operator's directory, checks.
+if [[ -z ${CONVERGE_DAEMON:-} ]]; then
+  for scope_path in ${SCOPE[@]+"${SCOPE[@]}"}; do
+    if [[ ! -e $scope_path ]]; then
+      echo "converge: scope path '$scope_path' does not exist" >&2
+      exit 2
+    fi
+  done
+fi
+
+# is_number <text>   True when the text is a whole number.
+is_number() {
+  [[ $1 =~ ^[0-9]+$ ]]
+}
+
+for pair in "consensus:$CONSENSUS" "coach-every:$COACH_EVERY" "review-every:$REVIEW_EVERY" "timeout:$TIMEOUT"; do
+  if ! is_number "${pair#*:}"; then
+    echo "converge: --${pair%%:*} needs a whole number, got '${pair#*:}'" >&2
+    exit 2
+  fi
+done
+if [[ -n $MAX_ITERATIONS ]] && ! is_number "$MAX_ITERATIONS"; then
+  echo "converge: --max-iterations needs a whole number" >&2
+  exit 2
+fi
+
+# The loop needs the GNU versions of the tools below. macOS supplies the BSD
+# versions, and Homebrew keeps the GNU versions off the normal PATH. Put them
+# on the PATH of this script and of the agents that it starts.
+for brew_prefix in "${HOMEBREW_PREFIX:-}" /opt/homebrew /usr/local; do
+  [[ -n $brew_prefix ]] || continue
+  for bin_dir in "$brew_prefix/opt/coreutils/libexec/gnubin" \
+                 "$brew_prefix/opt/util-linux/bin"; do
+    [[ -d $bin_dir ]] && PATH="$bin_dir:$PATH"
+  done
+done
+
+# need_tool <command> [macOS Homebrew formula]
+need_tool() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "converge: '$1' is not on PATH" >&2
+    if [[ -n ${2:-} ]]; then
+      echo "converge: on macOS, run 'brew install $2'" >&2
+    fi
+    exit 2
+  fi
+}
+for pair in jq:jq timeout:coreutils tail:coreutils flock:util-linux \
+            setsid:util-linux; do
+  need_tool "${pair%%:*}" "${pair##*:}"
+done
+
+# The BSD tools of the same names accept none of the options that the loop
+# uses, so a name on the PATH is not enough. `tail --pid` stands for the set:
+# it fails first, and it fails where the operator sees no output at all.
+if [[ $(tail --help 2>/dev/null) != *--pid* ]]; then
+  echo "converge: this 'tail' is not GNU tail; it does not accept --pid" >&2
+  echo "converge: on macOS, run 'brew install coreutils'" >&2
+  exit 2
+fi
+
+# ----------------------------------------------------------------- appearance
+#
+# The loop always writes color and UTF-8 characters. The loop writes its output
+# to a file, and a client reads that file in a terminal, so the loop cannot ask
+# what reads it.
+
+BOLD=$'\033[1m'; DIM=$'\033[2m'; OFF=$'\033[0m'
+RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'
+BLUE=$'\033[34m'; MAGENTA=$'\033[35m'; CYAN=$'\033[36m'; WHITE=$'\033[97m'
+
+G_TL="╭"; G_TR="╮"; G_BL="╰"; G_BR="╯"; G_H="─"; G_V="│"; G_RULE="━"
+G_BAR="▌"; G_DOT="·"; G_ARROW="›"; G_ELL="…"
+G_OK="✓"; G_ERR="✗"; G_WARN="▲"; G_CLOCK="◷"
+G_WORKER="⚙"; G_COACH="◎"; G_REVIEW="◐"; G_LOOP="⟳"
+G_VOTE="●"; G_NOVOTE="○"
+G_GUT="┆"; G_READ="○"; G_EDIT="◆"; G_SHELL="❯"; G_SAY="▍"; G_COMMIT="⑂"
+E_DONE="🏁"; E_STOP="🛑"
+
+# width  Reports the usable width of the output, between 40 and 96 columns.
+width() {
+  local cols
+  cols=$(tput cols 2>/dev/null) || cols=80
+  is_number "$cols" || cols=80
+  ((cols < 40)) && cols=40
+  ((cols > 96)) && cols=96
+  printf '%s' "$cols"
+}
+# A background loop has no terminal. The client that starts it gives the width.
+COLS="${CONVERGE_COLS:-$(width)}"
+
+# repeat <character> <count>
+repeat() {
+  local out
+  (($2 > 0)) || return 0
+  printf -v out '%*s' "$2" ''
+  printf '%s' "${out// /$1}"
+}
+
+# fit <width> <text>   Shortens text from the middle to the given width.
+fit() {
+  local max=$1 text=$2 head tail
+  ((max < 8)) && max=8
+  if ((${#text} <= max)); then
+    printf '%s' "$text"
+    return
+  fi
+  head=$(((max - 1) / 2))
+  tail=$((max - 1 - head))
+  printf '%s%s%s' "${text:0:head}" "$G_ELL" "${text: -tail}"
+}
+
+# home_relative <path>   Rewrites a path inside $HOME as a ~/ path.
+home_relative() {
+  local path=$1
+  if [[ -n ${HOME:-} ]]; then
+    if [[ $path == "$HOME" ]]; then
+      printf '~'
+      return
+    elif [[ $path == "$HOME"/* ]]; then
+      printf '%s/%s' '~' "${path#"$HOME"/}"
+      return
+    fi
+  fi
+  printf '%s' "$path"
+}
+
+# duration <seconds>   Formats a duration for a person: 4m 12s.
+duration() {
+  local total=$1 h m s
+  h=$((total / 3600)); m=$(((total % 3600) / 60)); s=$((total % 60))
+  if ((h > 0)); then printf '%dh %02dm %02ds' "$h" "$m" "$s"
+  elif ((m > 0)); then printf '%dm %02ds' "$m" "$s"
+  else printf '%ds' "$s"; fi
+}
+
+# panel <title> <label|value> ...   Draws the startup panel.
+panel() {
+  local title=$1; shift
+  local inner=0 row label value line pad dashes
+  for row in "$@"; do
+    printf -v line '%-10s %s' "${row%%|*}" "$(fit $((COLS - 17)) "${row#*|}")"
+    ((${#line} > inner)) && inner=${#line}
+  done
+  ((inner < ${#title} + 4)) && inner=$((${#title} + 4))
+
+  dashes=$((inner - ${#title} - 1))
+  printf '\n%s%s%s%s %s%s%s %s%s%s%s\n' \
+    "$DIM" "$G_TL" "$G_H" "$OFF" \
+    "$BOLD$CYAN" "$title" "$OFF" \
+    "$DIM" "$(repeat "$G_H" "$dashes")" "$G_TR" "$OFF"
+  for row in "$@"; do
+    label=${row%%|*}
+    value=$(fit $((COLS - 17)) "${row#*|}")
+    printf -v line '%-10s %s' "$label" "$value"
+    pad=$((inner - ${#line}))
+    printf '%s%s%s %s%-10s%s %s%s %s%s%s\n' \
+      "$DIM" "$G_V" "$OFF" \
+      "$DIM" "$label" "$OFF" "$value" "$(repeat ' ' "$pad")" \
+      "$DIM" "$G_V" "$OFF"
+  done
+  printf '%s%s%s%s%s\n' "$DIM" "$G_BL" "$(repeat "$G_H" $((inner + 2)))" "$G_BR" "$OFF"
+}
+
+# heading <color> <text> <right text>   Draws a section rule.
+heading() {
+  local color=$1 text=$2 right=$3 dashes
+  dashes=$((COLS - ${#text} - ${#right} - 6))
+  ((dashes < 1)) && dashes=1
+  printf '\n%s%s%s %s%s%s %s%s %s%s\n' \
+    "$color" "$G_BAR" "$OFF" \
+    "$BOLD" "$text" "$OFF" \
+    "$DIM" "$(repeat "$G_H" "$dashes")" "$right" "$OFF"
+}
+
+# banner <color> <glyph> <text>   Draws the closing report.
+banner() {
+  local color=$1 glyph=$2 text=$3
+  printf '\n%s%s%s\n' "$color$DIM" "$(repeat "$G_RULE" "$COLS")" "$OFF"
+  printf ' %s  %s%s%s\n' "$glyph" "$BOLD$color" "$text" "$OFF"
+  printf '%s%s%s\n\n' "$color$DIM" "$(repeat "$G_RULE" "$COLS")" "$OFF"
+}
+
+# plural <count> <word>   Adds an "s" to the word when the count is not one.
+plural() {
+  if (($1 == 1)); then printf '%s %s' "$1" "$2"; else printf '%s %ss' "$1" "$2"; fi
+}
+
+# scope_list   Renders the scope paths as the operator wrote them, for a
+# prompt or the startup panel.
+scope_list() {
+  local out="" path
+  for path in "${SCOPE[@]}"; do
+    if [[ -z $out ]]; then out=$path; else out="$out, $path"; fi
+  done
+  printf '%s' "$out"
+}
+
+# votes <count> <total>   Draws the done votes as a meter.
+votes() {
+  local have=$1 want=$2 i
+  for ((i = 0; i < want; i++)); do
+    if ((i < have)); then printf '%s' "$G_VOTE"; else printf '%s' "$G_NOVOTE"; fi
+  done
+}
+
+# wrap <width> <text>   Breaks text on spaces into lines of at most <width>.
+wrap() {
+  local width=$1 line="" word
+  local -a words=()
+  read -ra words <<<"$2"
+  if ((${#words[@]} == 0)); then
+    printf '\n'
+    return
+  fi
+  for word in "${words[@]}"; do
+    if [[ -z $line ]]; then
+      line=$word
+    elif ((${#line} + 1 + ${#word} <= width)); then
+      line="$line $word"
+    else
+      printf '%s\n' "$line"
+      line=$word
+    fi
+  done
+  printf '%s\n' "$line"
+}
+
+# strip_style <text>   Removes the ANSI color codes that gutter embeds in its
+# text, so the run log can keep the same message as plain text.
+strip_style() {
+  sed -E $'s/\x1b\\[[0-9;]*m//g' <<<"$1"
+}
+
+# gutter <color> <marker> <text> <tag>   Prints one transcript line, behind a
+# rule. An empty marker indents the text to the same column as marked lines.
+# Every line that reaches the terminal this way must also reach the run log,
+# as plain text: this is the one place that every line of the live transcript
+# passes through, so it is the one place that needs to call note. The marker
+# glyph tells the terminal reader what kind of line it is; the run log has no
+# glyphs, so the tag carries the same distinction as a plain-text word.
+gutter() {
+  local marker=$2 tag=${4:-}
+  if [[ -z $marker && -z $3 ]]; then
+    printf '  %s%s%s\n' "$DIM" "$G_GUT" "$OFF"
+    return
+  fi
+  [[ -z $marker ]] && marker=" "
+  printf '  %s%s%s %s%s%s %s%s\n' \
+    "$DIM" "$G_GUT" "$OFF" "$1" "$marker" "$OFF" "$3" "$OFF"
+  if [[ -n $tag ]]; then
+    note "[$tag] $(strip_style "$3")"
+  else
+    note "$(strip_style "$3")"
+  fi
+}
+
+# The repository to work on is the current working directory.
+REPO="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+cd "$REPO" || exit 2
+
+# State lives outside the repository, at a path that is stable per repository.
+hash_path() {
+  if command -v md5sum >/dev/null 2>&1; then
+    printf '%s' "$1" | md5sum | cut -c1-12
+  else
+    printf '%s' "$1" | cksum | tr -d ' ' | cut -c1-12
+  fi
+}
+# The name of the repository, for a person, and a hash of its path, to keep two
+# repositories of one name apart. A repository that moves gets a new name, and
+# starts with no guidance.
+SLUG="${REPO##*/}-$(hash_path "$REPO")"
+if [[ -z ${XDG_STATE_HOME:-} && -z ${HOME:-} ]]; then
+  echo "converge: set HOME or XDG_STATE_HOME; converge keeps its state there" >&2
+  exit 2
+fi
+# The durable directory. It holds everything that must survive a restart of the
+# machine: the guidance, the journal, the logs, and the output of each session.
+STATE_DIR="${XDG_STATE_HOME:-${HOME:-}/.local/state}/converge/$SLUG"
+LOG_DIR="$STATE_DIR/logs"
+SESSION_DIR="$STATE_DIR/sessions"
+GUIDANCE="$STATE_DIR/guidance.md"
+JOURNAL="$STATE_DIR/journal.md"
+RUN_LOG="$STATE_DIR/converge.log"
+# The commit at the end of the last review pass. The next pass reads from here
+# to HEAD. Absent before the first pass, when the range is the whole history.
+REVIEWED_COMMIT_FILE="$STATE_DIR/reviewed_commit"
+# The name of the session that the newest loop writes.
+CURRENT="$STATE_DIR/current"
+# The harness of the last run in this repository. A later run keeps it.
+HARNESS_FILE="$STATE_DIR/harness"
+# The temporary directory. It holds only the files that show that a process is
+# alive now. The system removes them, so a dead loop leaves nothing that blocks
+# a new run. A pipe also stays here, because a home directory can be on a
+# network file system, which supports no pipe.
+RUNTIME_DIR="${TMPDIR:-/tmp}/converge/$SLUG"
+# The loop holds this lock while it runs. The kernel releases the lock when the
+# loop dies, so the lock, and not a file that a dead loop leaves behind, tells
+# a client whether a loop runs for this repository.
+LOOP_LOCK="$RUNTIME_DIR/loop.lock"
+# One client at a time looks for a loop and starts one. This directory is the
+# gate. A directory is a lock, because mkdir either makes it or fails.
+SPAWN_LOCK="$RUNTIME_DIR/spawn.lock"
+if ! mkdir -p "$LOG_DIR" "$SESSION_DIR" "$RUNTIME_DIR"; then
+  echo "converge: cannot make $STATE_DIR or $RUNTIME_DIR" >&2
+  exit 2
+fi
+# The temporary directory can be shared with other users. Keep the loop private.
+chmod 700 "$RUNTIME_DIR" 2>/dev/null || true
+
+# The client names the session. The loop takes the name, so that its logs and
+# its output file share one id.
+RUN_ID="${CONVERGE_SESSION:-$(date -u +%Y%m%dT%H%M%SZ)}"
+SESSION_OUT="$SESSION_DIR/$RUN_ID.out"
+SESSION_STATUS="$SESSION_DIR/$RUN_ID.status"
+SESSION_PID="$RUNTIME_DIR/$RUN_ID.pid"
+SEQ=0
+CHILD=""
+FORMATTER=""
+RUN_START=$SECONDS
+
+# first_line <file>   Reads the first line of a file, if the file is there.
+first_line() {
+  local line=""
+  # The shell applies the redirections from left to right. A file that is not
+  # there must report nothing, so send stderr away before the shell opens it.
+  read -r line 2>/dev/null <"$1"
+  printf '%s' "$line"
+}
+
+# wait_child <pid>   Waits for a background process to exit, and returns its
+# exit status. Bash's `wait` returns early, with a status above 128, as soon
+# as a trapped signal fires -- even when the process itself runs on. The
+# first SIGINT asks the loop to let its running invocation finish without
+# killing it, so this retries the wait until the process is truly gone,
+# instead of reporting the spurious signal status while it is still alive.
+wait_child() {
+  local pid=$1 status
+  wait "$pid" 2>/dev/null; status=$?
+  while ((status >= 128)) && kill -0 "$pid" 2>/dev/null; do
+    wait "$pid" 2>/dev/null; status=$?
+  done
+  return "$status"
+}
+
+# harness_argv <model> <prompt>
+# Sets ARGV to the command that runs one non-interactive invocation, with
+# permission prompts disabled, and with a message stream on stdout.
+#
+# The resolution of $HARNESS itself, and the validation that it is supported
+# and on PATH, happen later, only in the process that becomes the loop. A
+# client that only attaches never starts a harness, and must not fail because
+# of an option, such as --harness, that belongs to a loop that already runs.
+harness_argv() {
+  case $HARNESS in
+    claude)
+      ARGV=(claude --print --output-format stream-json --verbose
+        --model "$1" --dangerously-skip-permissions "${PASSTHROUGH[@]}" "$2")
+      ;;
+    opencode)
+      ARGV=(opencode run --format json --model "$1" --auto
+        "${PASSTHROUGH[@]}" "$2")
+      ;;
+  esac
+}
+
+# note <message>  Records in the run log only.
+# info <message>  Reports a step to the operator and to the run log.
+# good <message>  The same, for a result that went well.
+# warn <message>  The same, on stderr, for a result that needs attention.
+# bad  <message>  The same, on stderr, for a failure.
+note() {
+  printf '%s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$RUN_ID" "$1" >>"$RUN_LOG"
+}
+info() {
+  printf '  %s%s%s %s\n' "$DIM" "$G_DOT" "$OFF" "$1"
+  note "$1"
+}
+good() {
+  printf '  %s%s%s %s\n' "$GREEN" "$G_OK" "$OFF" "$1"
+  note "$1"
+}
+warn() {
+  printf '  %s%s %s%s\n' "$YELLOW" "$G_WARN" "$1" "$OFF" >&2
+  note "$1"
+}
+bad() {
+  printf '  %s%s %s%s\n' "$RED" "$G_ERR" "$1" "$OFF" >&2
+  note "$1"
+}
+
+# ------------------------------------------------------------ background loop
+#
+# The loop runs in the background, in a session of its own. A closed terminal,
+# or a lost ssh connection, does not reach it. The command that the operator
+# runs is a client. The client starts a loop when none runs for this
+# repository, and it shows the output of the loop. To attach to a loop again,
+# run converge again in the same directory. Ctrl-C stops the loop and the
+# client together.
+
+# loop_runs   True when a loop holds the lock for this repository.
+loop_runs() {
+  local free=1
+  exec 9>"$LOOP_LOCK" || return 1
+  if flock -n 9; then
+    flock -u 9
+    free=0
+  fi
+  exec 9>&-
+  ((free))
+}
+
+# hold_lock   Takes the lock for the life of this process.
+hold_lock() {
+  exec 9>"$LOOP_LOCK" || return 1
+  flock -n 9
+}
+
+# session_start <session id>   Reports the local start time of a session.
+session_start() {
+  local id=$1 stamp
+  stamp="${id:0:4}-${id:4:2}-${id:6:2}T${id:9:2}:${id:11:2}:${id:13:2}Z"
+  date -d "$stamp" '+%H:%M' 2>/dev/null || printf '%s' "${id:9:2}:${id:11:2}"
+}
+
+# report_last_run   Gives one line about the run that finished before this one.
+report_last_run() {
+  local last status file ended now
+  last=$(first_line "$CURRENT")
+  [[ -n $last ]] || return 0
+  file="$SESSION_DIR/$last.status"
+  [[ -f $file ]] || return 0
+  status=$(first_line "$file")
+  ended=$(stat -c %Y "$file" 2>/dev/null) || return 0
+  now=$(date +%s)
+  if [[ $status == 0 ]]; then
+    info "the last run converged $(duration $((now - ended))) ago"
+  else
+    info "the last run stopped without convergence $(duration $((now - ended))) ago"
+  fi
+}
+
+# attach <session id> <fresh|again>
+# Shows the output of a loop until the loop ends. Ctrl-C stops the loop first.
+attach() {
+  local session=$1 mode=$2
+  local out="$SESSION_DIR/$session.out"
+  local pid replay lines status
+
+  pid=$(first_line "$RUNTIME_DIR/$session.pid")
+  if ! is_number "$pid"; then
+    bad "the loop for this repository left no process id"
+    exit 2
+  fi
+
+  INTERRUPTED=0
+  CLIENT_STOP_REQUESTED=0
+  trap 'client_int '"$pid" INT
+  trap 'INTERRUPTED=1; stop_loop '"$pid" TERM
+
+  # An attach shows the last screen of earlier output, then a rule, then the
+  # new output, in that order. The replay must finish printing before the
+  # rule appears, so it runs without -f, ahead of the follow below.
+  if [[ $mode == again ]]; then
+    lines=$(tput lines 2>/dev/null) || lines=24
+    is_number "$lines" || lines=24
+    replay=$((lines - 4))
+    ((replay < 5)) && replay=5
+    tail -n "$replay" "$out"
+    heading "$BLUE" "attached to the loop from $(session_start "$session")" \
+      "$(grep -aoE 'iteration [0-9]+' "$out" | tail -n 1)"
+  fi
+
+  # The terminal sends Ctrl-C to every process in the foreground group. The
+  # transcript must survive it, to show how the loop ends. A process that
+  # ignores a signal keeps that choice through exec, so tail ignores Ctrl-C.
+  if [[ $mode == again ]]; then
+    ( trap '' INT TERM; exec tail -n 0 -f --pid="$pid" "$out" ) &
+  else
+    ( trap '' INT TERM; exec tail -n +1 -f --pid="$pid" "$out" ) &
+  fi
+  TAIL_PID=$!
+  while kill -0 "$TAIL_PID" 2>/dev/null; do
+    wait "$TAIL_PID" 2>/dev/null
+  done
+
+  if ((INTERRUPTED)); then
+    exit 130
+  fi
+  status=$(first_line "$SESSION_DIR/$session.status")
+  is_number "$status" || status=1
+  exit "$status"
+}
+
+# attach_current   Attaches to the loop that runs for this repository.
+attach_current() {
+  local session
+  session=$(first_line "$CURRENT")
+  if [[ -z $session || ! -f $SESSION_DIR/$session.out ]]; then
+    bad "a loop runs for this repository, but converge cannot find its output"
+    exit 2
+  fi
+  attach "$session" again
+}
+
+# stop_loop <process id>
+# Stops the loop and every agent below it. The loop leads its own process
+# group, so one signal reaches all of them.
+stop_loop() {
+  kill -TERM -"$1" 2>/dev/null || kill -TERM "$1" 2>/dev/null || true
+}
+
+# client_int <process id>   Handles Ctrl-C at the client, in two steps: the
+# first asks the loop to stop gracefully, at the end of its current
+# iteration; the second stops it at once, the way stop_loop always did. The
+# loop lives in its own process group, so the terminal's Ctrl-C reaches only
+# the client; the client must relay it.
+client_int() {
+  local pid=$1
+  INTERRUPTED=1
+  if ((CLIENT_STOP_REQUESTED)); then
+    stop_loop "$pid"
+    return
+  fi
+  CLIENT_STOP_REQUESTED=1
+  printf '\n  %s%s%s\n' "$BOLD$WHITE" \
+    "the loop stops at the end of the current iteration; press Ctrl-C again to stop it at once" \
+    "$OFF" >&2
+  kill -INT -"$pid" 2>/dev/null || kill -INT "$pid" 2>/dev/null || true
+}
+
+# spawn_loop   Starts the loop in a session of its own, then waits for it.
+spawn_loop() {
+  local waited=0
+  : >"$SESSION_OUT"
+  CONVERGE_DAEMON=1 CONVERGE_SESSION="$RUN_ID" CONVERGE_COLS="$COLS" \
+    setsid "$SELF" "${ORIGINAL_ARGV[@]}" </dev/null >>"$SESSION_OUT" 2>&1 &
+  while [[ ! -s $SESSION_PID ]]; do
+    sleep 0.1
+    ((++waited > 100)) && return 1
+  done
+  return 0
+}
+
+# attach_if_running   Attaches to the loop for this repository, when one runs,
+# after a warning if the operator gave options that an attach cannot apply.
+# Every place that might attach instead of starting a loop must warn the same
+# way, so this is the one place that does both.
+attach_if_running() {
+  if loop_runs; then
+    if ((${#ORIGINAL_ARGV[@]})); then
+      warn "a loop already runs here; converge keeps the options of that loop"
+    fi
+    attach_current
+  fi
+}
+
+# client_main   Attaches to the loop for this repository, and starts one first
+# when none runs.
+client_main() {
+  local waited=0
+  attach_if_running
+
+  # Two clients must not start two loops. The one that makes the gate wins.
+  while ! mkdir "$SPAWN_LOCK" 2>/dev/null; do
+    attach_if_running
+    sleep 0.2
+    # The client that made the gate is gone. Clear the gate and try again.
+    ((++waited > 50)) && rmdir "$SPAWN_LOCK" 2>/dev/null
+  done
+  trap 'rmdir "$SPAWN_LOCK" 2>/dev/null' EXIT
+
+  report_last_run
+  if ! spawn_loop; then
+    bad "the loop did not start; see $SESSION_OUT"
+    exit 2
+  fi
+  rmdir "$SPAWN_LOCK" 2>/dev/null
+  trap - EXIT
+  attach "$RUN_ID" fresh
+}
+
+if ((FOREGROUND == 0)) && [[ -z ${CONVERGE_DAEMON:-} ]]; then
+  client_main
+  exit
+fi
+
+# --foreground starts a new loop directly, with no separate client process.
+# It must still report the last run before it starts, as any other start of a
+# new loop does.
+((FOREGROUND)) && report_last_run
+
+# ------------------------------------------------------------------- harness
+#
+# The loop starts every worker and every coach through a harness. The client
+# and the loop select the harness from the same inputs, in the same order, so
+# both reach the same answer. The loop, and not the client, writes the harness
+# file, after the selection. Only the process that reaches this point becomes
+# the loop, so only it needs a harness, and only it must fail when the harness
+# is unsupported or missing.
+
+[[ -n $HARNESS ]] || HARNESS=$(first_line "$HARNESS_FILE")
+[[ -n $HARNESS ]] || HARNESS="${CONVERGE_HARNESS:-}"
+[[ -n $HARNESS ]] || HARNESS="claude"
+
+case $HARNESS in
+  claude)
+    DEFAULT_MODEL="sonnet"
+    DEFAULT_COACH_MODEL="opus"
+    DEFAULT_REVIEW_MODEL="opus"
+    ;;
+  opencode)
+    DEFAULT_MODEL="opencode/gpt-5.6-luna"
+    DEFAULT_COACH_MODEL="opencode/gpt-5.6-sol"
+    DEFAULT_REVIEW_MODEL="opencode/gpt-5.6-sol"
+    ;;
+  *)
+    echo "converge: '$HARNESS' is not a harness; use claude or opencode" >&2
+    exit 2
+    ;;
+esac
+
+MODEL_ENV_PREFIX="CONVERGE_${HARNESS^^}"
+WORKER_MODEL_ENV="${MODEL_ENV_PREFIX}_MODEL"
+COACH_MODEL_ENV="${MODEL_ENV_PREFIX}_COACH_MODEL"
+REVIEW_MODEL_ENV="${MODEL_ENV_PREFIX}_REVIEW_MODEL"
+[[ -n $MODEL ]] || MODEL="${!WORKER_MODEL_ENV:-}"
+[[ -n $MODEL ]] || MODEL="$DEFAULT_MODEL"
+[[ -n $COACH_MODEL ]] || COACH_MODEL="${!COACH_MODEL_ENV:-}"
+[[ -n $COACH_MODEL ]] || COACH_MODEL="$DEFAULT_COACH_MODEL"
+[[ -n $REVIEW_MODEL ]] || REVIEW_MODEL="${!REVIEW_MODEL_ENV:-}"
+[[ -n $REVIEW_MODEL ]] || REVIEW_MODEL="$DEFAULT_REVIEW_MODEL"
+
+need_tool "$HARNESS"
+
+# The message stream of every invocation travels through a named pipe in the
+# runtime directory, so that the transcript shows live while the log file
+# keeps every message. Test once, here, that the directory supports one. A
+# failure discovered mid-run would stop the loop with no closing report; a
+# failure discovered here, before the first iteration, is a start that never
+# began, and "the loop must never stop because of failures" does not apply.
+fifo_probe="$RUNTIME_DIR/fifo_probe.$$"
+rm -f "$fifo_probe"
+if ! mkfifo "$fifo_probe" 2>/dev/null; then
+  echo "converge: cannot create a named pipe in $RUNTIME_DIR" >&2
+  echo "converge: the runtime directory must support named pipes" >&2
+  exit 2
+fi
+rm -f "$fifo_probe"
+
+if ! hold_lock; then
+  bad "a converge loop already runs for this repository"
+  exit 2
+fi
+# A later run in this repository keeps this harness.
+printf '%s\n' "$HARNESS" >"$HARNESS_FILE"
+# A --foreground run is a session too, with no separate client process. It
+# must still record its process id, become the current session, and report
+# its exit status, so that the next run's "last run" report is accurate.
+printf '%s\n' "$$" >"$SESSION_PID"
+printf '%s\n' "$RUN_ID" >"$CURRENT"
+# The client reads this file to learn how the loop ended.
+trap 'printf "%s\n" "$?" >"$SESSION_STATUS"' EXIT
+
+note "=== run start ==="
+note "command: $0 $ORIGINAL_ARGS"
+note "options: harness=$HARNESS model=$MODEL coach-model=$COACH_MODEL review-model=$REVIEW_MODEL consensus=$CONSENSUS coach-every=$COACH_EVERY coach=$COACH_ENABLED review-every=$REVIEW_EVERY review=$REVIEW_ENABLED timeout=$TIMEOUT max-iterations=${MAX_ITERATIONS:-unbounded}"
+note "passthrough: ${PASSTHROUGH[*]:-none}"
+if ((${#SCOPE[@]})); then
+  SCOPE_SUMMARY=$(scope_list)
+else
+  SCOPE_SUMMARY="empty (the whole repository)"
+fi
+note "scope: $SCOPE_SUMMARY"
+
+if [[ -n $MAX_ITERATIONS ]]; then
+  LIMIT_SUMMARY="at most $(plural "$MAX_ITERATIONS" iteration)"
+else
+  LIMIT_SUMMARY="unlimited iterations"
+fi
+if ((COACH_ENABLED)); then
+  COACH_SUMMARY="$COACH_MODEL, every $(plural "$COACH_EVERY" iteration)"
+else
+  COACH_SUMMARY="disabled ($COACH_MODEL)"
+fi
+if ((REVIEW_ENABLED)); then
+  REVIEW_SUMMARY="$REVIEW_MODEL, every $(plural "$REVIEW_EVERY" iteration)"
+else
+  REVIEW_SUMMARY="disabled ($REVIEW_MODEL)"
+fi
+PANEL_ROWS=(
+  "repo|$(home_relative "$REPO")"
+  "scope|$SCOPE_SUMMARY"
+  "run log|$(home_relative "$RUN_LOG")"
+)
+[[ -n ${CONVERGE_DAEMON:-} ]] && PANEL_ROWS+=("output|$(home_relative "$SESSION_OUT")")
+# Guidance from an earlier run carries over. It shapes every worker in this
+# run, so the operator must see that it is there, and where to read it.
+[[ -s $GUIDANCE ]] && PANEL_ROWS+=("guidance|$(home_relative "$GUIDANCE")")
+PANEL_ROWS+=(
+  "harness|$HARNESS"
+  "worker|$MODEL, $LIMIT_SUMMARY"
+  "review|$REVIEW_SUMMARY"
+  "coach|$COACH_SUMMARY"
+  "stop|$(plural "$CONSENSUS" "done vote") in a row"
+  "timeout|${TIMEOUT}s for one invocation"
+)
+panel "$G_LOOP converge" "${PANEL_ROWS[@]}"
+for row in "${PANEL_ROWS[@]}"; do
+  note "${row%%|*}: ${row#*|}"
+done
+
+# STOP_REQUESTED: set by the first SIGINT. The loop lets the running
+# invocation finish, starts no further one, and stops at the top of the main
+# loop. IN_INVOCATION: true while $CHILD is a worker, reviewer, or coach
+# process, so the first SIGINT knows whether there is one to let finish, as
+# opposed to a backoff sleep, which it can cut short right away.
+STOP_REQUESTED=0
+IN_INVOCATION=0
+
+on_signal() {
+  local sig=$1 text
+  if [[ $sig == INT ]] && ((STOP_REQUESTED == 0)); then
+    STOP_REQUESTED=1
+    warn "stop requested; finishing the current invocation, then stopping"
+    if ((! IN_INVOCATION)) && [[ -n $CHILD ]]; then
+      kill -TERM "$CHILD" 2>/dev/null
+    fi
+    return
+  fi
+  warn "received SIG$sig; stopping now"
+  if [[ -n $CHILD ]]; then
+    kill -TERM "$CHILD" 2>/dev/null
+    wait "$CHILD" 2>/dev/null
+  fi
+  if [[ -n $FORMATTER ]]; then
+    wait "$FORMATTER" 2>/dev/null
+  fi
+  if [[ $sig == INT ]]; then
+    text="stopped by a second SIGINT after $(duration $((SECONDS - RUN_START)))"
+    note "=== run end: signal INT ==="
+    note "$text"
+    banner "$YELLOW" "$E_STOP" "$text"
+    exit 130
+  fi
+  text="stopped by SIGTERM after $(duration $((SECONDS - RUN_START)))"
+  note "=== run end: signal TERM ==="
+  note "$text"
+  banner "$YELLOW" "$E_STOP" "$text"
+  exit 143
+}
+trap 'on_signal INT' INT
+trap 'on_signal TERM' TERM
+
+# run_agent <role> <model> <prompt>
+# Runs one non-interactive harness invocation. Writes the full message stream
+# to a new log file. Sets LOG_FILE, RESULT_TEXT, and RUN_STATUS.
+run_agent() {
+  local role=$1 model=$2 prompt=$3 glyph=$G_WORKER started=$SECONDS seq_text
+  local fifo_failed=0
+  case $role in
+    coach) glyph=$G_COACH ;;
+    reviewer) glyph=$G_REVIEW ;;
+  esac
+  printf -v seq_text '%04d' $((++SEQ))
+  LOG_FILE="$LOG_DIR/$RUN_ID-$seq_text-$role.jsonl"
+  PROMPT_FILE="${LOG_FILE%.jsonl}.prompt.md"
+  RESULT_TEXT=""
+
+  # The message stream does not hold the prompt. Keep it, so that a later
+  # reader knows what this invocation was told, and which guidance was in
+  # force when it ran.
+  printf '%s\n' "$prompt" >"$PROMPT_FILE"
+  note "$role start: model=$model log=$LOG_FILE prompt=$PROMPT_FILE"
+  # A gear glyph (the worker's) draws at double width in most terminals, so a
+  # single space after it makes the role label look like it touches the
+  # glyph. Two spaces after the glyph keep every role's label clear of it.
+  if [[ $role == coach ]]; then
+    printf '  %s%s%s  %s%s%s %s%s %s%s\n' \
+      "$BLUE" "$glyph" "$OFF" "$BOLD" "$role" "$OFF" \
+      "$DIM" "$G_DOT" "$model" "$OFF"
+  else
+    printf '  %s%s%s  %s%s%s %s%s %s %s %s%s\n' \
+      "$BLUE" "$glyph" "$OFF" "$BOLD" "$role" "$OFF" \
+      "$DIM" "$G_DOT" "$model" "$G_ARROW" "${LOG_FILE##*/}" "$OFF"
+  fi
+
+  # The message stream goes through a pipe to two readers: the log file keeps
+  # every message, and the transcript shows the work as it happens. A named
+  # pipe keeps `claude` itself as a direct child, so that the timeout and an
+  # explicit kill still reach it.
+  #
+  # Both the pipe's reader and the invocation itself ignore the first SIGINT.
+  # The terminal, in --foreground, delivers that signal to every process
+  # here at once, and the client's relay does the same on purpose (see
+  # client_int); without this, tee and jq would die immediately, the
+  # invocation would then get SIGPIPE on its next write, and "let the running
+  # invocation finish" would not hold. A plain `kill -TERM "$CHILD"`, which
+  # the second SIGINT and SIGTERM still use, is unaffected: only SIGINT is
+  # ignored.
+  local accent=$CYAN
+  case $role in
+    coach) accent=$MAGENTA ;;
+    reviewer) accent=$BLUE ;;
+  esac
+  local fifo="$RUNTIME_DIR/stream.$$" fifo_ok=0
+  for _ in 1 2 3; do
+    rm -f "$fifo"
+    if mkfifo "$fifo" 2>/dev/null; then
+      fifo_ok=1
+      break
+    fi
+    sleep 1
+  done
+  if ((fifo_ok)); then
+    ( trap '' INT; tee "$LOG_FILE" <"$fifo" | format_stream "$accent" ) &
+    FORMATTER=$!
+
+    harness_argv "$model" "$prompt"
+    (
+      # The bug tracker reads CONVERGE_ROLE and CONVERGE_ITERATION from the
+      # environment, so an agent cannot record the wrong role, and a prompt
+      # does not have to carry the values.
+      export CONVERGE_ROLE="$role" CONVERGE_ITERATION="$ITERATION"
+      export PATH="$BIN_DIR:$PATH"
+      trap '' INT
+      exec timeout -k 10 "$TIMEOUT" "${ARGV[@]}"
+    ) >"$fifo" 2>>"$LOG_FILE.err" 9>&- &
+    CHILD=$!
+    IN_INVOCATION=1
+    wait_child "$CHILD"
+    RUN_STATUS=$?
+    IN_INVOCATION=0
+    CHILD=""
+    # The writer closed the pipe. Let the transcript finish before the loop
+    # reports the result, so that the lines stay in order.
+    wait_child "$FORMATTER" 2>/dev/null
+    FORMATTER=""
+    rm -f "$fifo"
+  else
+    # The startup probe already proved that the runtime directory supports a
+    # named pipe, so this is a transient failure of one invocation, not of
+    # the environment. "The loop must never stop because of failures": treat
+    # it like any other invocation that produced no output, so the caller's
+    # own backoff and retry carry the run forward instead of the script
+    # exiting mid-run with no closing report.
+    fifo_failed=1
+    RUN_STATUS=1
+    touch "$LOG_FILE"
+    bad "cannot create $fifo; the runtime directory does not support named pipes"
+  fi
+  RUN_SECONDS=$((SECONDS - started))
+
+  RESULT_TEXT="$(final_message "$LOG_FILE")"
+
+  if ((fifo_failed)); then
+    : # already reported above
+  elif ((RUN_STATUS == 124 || RUN_STATUS == 137)); then
+    warn "$role exceeded the ${TIMEOUT}s timeout; killed it"
+    show_stderr "$LOG_FILE"
+    printf '{"type":"converge_event","event":"timeout","seconds":%s}\n' "$TIMEOUT" >>"$LOG_FILE"
+  elif ((RUN_STATUS != 0)); then
+    bad "$role exited with status $RUN_STATUS after $(duration "$RUN_SECONDS")"
+    show_stderr "$LOG_FILE"
+    printf '{"type":"converge_event","event":"error","status":%s}\n' "$RUN_STATUS" >>"$LOG_FILE"
+  else
+    good "$role finished in $(duration "$RUN_SECONDS")"
+  fi
+
+  local bytes err_bytes
+  bytes=$(wc -c <"$LOG_FILE")
+  err_bytes=$(wc -c <"$LOG_FILE.err" 2>/dev/null)
+  note "$role end: status=$RUN_STATUS seconds=$RUN_SECONDS bytes=${bytes// } stderr=${err_bytes// }"
+}
+
+# wait_seconds <seconds>
+# Sleeps in a child process, so that a signal stops the wait immediately.
+wait_seconds() {
+  sleep "$1" &
+  CHILD=$!
+  wait "$CHILD"
+  CHILD=""
+}
+
+# produced_output <log file>
+# True when the invocation produced at least one model message. A quota
+# rejection writes a synthetic assistant message -- model "<synthetic>" --
+# instead of a real one, so that line does not count.
+produced_output() {
+  case $HARNESS in
+    claude)
+      local assistant_lines
+      assistant_lines=$(grep '"type":"assistant"' "$1" 2>/dev/null)
+      [[ -n "$assistant_lines" ]] && grep -qv '"model":"<synthetic>"' <<<"$assistant_lines"
+      ;;
+    opencode) grep -qE '"type":"(text|tool_use)"' "$1" 2>/dev/null ;;
+  esac
+}
+
+# handle_invocation_wait <log file>
+# The wait that "Signals, timeouts, and failures" requires: when an invocation
+# -- a worker, a review pass, or a coach run -- fails before it produces any
+# output, the loop waits before it moves on, doubling the wait with each
+# consecutive fast failure, from 10 seconds up to 15 minutes. This is the
+# signature of an exhausted token quota, and the growing wait keeps the loop
+# alive until the quota period resets. An invocation that produced output,
+# whether it succeeded or failed, resets the wait to zero.
+handle_invocation_wait() {
+  if produced_output "$1"; then
+    FAIL_WAIT=0
+    return 0
+  fi
+  if ((FAIL_WAIT == 0)); then
+    FAIL_WAIT=10
+  else
+    ((FAIL_WAIT *= 2))
+    ((FAIL_WAIT > 900)) && FAIL_WAIT=900
+  fi
+  printf '  %s%s %s%s\n' "$YELLOW" "$G_CLOCK" "waits $(duration "$FAIL_WAIT") before continuing" "$OFF" >&2
+  note "waiting ${FAIL_WAIT}s before continuing"
+  wait_seconds "$FAIL_WAIT"
+}
+
+# final_message <log file>
+# Reports the final message of the invocation. claude reports it in one result
+# message. opencode reports no result, so the final message is the text of the
+# last assistant message.
+final_message() {
+  case $HARNESS in
+    claude)
+      jq -rs 'map(select(.type == "result")) | last | .result // ""' \
+        "$1" 2>/dev/null || true
+      ;;
+    opencode)
+      jq -Rsr '
+        [splits("\n") | select(. != "") | fromjson? // empty]
+        | map(select(.type == "text"))
+        | if length == 0 then ""
+          else (last.part.messageID) as $id
+            | map(select(.part.messageID == $id) | .part.text // "")
+            | join("\n")
+          end' "$1" 2>/dev/null || true
+      ;;
+  esac
+}
+
+# voted_done <final message>
+# True when the message holds the token CONVERGED alone on a line.
+voted_done() {
+  local line
+  while IFS= read -r line; do
+    [[ $line =~ ^[[:space:]]*CONVERGED[[:space:]]*$ ]] && return 0
+  done <<<"$1"
+  return 1
+}
+
+# --------------------------------------------------------------- transcript
+#
+# The loop shows what an invocation does while it does it. The message stream
+# gives one JSON object per line as the agent works. A filter turns each object
+# into one tab-separated record, and the reader below turns each record into one
+# line for the operator. Text that the filter cannot parse is dropped, so a
+# partial line or a stray message cannot stop the transcript.
+#
+# Each harness has its own filter, and both filters write the same records:
+#
+#   init <text>            One line about the invocation. The reader shows the
+#                          first one only.
+#   text <line>            One line that the agent wrote.
+#   hold <line>            One line whose role the harness has not given yet.
+#   release text|final     The held lines were ordinary text, or the final
+#                          message.
+#   tool <name> <lines> <argument>   One tool call. <lines> is the number of
+#                          lines the argument had before it was joined onto
+#                          this one line; 1 for anything but a shell command.
+#   fail <cause>           One tool call that failed.
+#   final <line>           One line of the final message.
+#   stats <turns> <ms> <cost>   The totals that the harness reports.
+#   tally <cost>           One turn and its cost, when the harness reports no
+#                          totals. The reader adds these up.
+
+GUT_WIDTH=$((COLS - 6))
+
+CLAUDE_FILTER='
+def clean: gsub("[\\t\\r]"; " ");
+# split("\n")[0] is null, not "", when the string is empty. That null then
+# fails a downstream gsub or "+", and kills the jq process, and with it the
+# rest of this transcript. firstline never returns null.
+def firstline: split("\n")[0] // "";
+# A shell command keeps every line, joined onto the one transcript line with
+# a mark at each break, plus the line count so a later shortening can say
+# what it hid. Any other tool argument keeps the firstline behavior, with a
+# line count of 1.
+def tool_arg:
+  if (.command != null) then
+    (.command | tostring | split("\n")) as $ls
+    | {text: ($ls | map(clean) | join(" ↵ ")), lines: ($ls | length)}
+  else
+    {text: ((.file_path // .pattern // .path // .url // .query // .description // "")
+            | tostring | firstline | clean), lines: 1}
+  end;
+fromjson? // empty
+| if (.type == "system") and (.subtype == "init") then
+    "init\tsession \((.session_id // "unknown")[0:8])"
+  elif .type == "assistant" then
+    ((.message.content // []) | if type == "array" then .[] else empty end)
+    | if .type == "text" then
+        ((.text // "") | split("\n")[] | "text\t" + clean)
+      elif .type == "tool_use" then
+        (((.input // {}) | tool_arg) as $a
+         | "tool\t\(.name // "tool")\t\($a.lines)\t\($a.text)")
+      else empty end
+  elif .type == "user" then
+    ((.message.content // []) | if type == "array" then .[] else empty end)
+    | select((.type == "tool_result") and (.is_error == true))
+    | ((.content // "") | if type == "array" then (map(.text // "") | join(" ")) else tostring end)
+    | firstline | "fail\t" + clean
+  elif .type == "result" then
+    ((if (.result // "") == "" then empty
+      else (.result | split("\n")[] | "final\t" + clean) end),
+     "stats\t\(.num_turns // 0)\t\(.duration_ms // 0)\t\(.total_cost_usd // 0)")
+  else empty end
+'
+
+# opencode ends a message with a step_finish. The reason of that step tells the
+# reader whether the text of the step was the final message, so the reader holds
+# the text until then. A tool call can happen between two held lines of text, so
+# it is held too, tagged with its own kind, or the transcript would show the
+# tool call before text that the agent wrote first. opencode reports no totals,
+# and it reports a tool call once, when the call ends.
+OPENCODE_FILTER='
+def clean: gsub("[\\t\\r]"; " ");
+# split("\n")[0] is null, not "", when the string is empty. That null then
+# fails a downstream gsub or "+", and kills the jq process, and with it the
+# rest of this transcript. firstline never returns null.
+def firstline: split("\n")[0] // "";
+# A shell command keeps every line, joined onto the one transcript line with
+# a mark at each break, plus the line count so a later shortening can say
+# what it hid. Any other tool argument keeps the firstline behavior, with a
+# line count of 1.
+def tool_arg:
+  if (.command != null) then
+    (.command | tostring | split("\n")) as $ls
+    | {text: ($ls | map(clean) | join(" ↵ ")), lines: ($ls | length)}
+  else
+    {text: ((.filePath // .pattern // .path // .url // .query // .description // "")
+            | tostring | firstline | clean), lines: 1}
+  end;
+fromjson? // empty
+| if .type == "step_start" then
+    "init\tsession \((.sessionID // "unknown")[0:8])"
+  elif .type == "text" then
+    ((.part.text // "") | split("\n")[] | "hold\ttext\t" + clean)
+  elif .type == "tool_use" then
+    (.part.state // {}) as $state
+    | select(($state.status == "completed") or ($state.status == "error"))
+    | ((($state.input // {}) | tool_arg) as $a
+       | "hold\ttool\t\(.part.tool // "tool")\t\($a.lines)\t\($a.text)"),
+      (select($state.status == "error")
+       | (($state.error // "tool error") | tostring | firstline
+          | "hold\tfail\t" + clean))
+  elif .type == "step_finish" then
+    "tally\t\(.part.cost // 0)",
+    (if (.part.reason // "") == "stop" then "release\tfinal"
+     else "release\ttext" end)
+  else empty end
+'
+
+# stream_filter   Reports the filter of the harness in use.
+stream_filter() {
+  case $HARNESS in
+    claude) printf '%s' "$CLAUDE_FILTER" ;;
+    opencode) printf '%s' "$OPENCODE_FILTER" ;;
+  esac
+}
+
+# say_text <text>   Writes one line that the agent wrote.
+say_text() {
+  local line
+  [[ -z ${1// } ]] && return 0
+  while IFS= read -r line; do
+    gutter "$DIM" "" "$DIM$line$OFF" "text"
+  done < <(wrap "$GUT_WIDTH" "$1")
+}
+
+# say_final <color> <text>   Writes one line of the final message.
+say_final() {
+  local line
+  [[ -z ${2// } ]] && return 0
+  while IFS= read -r line; do
+    gutter "$1" "$G_SAY" "$BOLD$line$OFF" "final"
+  done < <(wrap $((GUT_WIDTH - 2)) "$2")
+}
+
+# say_stats <turns> <seconds> <cost>   Writes the totals of an invocation.
+say_stats() {
+  gutter "$DIM" "" "$DIM$(plural "$1" turn) $G_DOT $(duration "$2") $G_DOT $(printf '$%.2f' "$3")$OFF" "stats"
+}
+
+# render_tool <name> <argument> <lines>   Writes one line for a tool call.
+# When the loop shortens a shell command that had more than one line, the
+# shortened text can hide a line break, so the line names the count.
+render_tool() {
+  local name=$1 arg=$2 lines=${3:-1} budget suffix=""
+  is_number "$lines" || lines=1
+  arg=${arg#"$REPO"/}
+  budget=$((GUT_WIDTH - ${#name} - 1))
+  if [[ ${name,,} == bash && $lines -gt 1 && ${#arg} -gt $budget ]]; then
+    suffix=" ($lines lines)"
+    budget=$((budget - ${#suffix}))
+  fi
+  arg=$(fit "$budget" "$arg")$suffix
+  # Each harness names its tools in its own case.
+  case ${name,,} in
+    write|edit|multiedit|notebookedit|patch)
+      gutter "$YELLOW" "$G_EDIT" "$YELLOW$name$OFF $arg" "tool" ;;
+    bash)
+      gutter "$CYAN" "$G_SHELL" "$arg" "tool" ;;
+    *)
+      gutter "$DIM" "$G_READ" "$DIM$name $arg$OFF" "tool" ;;
+  esac
+}
+
+# render_fail <cause>   Writes one line for a tool call that failed.
+render_fail() {
+  gutter "$RED" "$G_ERR" "$RED$(fit "$GUT_WIDTH" "$1")$OFF" "fail"
+}
+
+# dispatch_held <held item> <finalize 0|1>
+# Renders one item that was held to keep its place in the order (opencode
+# only): text, tagged "text", a tool call, tagged "tool", or a failed tool
+# call, tagged "fail". A tool call or a failure renders the same regardless of
+# finalize, since only text can be the final message. Reads and writes $final
+# and $accent from the caller, as the inline release handling did before.
+dispatch_held() {
+  local held=$1 finalize=$2 sub body name arg lines body2
+  sub=${held%%$'\t'*}
+  body=${held#*$'\t'}
+  [[ $body == "$held" ]] && body=""
+  case $sub in
+    tool)
+      name=${body%%$'\t'*}
+      body2=${body#*$'\t'}
+      [[ $body2 == "$body" ]] && body2=""
+      lines=${body2%%$'\t'*}
+      arg=${body2#*$'\t'}
+      [[ $arg == "$body2" ]] && arg=""
+      render_tool "$name" "$arg" "$lines"
+      ;;
+    fail)
+      render_fail "$body"
+      ;;
+    *)
+      if ((finalize)); then
+        if ((final == 0)); then
+          final=1
+          gutter "$DIM" "" ""
+        fi
+        say_final "$accent" "$body"
+      else
+        say_text "$body"
+      fi
+      ;;
+  esac
+}
+
+# add <a> <b>   Adds two costs. The shell has no arithmetic for fractions.
+add() {
+  awk -v a="$1" -v b="$2" 'BEGIN { printf "%.10f", a + b }'
+}
+
+# format_stream <color>
+# Reads a message stream on stdin. Writes a transcript for the operator.
+format_stream() {
+  local accent=$1
+  jq --unbuffered -R -r "$(stream_filter)" 2>/dev/null | {
+    local record kind rest rest2 name arg lines final=0 turns ms cost line held as_final
+    local started=-1 first=1 counted=0 sum=0 reported=0
+    local -a hold=()
+    while IFS= read -r record; do
+      ((started < 0)) && started=$SECONDS
+      kind=${record%%$'\t'*}
+      rest=${record#*$'\t'}
+      [[ $rest == "$record" ]] && rest=""
+      case $kind in
+        init)
+          # A harness that reports no start reports one for each step instead.
+          ((first)) || continue
+          first=0
+          gutter "$DIM" "" "$DIM$rest$OFF" "init"
+          ;;
+        text)
+          say_text "$rest"
+          ;;
+        hold)
+          hold+=("$rest")
+          ;;
+        release)
+          as_final=0
+          [[ $rest == final ]] && as_final=1
+          for held in ${hold[@]+"${hold[@]}"}; do
+            dispatch_held "$held" "$as_final"
+          done
+          hold=()
+          ;;
+        tally)
+          [[ $rest =~ ^[0-9.eE+-]+$ ]] || rest=0
+          ((++counted))
+          sum=$(add "$sum" "$rest")
+          ;;
+        tool)
+          name=${rest%%$'\t'*}
+          rest2=${rest#*$'\t'}
+          [[ $rest2 == "$rest" ]] && rest2=""
+          lines=${rest2%%$'\t'*}
+          arg=${rest2#*$'\t'}
+          [[ $arg == "$rest2" ]] && arg=""
+          render_tool "$name" "$arg" "$lines"
+          ;;
+        fail)
+          render_fail "$rest"
+          ;;
+        final)
+          if ((final == 0)); then
+            final=1
+            gutter "$DIM" "" ""
+          fi
+          say_final "$accent" "$rest"
+          ;;
+        stats)
+          IFS=$'\t' read -r turns ms cost <<<"$rest"
+          is_number "$ms" || ms=0
+          is_number "$turns" || turns=0
+          [[ $cost =~ ^[0-9.eE+-]+$ ]] || cost=0
+          reported=1
+          say_stats "$turns" $((ms / 1000)) "$cost"
+          ;;
+      esac
+    done
+    # A harness that reports no totals leaves them to the reader. The stream
+    # ends when the agent ends, so the time here is the time of the agent.
+    for held in ${hold[@]+"${hold[@]}"}; do
+      dispatch_held "$held" 0
+    done
+    if ((reported == 0 && counted > 0)); then
+      say_stats "$counted" $((SECONDS - started)) "$sum"
+    fi
+  }
+}
+
+# report_changes <commit before the invocation>
+# Reports what the invocation committed. The loop only reads git state here.
+# Workers own every change to it.
+report_changes() {
+  local before=$1 after count stat subject entry path range
+  local -a dirty=()
+  after=$(git rev-parse HEAD 2>/dev/null) || after=
+  if [[ -z $after || ( -n $before && $before == "$after" ) ]]; then
+    info "no new commits"
+  else
+    # An empty $before means the repository had no commit at all before this
+    # invocation. There is nothing to range from, so count and list every
+    # commit reachable from $after, and diff against the empty tree.
+    range=${before:+"$before.."}$after
+    count=$(git rev-list --count "$range" 2>/dev/null) || count=0
+    stat=$(git diff --shortstat "${before:-4b825dc642cb6eb9a060e54bf8d69288fbee4904}" "$after" 2>/dev/null)
+    stat=${stat# }
+    printf '  %s%s%s %s%s%s\n' "$GREEN" "$G_COMMIT" "$OFF" \
+      "$BOLD" "$(plural "$count" commit)${stat:+, $stat}" "$OFF"
+    note "$(plural "$count" commit) ${stat:-no diff}"
+    while IFS= read -r subject; do
+      printf '      %s%s%s\n' "$DIM" "$(fit $((COLS - 8)) "$subject")" "$OFF"
+      note "commit: $subject"
+    done < <(git log --format='%s' "$range" 2>/dev/null)
+  fi
+  mapfile -t dirty < <(git status --porcelain 2>/dev/null)
+  if ((${#dirty[@]})); then
+    warn "$(plural "${#dirty[@]}" path) left uncommitted"
+    for entry in "${dirty[@]}"; do
+      path=${entry:3}
+      printf '      %s%s%s\n' "$YELLOW" "$(fit $((COLS - 8)) "$path")" "$OFF" >&2
+      note "uncommitted: $path"
+    done
+  fi
+}
+
+# guidance_state   Reports a value that changes when the guidance file changes.
+guidance_state() {
+  if [[ -f $GUIDANCE ]]; then
+    cksum <"$GUIDANCE"
+  else
+    printf 'absent'
+  fi
+}
+
+# show_guidance <guidance state before the coach ran>
+# Reports whether the coach changed the guidance, and where to read it. The
+# guidance goes into every later worker prompt, so the operator sees it in
+# full: no line limit, and a long line wraps instead of losing its tail.
+show_guidance() {
+  local line wrapped
+  if [[ ! -s $GUIDANCE ]]; then
+    info "the coach left no guidance $G_ARROW $GUIDANCE"
+    return 0
+  fi
+  if [[ $1 == "$(guidance_state)" ]]; then
+    info "guidance unchanged $G_ARROW $GUIDANCE"
+    return 0
+  fi
+  printf '  %s%s%s %sguidance updated%s %s%s %s%s\n' \
+    "$YELLOW" "$G_EDIT" "$OFF" "$BOLD" "$OFF" "$DIM" "$G_ARROW" "$GUIDANCE" "$OFF"
+  note "guidance updated: $GUIDANCE"
+  while IFS= read -r line; do
+    note "guidance: $line"
+    while IFS= read -r wrapped; do
+      gutter "$MAGENTA" "$G_SAY" "$wrapped" "guidance"
+    done < <(wrap "$GUT_WIDTH" "$line")
+  done <"$GUIDANCE"
+}
+
+# show_stderr <log file>
+# Shows the last lines that an invocation wrote to stderr. A failure with no
+# messages puts its cause here.
+show_stderr() {
+  local line
+  [[ -s $1.err ]] || return 0
+  while IFS= read -r line; do
+    [[ -z ${line// } ]] && continue
+    printf '  %s%s %s%s\n' "$RED" "$G_GUT" "$(fit "$GUT_WIDTH" "$line")" "$OFF" >&2
+    note "stderr: $line"
+  done < <(tail -n 3 "$1.err")
+}
+
+worker_prompt() {
+  local body read_line vote_line
+  body=$(cat <<'EOF'
+You are one iteration of an autonomous loop that converges this repository on
+its requirements documents. You have no memory of earlier iterations.
+
+1. Survey the repository with fresh eyes. __SCOPE_READ__
+2. Run `cbugs list --kind code --kind user --status open`. Fix open code and
+   user bugs before any other work: read each bug's citations with
+   `cbugs show <id>`, read the cited requirement, then close each bug you fix
+   with `cbugs close <id>`, saying in the note what you changed. If a user
+   bug would contradict a requirements document, do not make the change: log
+   a spec bug instead.
+3. __SCOPE_VOTE__
+4. Otherwise pick one chunk of work toward the requirements: small enough to
+   finish this iteration, large enough to be a meaningful step. Implement it
+   and commit logical changes with clear messages.
+
+You may log a defect you find but will not fix in this iteration with
+`cbugs add`. When you do, run `cbugs search` first so you do not log a
+duplicate, then `cbugs add --kind code` (defect in the code) or `--kind spec`
+(ambiguity, gap, or contradiction in the requirements), citing the
+requirement with `--cite <path>[:<id>]`. Never log `--kind user`; that kind
+records what a human user asked for, and the command refuses one from you
+anyway.
+
+Rules:
+
+- Do not create plan, roadmap, or task-list documents. Later iterations must
+  re-orient from the repository and the requirements only.
+- Do not edit the requirements documents. They are the target.
+- Do not work on a spec bug, and do not wait for one. An engineer resolves it.
+EOF
+)
+
+  if ((${#SCOPE[@]})); then
+    read_line="Read the code and these requirements documents, and work on them only: $(scope_list). A path that is a directory names every requirements document under it. A change that contradicts a requirements document outside this scope is still a spec bug: log it, and do not make the change."
+    vote_line="If you judge that the repository satisfies the requirements documents of the scope, no code or user bug is open, and no work remains: do no work, write the exact token CONVERGED on a line of its own in your final message, and stop. The loop counts only that: the token alone on a line, in a final message where you did no work, with no code or user bug open. The token inside a sentence never votes."
+  else
+    read_line="Read the code and the requirements documents; find them in the repository. They describe behavior, not implementation steps."
+    vote_line="If every requirements document is satisfied, no code or user bug is open, and no work remains: do no work, write the exact token CONVERGED on a line of its own in your final message, and stop. The loop counts only that: the token alone on a line, in a final message where you did no work, with no code or user bug open. The token inside a sentence never votes."
+  fi
+  body=${body/__SCOPE_READ__/$read_line}
+  body=${body/__SCOPE_VOTE__/$vote_line}
+  printf '%s\n' "$body"
+
+  if [[ -s $GUIDANCE ]]; then
+    printf '\nGuidance from the coach. Earlier iterations made these mistakes.\nApply this guidance:\n\n'
+    cat "$GUIDANCE"
+  fi
+}
+
+coach_prompt() {
+  local logs=$1
+  cat <<EOF
+You are the coach for an autonomous loop that runs one worker agent per
+iteration on this repository. Each worker starts with no memory. You improve
+future workers through a short guidance file that the loop puts in every
+worker prompt.
+
+Paths: worker logs in $LOG_DIR; loop event log $RUN_LOG (iteration starts,
+done votes, timeouts, errors, waits); guidance file $GUIDANCE; your journal
+$JOURNAL.
+
+The worker logs since your previous run:
+
+$logs
+
+Each log holds one invocation as JSON lines; the \`.prompt.md\` file beside it
+holds the prompt that invocation received, so you can see which guidance was
+in force.
+
+1. Read those logs. Identify problems that repeat across iterations, such as
+   a tool call every worker gets wrong, or a trap the iterations circle.
+2. Read your journal. Judge each earlier intervention; delete guidance that
+   hurt or did nothing.
+3. Read the bug history with \`cbugs list\` and \`cbugs search\`. A pattern
+   there is evidence about the process, which is what you write about: a
+   defect workers keep making, or a bug closed and later reopened.
+4. Rewrite $GUIDANCE: short, concrete, corrective instructions for future
+   workers. Append one entry to $JOURNAL: what you observed, what you
+   changed, what result you expect.
+
+Rules:
+
+- Write only $GUIDANCE, $JOURNAL, and, rarely, a bug with \`cbugs add\` (never
+  \`--kind user\`; the command refuses one from you anyway). Do not edit code
+  or the requirements documents. Do not commit. You cannot stop the loop.
+- Correct process, not code. The reviewer looks for defects; do not report a
+  code defect the requirements do not name.
+EOF
+}
+
+reviewer_prompt() {
+  local range=$1 scope_line=""
+  if ((${#SCOPE[@]})); then
+    scope_line=" Judge them against these requirements documents only, and no other: $(scope_list). A path that is a directory names every requirements document under it. A change that contradicts a requirements document outside this scope is still a spec bug, not a code bug."
+  fi
+  cat <<EOF
+You are the reviewer for an autonomous loop that converges a repository on
+its requirements documents. A worker builds; you read what it built. A
+worker that judges its own work is the author of that work.
+
+Commit range to review: $range
+
+1. Read the changes in that range and the requirements documents they touch.${scope_line}
+2. Run \`cbugs search <text>\` before you log anything. Log nothing that an
+   open bug already names.
+3. For each defect in the code (behavior that contradicts a requirement, an
+   unhandled case, or a regression), log
+   \`cbugs add --kind code --title <text>\` with \`--cite <path>[:<id>]\`
+   naming the requirement the code violates. If you cannot name the
+   requirement, you have found no code defect; consider whether you have
+   found a spec bug instead.
+4. When the changes reveal a requirement that is ambiguous, absent, or in
+   conflict with another, log \`cbugs add --kind spec --title <text>\`, cite
+   each document involved with \`--cite\`, and say in the note what you could
+   not decide and why the changes raised it.
+5. Log nothing when you find nothing. That is a normal result, and an
+   invented defect costs a worker a whole iteration.
+
+Rules: write bugs and nothing else. Do not fix a defect, edit code or the
+requirements documents, write the guidance file, close a bug, or stop the
+loop. Never log \`--kind user\`; only a human user directs that record, and
+the command refuses one from you anyway.
+EOF
+}
+
+# review_range <from, or ""> <after>   Describes the commit range for the
+# reviewer prompt. An empty "from" means the whole history: the first pass of
+# this repository, which the reviewer must judge how far back to read.
+review_range() {
+  local from=$1 after=$2
+  if [[ -n $from ]]; then
+    printf '%s..%s' "$from" "$after"
+  else
+    printf 'the beginning of history through %s (first pass: judge how far back to read; the most recent commits matter most)' "$after"
+  fi
+}
+
+# run_review_pass   Runs the reviewer over the commits that no pass has
+# examined yet, unless none have arrived since the last pass. Reports each bug
+# the pass logged. A pass that succeeds moves the recorded commit forward, and
+# resets the count of iterations since the last pass. A pass that fails or
+# times out does neither: the next pass must cover the same range, and must
+# still be due on the same cadence, or "the loop cannot converge on code that
+# no reviewer has seen" would not hold. A range with nothing new to read, or a
+# repository with no commit yet, is fully caught up either way, so those
+# paths reset the count without running the reviewer.
+run_review_pass() {
+  local after from
+  if ! after=$(git rev-parse HEAD 2>/dev/null); then
+    SINCE_REVIEW=0
+    return 0
+  fi
+  from=$(first_line "$REVIEWED_COMMIT_FILE")
+  if [[ -n $from && $from == "$after" ]]; then
+    note "review: no new commits since the last pass; skipped"
+    SINCE_REVIEW=0
+    return 0
+  fi
+
+  heading "$BLUE" "review" "$(date '+%H:%M:%S')"
+  note "review pass: range $(review_range "$from" "$after")"
+
+  local bugs_before bugs_after new_bugs count
+  bugs_before=$("$BIN_DIR/cbugs" list --json 2>/dev/null)
+  [[ -n $bugs_before ]] || bugs_before='[]'
+
+  run_agent reviewer "$REVIEW_MODEL" "$(reviewer_prompt "$(review_range "$from" "$after")")"
+  ((STOP_REQUESTED)) || handle_invocation_wait "$LOG_FILE"
+
+  if ((RUN_STATUS == 0)); then
+    printf '%s\n' "$after" >"$REVIEWED_COMMIT_FILE"
+  fi
+
+  bugs_after=$("$BIN_DIR/cbugs" list --json 2>/dev/null)
+  [[ -n $bugs_after ]] || bugs_after='[]'
+  new_bugs=$(jq --argjson before "$bugs_before" \
+    '[.[] | select(.id as $i | ([$before[].id] | index($i)) == null)]' \
+    <<<"$bugs_after")
+  count=$(jq 'length' <<<"$new_bugs")
+  if ((count > 0)); then
+    local id kind title
+    while IFS=$'\t' read -r id kind title; do
+      printf '  %s%s%s bug #%s %s%s%s %s\n' \
+        "$YELLOW" "$G_WARN" "$OFF" "$id" "$DIM" "$kind" "$OFF" "$title"
+      note "review logged bug #$id ($kind): $title"
+    done < <(jq -r '.[] | [.id, .kind, .title] | @tsv' <<<"$new_bugs")
+  else
+    info "the review pass logged no bug"
+  fi
+
+  ((RUN_STATUS == 0)) && SINCE_REVIEW=0
+}
+
+ITERATION=0
+DONE_VOTES=0
+FAIL_WAIT=0
+PENDING_LOGS=()
+SINCE_COACH=0
+SINCE_REVIEW=0
+EXIT_STATUS=1
+
+while true; do
+  # The first SIGINT sets this and lets the running invocation finish, but
+  # starts no further one. Every point below that could start a worker, a
+  # review pass, or a coach run checks it first.
+  if ((STOP_REQUESTED)); then
+    break
+  fi
+
+  if [[ -n $MAX_ITERATIONS ]] && ((ITERATION >= MAX_ITERATIONS)); then
+    warn "reached the limit of $(plural "$MAX_ITERATIONS" iteration) without convergence"
+    EXIT_STATUS=1
+    break
+  fi
+
+  if ((REVIEW_ENABLED && SINCE_REVIEW >= REVIEW_EVERY)); then
+    run_review_pass
+  fi
+  ((STOP_REQUESTED)) && break
+
+  if ((COACH_ENABLED && SINCE_COACH >= COACH_EVERY)); then
+    heading "$MAGENTA" "coach" "$(date '+%H:%M:%S')"
+    note "coach run at $(date '+%Y-%m-%d %H:%M:%S')"
+    note "coach reviews: ${PENDING_LOGS[*]:-none}"
+    info "reviews $(plural "${#PENDING_LOGS[@]}" "worker log")"
+    GUIDANCE_BEFORE=$(guidance_state)
+    run_agent coach "$COACH_MODEL" "$(coach_prompt "$(printf '%s\n' "${PENDING_LOGS[@]}")")"
+    ((STOP_REQUESTED)) || handle_invocation_wait "$LOG_FILE"
+    show_guidance "$GUIDANCE_BEFORE"
+    if ((RUN_STATUS == 0)); then
+      PENDING_LOGS=()
+      SINCE_COACH=0
+    fi
+  fi
+  ((STOP_REQUESTED)) && break
+
+  ((++ITERATION))
+  heading "$CYAN" "iteration $ITERATION${MAX_ITERATIONS:+ of $MAX_ITERATIONS}" "$(date '+%H:%M:%S')"
+  note "iteration $ITERATION at $(date '+%Y-%m-%d %H:%M:%S')"
+
+  HEAD_BEFORE=$(git rev-parse HEAD 2>/dev/null) || HEAD_BEFORE=
+  run_agent worker "$MODEL" "$(worker_prompt)"
+  # A first SIGINT lets this invocation finish, but the timeout can be the
+  # event that lets it finish. Do not process the rest of the iteration or
+  # schedule any follow-up work after that requested stop.
+  ((STOP_REQUESTED)) && break
+  report_changes "$HEAD_BEFORE"
+  PENDING_LOGS+=("$LOG_FILE")
+  ((++SINCE_COACH))
+  ((++SINCE_REVIEW))
+  # A review pass below overwrites $LOG_FILE with its own; keep this
+  # invocation's log so the wait at the end of this iteration judges it, and
+  # not the reviewer's.
+  WORKER_LOG=$LOG_FILE
+
+  if ! produced_output "$LOG_FILE"; then
+    # A failure that produced no output at all is the signature of an
+    # exhausted quota: the invocation could not even start. A failure that did
+    # produce output is a different kind of problem, and does not grow the
+    # wait; handle_invocation_wait below tells the two apart.
+    DONE_VOTES=0
+    if ((RUN_STATUS != 0)); then
+      warn "iteration $ITERATION failed; see $LOG_FILE"
+    else
+      warn "iteration $ITERATION produced no output; see $LOG_FILE"
+    fi
+  elif ((RUN_STATUS != 0)); then
+    DONE_VOTES=0
+    warn "iteration $ITERATION failed; see $LOG_FILE"
+    note "no done vote; consecutive count reset to 0"
+  else
+    if voted_done "$RESULT_TEXT"; then
+      ((++DONE_VOTES))
+      printf '  %s%s%s %s%s%s done vote %s of %s\n' \
+        "$GREEN" "$G_OK" "$OFF" \
+        "$GREEN" "$(votes "$DONE_VOTES" "$CONSENSUS")" "$OFF" \
+        "$DONE_VOTES" "$CONSENSUS"
+      note "done vote $DONE_VOTES of $CONSENSUS"
+      if ((DONE_VOTES >= CONSENSUS)); then
+        note "converged after $ITERATION iterations"
+        EXIT_STATUS=0
+        break
+      fi
+      if ((REVIEW_ENABLED)) && ((! STOP_REQUESTED)); then
+        run_review_pass
+      fi
+    else
+      DONE_VOTES=0
+      info "no done vote; work remains"
+      note "no done vote; consecutive count reset to 0"
+    fi
+  fi
+  # A failure on the last permitted iteration has no next iteration to delay,
+  # so skip the wait: CV-FAIL-7 grows it "before it starts the next
+  # iteration," and --max-iterations means there is none. Without this, a
+  # backoff that grew to 15 minutes would sit idle that long right before
+  # printing "reached the limit" and exiting anyway.
+  if ((STOP_REQUESTED)) || { [[ -n $MAX_ITERATIONS ]] && ((ITERATION >= MAX_ITERATIONS)); }; then
+    :
+  else
+    handle_invocation_wait "$WORKER_LOG"
+  fi
+done
+
+TOTAL=$(duration $((SECONDS - RUN_START)))
+if ((EXIT_STATUS == 0)); then
+  CLOSING_TEXT="converged after $(plural "$ITERATION" iteration) in $TOTAL"
+  banner "$GREEN" "$E_DONE" "$CLOSING_TEXT"
+elif ((STOP_REQUESTED)); then
+  EXIT_STATUS=130
+  CLOSING_TEXT="stopped on the request of the operator after $(plural "$ITERATION" iteration) in $TOTAL"
+  banner "$YELLOW" "$E_STOP" "$CLOSING_TEXT"
+else
+  CLOSING_TEXT="stopped after $(plural "$ITERATION" iteration) in $TOTAL, without convergence"
+  banner "$YELLOW" "$E_STOP" "$CLOSING_TEXT"
+fi
+
+note "$CLOSING_TEXT"
+note "=== run end: exit $EXIT_STATUS ==="
+exit "$EXIT_STATUS"
