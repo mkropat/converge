@@ -1,0 +1,897 @@
+#!/usr/bin/env bash
+# Bug tracker for one converge project.
+#
+# See docs/cbugs-requirements.md for the required behavior and
+# docs/cbugs-schema.sql for the data model that this script keeps in sync.
+set -uo pipefail
+
+# The script uses bash 4 syntax. macOS supplies bash 3.2. This test must stay
+# above the first use of that syntax, because bash parses a script as it runs.
+if ((BASH_VERSINFO[0] < 4)); then
+  echo "cbugs: bash ${BASH_VERSION} is too old; bash 4 or later is needed" >&2
+  echo "cbugs: on macOS, run 'brew install bash'" >&2
+  exit 2
+fi
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: cbugs <verb> [options]
+
+Verbs:
+  add      Log a new bug.
+  list     List bugs.
+  show     Show one bug in full, with its revisions.
+  search   Find bugs by text in their titles or notes.
+  note     Add a note to a bug, without changing its status.
+  close    Mark a bug closed: the defect is gone.
+  dismiss  Mark a bug wontfix: no one will act on it.
+  reopen   Mark a bug open again.
+
+Run 'cbugs <verb> --help' for the options of one verb.
+Every verb accepts --json.
+
+'cbugs <id>' is the same as 'cbugs show <id>'.
+Run 'cbugs' with no argument for a summary of the open bugs.
+EOF
+}
+
+usage_add() {
+  cat >&2 <<'EOF'
+Usage: cbugs add --kind code|spec|user --title <text> [--note <text>]
+                  [--cite <path>[:<id>]]... [--commit <id>] [--json]
+
+Creates one bug with the status "open" and prints its id.
+
+--note is read from standard input when it is not given, unless standard
+input is a terminal, in which case add stops with an error.
+
+--kind user stops with an error when the environment holds CONVERGE_ROLE. A
+user bug records what a human user asked for; an agent of the loop must
+never log one, whatever a prompt tells it.
+EOF
+}
+
+usage_note() {
+  cat >&2 <<'EOF'
+Usage: cbugs note <id> [<text>] [--note <text>] [--title <text>]
+                   [--cite <path>[:<id>]]... [--commit <id>] [--json]
+
+Writes a revision that keeps the status. Valid on a bug in any status.
+
+The note comes from the argument after the id, from --note, or from standard
+input, in that order. When none is given and standard input is a terminal,
+note stops with an error.
+EOF
+}
+
+usage_status_verb() {
+  local verb=$1 status=$2
+  cat >&2 <<EOF
+Usage: cbugs $verb <id> [--note <text>] [--title <text>]
+                    [--cite <path>[:<id>]]... [--commit <id>] [--json]
+
+Writes a revision with the status "$status".
+
+--note is read from standard input when it is not given. When standard input
+is a terminal, $verb writes an empty note instead of waiting.
+EOF
+}
+
+usage_list() {
+  cat >&2 <<'EOF'
+Usage: cbugs list [--kind code|spec|user]... [--status open|closed|wontfix]... [--json]
+
+Prints the bugs of the project, newest revision first. Repeat --kind or
+--status to show more than one value; several values of one option mean
+their union. With no option, list shows every bug.
+EOF
+}
+
+usage_show() {
+  cat >&2 <<'EOF'
+Usage: cbugs show <id> [--json]
+
+Prints one bug in full: its id, kind, current status, current title, and
+every revision in order, with the citations that each revision wrote.
+EOF
+}
+
+usage_search() {
+  cat >&2 <<'EOF'
+Usage: cbugs search <text> [--kind code|spec|user]... [--status open|closed|wontfix]... [--json]
+
+Prints the bugs whose title, in any revision, whose notes, or whose
+citations contain the text. The search ignores the difference between
+capital and small letters. Accepts the same options as list, in the same
+order and form.
+EOF
+}
+
+# ------------------------------------------------------------------ platform
+#
+# The command runs under the same platform conditions as converge: bash 4 or
+# later, and the GNU/Homebrew discovery pattern for a tool that Homebrew keeps
+# off the normal PATH on macOS.
+
+for brew_prefix in "${HOMEBREW_PREFIX:-}" /opt/homebrew /usr/local; do
+  [[ -n $brew_prefix ]] || continue
+  bin_dir="$brew_prefix/opt/sqlite/bin"
+  [[ -d $bin_dir ]] && PATH="$bin_dir:$PATH"
+done
+
+need_tool() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "cbugs: '$1' is not on PATH" >&2
+    if [[ -n ${2:-} ]]; then
+      echo "cbugs: on macOS, run 'brew install $2'" >&2
+    fi
+    exit 2
+  fi
+}
+need_tool sqlite3 sqlite
+need_tool jq jq
+
+# ------------------------------------------------------------------ appearance
+
+if [[ -t 1 ]]; then
+  BOLD=$'\033[1m'; DIM=$'\033[2m'; OFF=$'\033[0m'
+  YELLOW=$'\033[33m'; GREEN=$'\033[32m'; CYAN=$'\033[36m'; MAGENTA=$'\033[35m'
+else
+  BOLD=""; DIM=""; OFF=""; YELLOW=""; GREEN=""; CYAN=""; MAGENTA=""
+fi
+
+# is_number <text>   True when the text is a whole number.
+is_number() {
+  [[ $1 =~ ^[0-9]+$ ]]
+}
+
+# need_value <flag> <remaining-args-count>
+need_value() {
+  if (($2 < 2)); then
+    echo "cbugs: $1 needs a value" >&2
+    exit 2
+  fi
+}
+
+# ------------------------------------------------------------- state and db
+#
+# cbugs derives the state directory from the absolute path of the current
+# directory, by the same rule that converge uses, so that a directory converge
+# has run in gives the same state directory to both commands.
+
+hash_path() {
+  if command -v md5sum >/dev/null 2>&1; then
+    printf '%s' "$1" | md5sum | cut -c1-12
+  else
+    printf '%s' "$1" | cksum | tr -d ' ' | cut -c1-12
+  fi
+}
+
+# --help needs no project state: it only prints usage. Detect it ahead of the
+# state directory check, so 'cbugs --help' and 'cbugs <verb> --help' work in
+# any directory, including one that is not a converge project.
+#
+# Skip the token after a value-taking option, so a literal '-h' or '--help'
+# given as a --title, --note, --cite, --commit, or --status value is not
+# mistaken for the flag.
+HELP_REQUESTED=0
+skip_next=0
+for arg in "$@"; do
+  if ((skip_next)); then
+    skip_next=0
+    continue
+  fi
+  case $arg in
+    -h|--help) HELP_REQUESTED=1 ;;
+    --title|--kind|--note|--cite|--commit|--status) skip_next=1 ;;
+  esac
+done
+
+REPO="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+SLUG="${REPO##*/}-$(hash_path "$REPO")"
+if [[ -z ${XDG_STATE_HOME:-} && -z ${HOME:-} ]]; then
+  echo "cbugs: set HOME or XDG_STATE_HOME; cbugs keeps its state there" >&2
+  exit 2
+fi
+STATE_DIR="${XDG_STATE_HOME:-${HOME:-}/.local/state}/converge/$SLUG"
+if ((! HELP_REQUESTED)) && [[ ! -d $STATE_DIR ]]; then
+  echo "cbugs: no state directory for this project; run 'converge' here first" >&2
+  exit 2
+fi
+DB="$STATE_DIR/cbugs.db"
+
+ERRFILE=$(mktemp "${TMPDIR:-/tmp}/cbugs.XXXXXX")
+trap 'rm -f "$ERRFILE"' EXIT
+
+# sqlite3_run <raw|json> <sql>
+# Runs one script against the database, with a bounded wait when the database
+# is busy. Prints what the script writes to stdout. Stops with an error, on
+# stderr, when the script fails.
+sqlite3_run() {
+  local mode=$1 sql=$2 out status
+  local -a flags=(-bail -cmd ".timeout 10000")
+  [[ $mode == json ]] && flags+=(-json)
+  out=$(sqlite3 "${flags[@]}" "$DB" "$sql" 2>"$ERRFILE")
+  status=$?
+  if ((status != 0)); then
+    echo "cbugs: database error" >&2
+    while IFS= read -r line; do
+      [[ -n $line ]] && echo "cbugs: $line" >&2
+    done <"$ERRFILE"
+    exit 1
+  fi
+  printf '%s' "$out"
+}
+
+# sql_quote <text>   Escapes text for embedding inside a single-quoted
+# SQL string literal.
+sql_quote() {
+  printf '%s' "${1//\'/\'\'}"
+}
+
+# like_escape <text>   Escapes text for embedding inside a LIKE pattern that
+# uses backslash as its escape character.
+like_escape() {
+  local out=$1
+  out=${out//\\/\\\\}
+  out=${out//%/\\%}
+  out=${out//_/\\_}
+  sql_quote "$out"
+}
+
+# The data model. This mirrors docs/cbugs-schema.sql. Nothing here is ever
+# changed or removed: the newest revision of a bug is its current state.
+DB_VERSION=2
+SCHEMA_SQL=$(cat <<'SQL'
+PRAGMA user_version = 2;
+
+CREATE TABLE IF NOT EXISTS bug (
+  id   INTEGER PRIMARY KEY,
+  kind TEXT NOT NULL CHECK (kind IN ('code', 'spec', 'user'))
+);
+
+CREATE TABLE IF NOT EXISTS revision (
+  id         INTEGER PRIMARY KEY,
+  bug_id     INTEGER NOT NULL REFERENCES bug (id),
+  status     TEXT NOT NULL CHECK (status IN ('open', 'closed', 'wontfix')),
+  title      TEXT NOT NULL CHECK (title <> ''),
+  note       TEXT NOT NULL,
+  role       TEXT,
+  iteration  INTEGER,
+  commit_id  TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS revision_bug ON revision (bug_id, id);
+
+CREATE TABLE IF NOT EXISTS citation (
+  id          INTEGER PRIMARY KEY,
+  revision_id INTEGER NOT NULL REFERENCES revision (id),
+  path        TEXT NOT NULL CHECK (path <> ''),
+  req         TEXT CHECK (req <> '')
+);
+
+CREATE INDEX IF NOT EXISTS citation_revision ON citation (revision_id, id);
+
+CREATE VIEW IF NOT EXISTS bug_current AS
+SELECT
+  b.id                                                              AS id,
+  b.kind                                                            AS kind,
+  r.status                                                          AS status,
+  r.title                                                           AS title,
+  r.id                                                              AS revision_id,
+  (SELECT MIN(created_at) FROM revision WHERE bug_id = b.id)        AS created_at,
+  r.created_at                                                      AS updated_at
+FROM bug AS b
+JOIN revision AS r
+  ON r.id = (SELECT MAX(id) FROM revision WHERE bug_id = b.id);
+SQL
+)
+
+# init_db   Creates the database on first use. Stops with an error when the
+# database on disk is a model version that this command does not know.
+init_db() {
+  local ver
+  ver=$(sqlite3_run raw "PRAGMA user_version;")
+  if [[ -z $ver || $ver == 0 ]]; then
+    sqlite3_run raw "$SCHEMA_SQL" >/dev/null
+  elif [[ $ver != "$DB_VERSION" ]]; then
+    echo "cbugs: $DB is database version $ver, which this command does not know" >&2
+    echo "cbugs: delete the file to start over" >&2
+    exit 1
+  fi
+}
+((HELP_REQUESTED)) || init_db
+
+# ------------------------------------------------------------------ provenance
+#
+# The bug tracker reads the role and the iteration from the environment that
+# converge exports, and the commit from the repository, so that a caller
+# cannot get them wrong and a prompt does not have to carry them.
+
+ROLE_SQL="NULL"
+ITERATION_SQL="NULL"
+COMMIT_SQL="NULL"
+CREATED_AT=""
+
+# provenance <commit override, or "">
+provenance() {
+  local override=$1 commit=""
+  if [[ -n ${CONVERGE_ROLE:-} ]]; then
+    ROLE_SQL="'$(sql_quote "$CONVERGE_ROLE")'"
+  else
+    ROLE_SQL="NULL"
+  fi
+  if [[ -n ${CONVERGE_ITERATION:-} ]] && is_number "$CONVERGE_ITERATION"; then
+    ITERATION_SQL="$CONVERGE_ITERATION"
+  else
+    ITERATION_SQL="NULL"
+  fi
+  if [[ -n $override ]]; then
+    commit=$override
+  else
+    commit=$(git -C "$REPO" rev-parse --verify -q HEAD 2>/dev/null || true)
+  fi
+  if [[ -n $commit ]]; then
+    COMMIT_SQL="'$(sql_quote "$commit")'"
+  else
+    COMMIT_SQL="NULL"
+  fi
+  CREATED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+}
+
+# require_bug <id>   Stops with an error when no bug has this id.
+require_bug() {
+  local found
+  found=$(sqlite3_run raw "SELECT 1 FROM bug WHERE id = $1;")
+  [[ -n $found ]] || { echo "cbugs: no bug with id $1" >&2; exit 1; }
+}
+
+# parse_id <text>   Prints the text back when it is a bug id. Stops otherwise.
+parse_id() {
+  is_number "${1:-}" || { echo "cbugs: '${1:-}' is not a bug id" >&2; exit 2; }
+  printf '%s' "$1"
+}
+
+# resolve_note <verb> <note given?> <note value>
+# Prints the final note text. Reads standard input when no note was given.
+# add and note stop with an error when standard input is a terminal; the
+# status verbs write an empty note instead, because the status change is
+# already the record.
+resolve_note() {
+  local verb=$1 given=$2 value=$3
+  if ((given)); then
+    printf '%s' "$value"
+    return
+  fi
+  if [[ -t 0 ]]; then
+    case $verb in
+      add|note)
+        echo "cbugs: $verb needs --note, or a note on standard input" >&2
+        exit 2
+        ;;
+      *)
+        printf ''
+        return
+        ;;
+    esac
+  fi
+  cat
+}
+
+# ------------------------------------------------------------------- output
+
+# row_line <id> <kind> <status> <title>   One aligned, colored listing line.
+row_line() {
+  local id=$1 kind=$2 status=$3 title=$4 color=$DIM kind_color=$DIM
+  case $status in
+    open) color=$YELLOW ;;
+    closed) color=$GREEN ;;
+    wontfix) color=$DIM ;;
+  esac
+  # A spec bug waits for an engineer, and no agent will act on it, so it
+  # earns a touch of color that a reader notices without it competing with
+  # the status column. A code bug and a user bug stay subdued, and different
+  # from each other, so a reader sees which rows are punchlist items.
+  case $kind in
+    spec) kind_color=$MAGENTA ;;
+    user) kind_color=$CYAN ;;
+    code) kind_color=$DIM ;;
+  esac
+  printf '%4s  %s%-4s%s  %s%-7s%s  %s\n' \
+    "$id" "$kind_color" "$kind" "$OFF" "$color" "$status" "$OFF" "$title"
+}
+
+# print_listing <rows json array> <json flag>
+# Prints a listing of bugs. Prints nothing, and exits 0, when there is no row.
+print_listing() {
+  local rows=$1 json=$2 n
+  n=$(jq 'length' <<<"$rows")
+  ((n > 0)) || exit 0
+  if ((json)); then
+    printf '%s\n' "$rows"
+    return
+  fi
+  local id kind status title
+  while IFS=$'\t' read -r id kind status title; do
+    row_line "$id" "$kind" "$status" "$title"
+  done < <(jq -r '.[] | [.id, .kind, .status, .title] | @tsv' <<<"$rows")
+}
+
+# print_bug <id> <json flag>   Prints one bug's current state, after a write.
+print_bug() {
+  local id=$1 json=$2 row
+  row=$(sqlite3_run json "SELECT id, kind, status, title FROM bug_current WHERE id = $id;")
+  if ((json)); then
+    jq -M '.[0]' <<<"$row"
+    return
+  fi
+  local kind status title
+  IFS=$'\t' read -r id kind status title < <(jq -r '.[0] | [.id, .kind, .status, .title] | @tsv' <<<"$row")
+  row_line "$id" "$kind" "$status" "$title"
+}
+
+# where_clause <kinds[]> -- <statuses[]>   Builds the shared filter of
+# list/search. Several values of one option mean their union, so a caller can
+# ask for the open code bugs and the open user bugs in one call.
+where_clause() {
+  local -a kinds=()
+  local -a statuses=()
+  local target=kinds
+  while (($#)); do
+    if [[ $1 == -- ]]; then
+      target=statuses
+    elif [[ $target == kinds ]]; then
+      kinds+=("$1")
+    else
+      statuses+=("$1")
+    fi
+    shift
+  done
+  local -a clauses=()
+  if ((${#kinds[@]})); then
+    local list="" k
+    for k in "${kinds[@]}"; do
+      list+="${list:+,}'$(sql_quote "$k")'"
+    done
+    clauses+=("kind IN ($list)")
+  fi
+  if ((${#statuses[@]})); then
+    local list="" s
+    for s in "${statuses[@]}"; do
+      list+="${list:+,}'$(sql_quote "$s")'"
+    done
+    clauses+=("status IN ($list)")
+  fi
+  local out="" c
+  for c in ${clauses[@]+"${clauses[@]}"}; do
+    out+="${out:+ AND }$c"
+  done
+  printf '%s' "$out"
+}
+
+# validate_kind <kind>   Stops with an error unless the kind is code, spec,
+# or user.
+validate_kind() {
+  [[ -z $1 || $1 == code || $1 == spec || $1 == user ]] || {
+    echo "cbugs: --kind must be 'code', 'spec', or 'user', got '$1'" >&2
+    exit 2
+  }
+}
+
+# validate_status <status>   Stops with an error unless the status is valid.
+validate_status() {
+  [[ $1 == open || $1 == closed || $1 == wontfix ]] || {
+    echo "cbugs: --status must be 'open', 'closed', or 'wontfix', got '$1'" >&2
+    exit 2
+  }
+}
+
+# --------------------------------------------------------------- citations
+#
+# A citation is validated when the option is parsed, so a bad value fails
+# before the command writes anything. CITE_PATHS and CITE_REQS hold the
+# values of the current call, in order given, with an identical (path, id)
+# pair recorded once.
+
+CITE_PATHS=()
+CITE_REQS=()
+
+# add_citation <path[:id]>   Validates one --cite value and records it.
+add_citation() {
+  local value=$1 path req="" has_colon=0 test_path i
+  if [[ $value == *:* ]]; then
+    has_colon=1
+    path=${value%:*}
+    req=${value##*:}
+  else
+    path=$value
+  fi
+  if [[ -z $path ]]; then
+    echo "cbugs: --cite '$value' has an empty path" >&2
+    exit 2
+  fi
+  if ((has_colon)) && [[ -z $req ]]; then
+    echo "cbugs: --cite '$value' has an empty identifier after the colon" >&2
+    exit 2
+  fi
+  test_path=$path
+  [[ $path == /* ]] || test_path="$REPO/$path"
+  if [[ ! -e $test_path ]]; then
+    echo "cbugs: --cite path '$path' names no file" >&2
+    exit 2
+  fi
+  for i in ${CITE_PATHS[@]+"${!CITE_PATHS[@]}"}; do
+    [[ ${CITE_PATHS[$i]} == "$path" && ${CITE_REQS[$i]} == "$req" ]] && return 0
+  done
+  CITE_PATHS+=("$path")
+  CITE_REQS+=("$req")
+}
+
+# citation_sql   SQL that inserts the recorded citations against the revision
+# that the surrounding statement is about to write. BEGIN IMMEDIATE holds the
+# write lock for the whole script, so "the newest revision" stays the one
+# this call just inserted until this same script commits.
+citation_sql() {
+  local out="" i req_sql
+  for i in ${CITE_PATHS[@]+"${!CITE_PATHS[@]}"}; do
+    if [[ -n ${CITE_REQS[$i]} ]]; then
+      req_sql="'$(sql_quote "${CITE_REQS[$i]}")'"
+    else
+      req_sql="NULL"
+    fi
+    out+="
+INSERT INTO citation (revision_id, path, req)
+SELECT id, '$(sql_quote "${CITE_PATHS[$i]}")', $req_sql FROM revision ORDER BY id DESC LIMIT 1;"
+  done
+  printf '%s' "$out"
+}
+
+# ---------------------------------------------------------------------- add
+
+verb_add() {
+  local title="" title_set=0 kind="" note="" note_set=0 commit="" json=0
+  while (($#)); do
+    case $1 in
+      --title) need_value "$1" $#; title=$2; title_set=1; shift 2 ;;
+      --title=*) title=${1#*=}; title_set=1; shift ;;
+      --kind) need_value "$1" $#; kind=$2; shift 2 ;;
+      --kind=*) kind=${1#*=}; shift ;;
+      --note) need_value "$1" $#; note=$2; note_set=1; shift 2 ;;
+      --note=*) note=${1#*=}; note_set=1; shift ;;
+      --cite) need_value "$1" $#; add_citation "$2"; shift 2 ;;
+      --cite=*) add_citation "${1#*=}"; shift ;;
+      --commit) need_value "$1" $#; commit=$2; shift 2 ;;
+      --commit=*) commit=${1#*=}; shift ;;
+      --json) json=1; shift ;;
+      -h|--help) usage_add; exit 0 ;;
+      *) echo "cbugs add: unexpected argument '$1'" >&2; exit 2 ;;
+    esac
+  done
+  validate_kind "$kind"
+  [[ -n $kind ]] || { echo "cbugs add: --kind is required" >&2; exit 2; }
+  ((title_set)) || { echo "cbugs add: --title is required" >&2; exit 2; }
+  [[ -n $title ]] || { echo "cbugs add: --title must not be empty" >&2; exit 2; }
+  if [[ $kind == user && -n ${CONVERGE_ROLE:-} ]]; then
+    echo "cbugs add: a user bug records a request from a human user; refused for role '$CONVERGE_ROLE'" >&2
+    exit 1
+  fi
+
+  note=$(resolve_note add "$note_set" "$note") || exit $?
+  provenance "$commit"
+
+  # The citation inserts that citation_sql adds below run after the revision
+  # insert, so last_insert_rowid() no longer names the revision once they have
+  # run: it names the last citation instead, and looks up the wrong bug. Read
+  # the id the same way citation_sql finds its revision -- ORDER BY id DESC,
+  # not last_insert_rowid() -- and read it before COMMIT, while BEGIN
+  # IMMEDIATE still holds the write lock, so no concurrent add can be newer.
+  local id
+  id=$(sqlite3_run raw "
+BEGIN IMMEDIATE;
+INSERT INTO bug (kind) VALUES ('$(sql_quote "$kind")');
+INSERT INTO revision (bug_id, status, title, note, role, iteration, commit_id, created_at)
+VALUES (last_insert_rowid(), 'open', '$(sql_quote "$title")', '$(sql_quote "$note")', $ROLE_SQL, $ITERATION_SQL, $COMMIT_SQL, '$CREATED_AT');
+$(citation_sql)
+SELECT bug_id FROM revision ORDER BY id DESC LIMIT 1;
+COMMIT;
+")
+  if ((json)); then
+    printf '{"id": %s}\n' "$id"
+  else
+    printf '%s\n' "$id"
+  fi
+}
+
+# ------------------------------------------------------ note and the status verbs
+
+# write_revision <id> <status expr> <note>   Writes one revision, keeping the
+# title of the previous revision unless the caller gave a new one.
+write_revision() {
+  local id=$1 status_expr=$2 note=$3 title_expr="r.title"
+  if [[ -n ${TITLE_OVERRIDE:-} ]]; then
+    title_expr="'$(sql_quote "$TITLE_OVERRIDE")'"
+  fi
+  sqlite3_run raw "
+BEGIN IMMEDIATE;
+INSERT INTO revision (bug_id, status, title, note, role, iteration, commit_id, created_at)
+SELECT $id, $status_expr, $title_expr, '$(sql_quote "$note")', $ROLE_SQL, $ITERATION_SQL, $COMMIT_SQL, '$CREATED_AT'
+FROM revision r WHERE r.bug_id = $id ORDER BY r.id DESC LIMIT 1;
+$(citation_sql)
+COMMIT;
+" >/dev/null
+}
+
+verb_note() {
+  local id_arg="" note="" note_set=0 commit="" json=0
+  TITLE_OVERRIDE=""
+  [[ ${1:-} == -h || ${1:-} == --help ]] && { usage_note; exit 0; }
+  [[ $# -ge 1 && $1 != -* ]] || { usage_note; exit 2; }
+  id_arg=$1; shift
+  if [[ $# -ge 1 && $1 != -* ]]; then
+    note=$1; note_set=1; shift
+  fi
+  while (($#)); do
+    case $1 in
+      --note) need_value "$1" $#; note=$2; note_set=1; shift 2 ;;
+      --note=*) note=${1#*=}; note_set=1; shift ;;
+      --title) need_value "$1" $#; TITLE_OVERRIDE=$2; shift 2 ;;
+      --title=*) TITLE_OVERRIDE=${1#*=}; shift ;;
+      --cite) need_value "$1" $#; add_citation "$2"; shift 2 ;;
+      --cite=*) add_citation "${1#*=}"; shift ;;
+      --commit) need_value "$1" $#; commit=$2; shift 2 ;;
+      --commit=*) commit=${1#*=}; shift ;;
+      --json) json=1; shift ;;
+      -h|--help) usage_note; exit 0 ;;
+      *) echo "cbugs note: unexpected argument '$1'" >&2; exit 2 ;;
+    esac
+  done
+  local id; id=$(parse_id "$id_arg") || exit $?
+  require_bug "$id"
+  note=$(resolve_note note "$note_set" "$note") || exit $?
+  provenance "$commit"
+  write_revision "$id" "r.status" "$note"
+  print_bug "$id" "$json"
+}
+
+# verb_status_change <verb> <status> <args...>
+verb_status_change() {
+  local verb=$1 status=$2; shift 2
+  local id_arg="" note="" note_set=0 commit="" json=0
+  TITLE_OVERRIDE=""
+  [[ ${1:-} == -h || ${1:-} == --help ]] && { usage_status_verb "$verb" "$status"; exit 0; }
+  [[ $# -ge 1 && $1 != -* ]] || { usage_status_verb "$verb" "$status"; exit 2; }
+  id_arg=$1; shift
+  while (($#)); do
+    case $1 in
+      --note) need_value "$1" $#; note=$2; note_set=1; shift 2 ;;
+      --note=*) note=${1#*=}; note_set=1; shift ;;
+      --title) need_value "$1" $#; TITLE_OVERRIDE=$2; shift 2 ;;
+      --title=*) TITLE_OVERRIDE=${1#*=}; shift ;;
+      --cite) need_value "$1" $#; add_citation "$2"; shift 2 ;;
+      --cite=*) add_citation "${1#*=}"; shift ;;
+      --commit) need_value "$1" $#; commit=$2; shift 2 ;;
+      --commit=*) commit=${1#*=}; shift ;;
+      --json) json=1; shift ;;
+      -h|--help) usage_status_verb "$verb" "$status"; exit 0 ;;
+      *) echo "cbugs $verb: unexpected argument '$1'" >&2; exit 2 ;;
+    esac
+  done
+  local id; id=$(parse_id "$id_arg") || exit $?
+  require_bug "$id"
+  note=$(resolve_note "$verb" "$note_set" "$note") || exit $?
+  provenance "$commit"
+  write_revision "$id" "'$status'" "$note"
+  print_bug "$id" "$json"
+}
+
+# --------------------------------------------------------------- list, show, search
+
+verb_list() {
+  local json=0
+  local -a kinds=() statuses=()
+  while (($#)); do
+    case $1 in
+      --kind) need_value "$1" $#; kinds+=("$2"); shift 2 ;;
+      --kind=*) kinds+=("${1#*=}"); shift ;;
+      --status) need_value "$1" $#; statuses+=("$2"); shift 2 ;;
+      --status=*) statuses+=("${1#*=}"); shift ;;
+      --json) json=1; shift ;;
+      -h|--help) usage_list; exit 0 ;;
+      *) echo "cbugs list: unexpected argument '$1'" >&2; exit 2 ;;
+    esac
+  done
+  local s
+  for s in ${kinds[@]+"${kinds[@]}"}; do validate_kind "$s"; done
+  for s in ${statuses[@]+"${statuses[@]}"}; do validate_status "$s"; done
+
+  local where rows
+  where=$(where_clause ${kinds[@]+"${kinds[@]}"} -- ${statuses[@]+"${statuses[@]}"})
+  rows=$(sqlite3_run json "
+SELECT id, kind, status, title FROM bug_current
+${where:+WHERE $where}
+ORDER BY revision_id DESC;
+")
+  print_listing "$rows" "$json"
+}
+
+verb_show() {
+  local id_arg="" json=0
+  [[ ${1:-} == -h || ${1:-} == --help ]] && { usage_show; exit 0; }
+  [[ $# -ge 1 && $1 != -* ]] || { usage_show; exit 2; }
+  id_arg=$1; shift
+  while (($#)); do
+    case $1 in
+      --json) json=1; shift ;;
+      -h|--help) usage_show; exit 0 ;;
+      *) echo "cbugs show: unexpected argument '$1'" >&2; exit 2 ;;
+    esac
+  done
+  local id; id=$(parse_id "$id_arg") || exit $?
+  require_bug "$id"
+
+  local bug revs cites
+  bug=$(sqlite3_run json "SELECT id, kind, status, title FROM bug_current WHERE id = $id;")
+  revs=$(sqlite3_run json "
+SELECT id, status, title, note, role, iteration, commit_id, created_at
+FROM revision WHERE bug_id = $id ORDER BY id ASC;
+")
+  cites=$(sqlite3_run json "
+SELECT c.revision_id, c.path, c.req
+FROM citation c JOIN revision r ON r.id = c.revision_id
+WHERE r.bug_id = $id ORDER BY c.id ASC;
+")
+  # sqlite3 -json prints nothing at all, not "[]", when a query matches no
+  # row. A bug with no citation on any revision must still show its
+  # revisions, so jq --argjson needs a valid empty array here.
+  [[ -n $cites ]] || cites='[]'
+  # Every revision carries the citations that it wrote, so a reader of the
+  # JSON sees which requirement each role named, and when, the same way the
+  # human form does.
+  revs=$(jq --argjson cites "$cites" '
+    map(. as $r | $r + {
+      citations: [$cites[] | select(.revision_id == $r.id) | {path, req}]
+    })
+  ' <<<"$revs")
+  if ((json)); then
+    jq -M --argjson revisions "$revs" '.[0] + {revisions: $revisions}' <<<"$bug"
+    return
+  fi
+
+  local bid kind status title
+  IFS=$'\t' read -r bid kind status title < <(jq -r '.[0] | [.id, .kind, .status, .title] | @tsv' <<<"$bug")
+  printf '%s#%s%s  %s%s%s  %s  %s\n' "$BOLD" "$bid" "$OFF" "$DIM" "$kind" "$OFF" "$status" "$title"
+  printf '\n%srevisions%s\n' "$BOLD" "$OFF"
+  local rid rstatus rtitle rnote rrole riter rcommit rcreated meta rcite
+  while IFS=$'\t' read -r rid rstatus rtitle rrole riter rcommit rcreated; do
+    # A field that is null in the data comes through as "-", a placeholder
+    # that no real role, iteration, or commit id ever equals. IFS-tab
+    # splitting collapses a genuinely empty field, which would misalign
+    # every field after it, so an empty placeholder is not an option here.
+    meta="?"
+    [[ $rrole == "-" ]] || meta="$rrole"
+    [[ $riter == "-" ]] || meta+=" iter $riter"
+    [[ $rcommit == "-" ]] || meta+=" @${rcommit:0:8}"
+    printf '  %s%s%s  %s  %s%s%s\n' "$DIM" "$rcreated" "$OFF" "$rstatus" "$DIM" "$meta" "$OFF"
+    printf '    %s\n' "$rtitle"
+    rnote=$(jq -r --argjson i "$rid" '.[] | select(.id == $i) | .note' <<<"$revs")
+    if [[ -n $rnote ]]; then
+      while IFS= read -r line; do
+        printf '      %s%s%s\n' "$DIM" "$line" "$OFF"
+      done <<<"$rnote"
+    fi
+    while IFS= read -r rcite; do
+      [[ -n $rcite ]] && printf '      %scite%s %s\n' "$DIM" "$OFF" "$rcite"
+    done < <(jq -r --argjson i "$rid" \
+      '.[] | select(.id == $i) | .citations[] | .path + (if .req then ":" + .req else "" end)' \
+      <<<"$revs")
+  done < <(jq -r '.[] | [.id, .status, .title, (.role // "-"), (.iteration // "-"), (.commit_id // "-"), .created_at] | @tsv' <<<"$revs")
+}
+
+verb_search() {
+  local text="" json=0
+  local -a kinds=() statuses=()
+  [[ ${1:-} == -h || ${1:-} == --help ]] && { usage_search; exit 0; }
+  [[ $# -ge 1 && $1 != -* ]] || { usage_search; exit 2; }
+  text=$1; shift
+  while (($#)); do
+    case $1 in
+      --kind) need_value "$1" $#; kinds+=("$2"); shift 2 ;;
+      --kind=*) kinds+=("${1#*=}"); shift ;;
+      --status) need_value "$1" $#; statuses+=("$2"); shift 2 ;;
+      --status=*) statuses+=("${1#*=}"); shift ;;
+      --json) json=1; shift ;;
+      -h|--help) usage_search; exit 0 ;;
+      *) echo "cbugs search: unexpected argument '$1'" >&2; exit 2 ;;
+    esac
+  done
+  local s
+  for s in ${kinds[@]+"${kinds[@]}"}; do validate_kind "$s"; done
+  for s in ${statuses[@]+"${statuses[@]}"}; do validate_status "$s"; done
+
+  local where pattern rows
+  where=$(where_clause ${kinds[@]+"${kinds[@]}"} -- ${statuses[@]+"${statuses[@]}"})
+  pattern="%$(like_escape "$text")%"
+  rows=$(sqlite3_run json "
+SELECT id, kind, status, title FROM bug_current bc
+WHERE ${where:+$where AND }EXISTS (
+  SELECT 1 FROM revision rv
+  WHERE rv.bug_id = bc.id
+    AND (LOWER(rv.title) LIKE LOWER('$pattern') ESCAPE '\\'
+      OR LOWER(rv.note) LIKE LOWER('$pattern') ESCAPE '\\'
+      OR EXISTS (
+        SELECT 1 FROM citation c
+        WHERE c.revision_id = rv.id
+          AND (LOWER(c.path) LIKE LOWER('$pattern') ESCAPE '\\'
+            OR LOWER(COALESCE(c.req, '')) LIKE LOWER('$pattern') ESCAPE '\\')
+      ))
+)
+ORDER BY revision_id DESC;
+")
+  print_listing "$rows" "$json"
+}
+
+# verb_summary   Prints what a caller most probably wants when it runs cbugs
+# with no argument: the ten open bugs with the newest revision, in every
+# kind, then a short footer naming the other verbs. Takes no option, has no
+# --json form, and always exits 0.
+verb_summary() {
+  local rows total n
+  rows=$(sqlite3_run json "
+SELECT id, kind, status, title FROM bug_current
+WHERE status = 'open' ORDER BY revision_id DESC LIMIT 10;
+")
+  [[ -n $rows ]] || rows='[]'
+  n=$(jq 'length' <<<"$rows")
+  total=$(sqlite3_run raw "SELECT COUNT(*) FROM bug_current WHERE status = 'open';")
+  is_number "$total" || total=0
+
+  if ((n > 0)); then
+    local id kind status title
+    while IFS=$'\t' read -r id kind status title; do
+      row_line "$id" "$kind" "$status" "$title"
+    done < <(jq -r '.[] | [.id, .kind, .status, .title] | @tsv' <<<"$rows")
+  else
+    printf '%sno bug is open%s\n' "$DIM" "$OFF"
+  fi
+
+  printf '\n'
+  if ((total > n)); then
+    local rest=$((total - n)) word=bugs
+    ((rest == 1)) && word=bug
+    printf '%s%s more open %s; see cbugs list --status open%s\n' \
+      "$DIM" "$rest" "$word" "$OFF"
+  fi
+  printf '%sVerbs: add, list, show, search, note, close, dismiss, reopen.%s\n' "$DIM" "$OFF"
+  printf '%sRun %scbugs --help%s%s for the options of each.%s\n' "$DIM" "$BOLD" "$OFF" "$DIM" "$OFF"
+}
+
+# ------------------------------------------------------------------- dispatch
+
+if (($# == 0)); then
+  verb_summary
+  exit 0
+fi
+VERB=$1; shift
+case $VERB in
+  -h|--help) usage; exit 0 ;;
+  add) verb_add "$@" ;;
+  note) verb_note "$@" ;;
+  close) verb_status_change close closed "$@" ;;
+  dismiss) verb_status_change dismiss wontfix "$@" ;;
+  reopen) verb_status_change reopen open "$@" ;;
+  list) verb_list "$@" ;;
+  show) verb_show "$@" ;;
+  search) verb_search "$@" ;;
+  *)
+    # No verb is a whole number, so a bare id can never collide with one. A
+    # reader who saw the id in a listing can type it alone.
+    if is_number "$VERB"; then
+      verb_show "$VERB" "$@"
+    else
+      echo "cbugs: no such verb '$VERB'" >&2
+      usage
+      exit 2
+    fi
+    ;;
+esac
