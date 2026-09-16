@@ -48,6 +48,40 @@ attach to the loop. Press Ctrl-C to stop the loop.
 
 Run `converge --help` to see all options.
 
+## Environment variables
+
+You set these variables to configure `converge`. Each model variable belongs to
+one harness. The options `--model`, `--coach-model`, and `--review-model`
+override the matching variable.
+
+| Variable | Meaning |
+| --- | --- |
+| `CONVERGE_HARNESS` | Default harness: `claude` or `opencode`. Used when the run has no `--harness` option and the state records no harness. |
+| `CONVERGE_CLAUDE_MODEL` | Worker model of the `claude` harness. Default: `sonnet`. |
+| `CONVERGE_CLAUDE_COACH_MODEL` | Coach model of the `claude` harness. Default: `opus`. |
+| `CONVERGE_CLAUDE_REVIEW_MODEL` | Reviewer model of the `claude` harness. Default: `opus`. |
+| `CONVERGE_OPENCODE_MODEL` | Worker model of the `opencode` harness. Default: `opencode/gpt-5.6-luna`. |
+| `CONVERGE_OPENCODE_COACH_MODEL` | Coach model of the `opencode` harness. Default: `opencode/gpt-5.6-sol`. |
+| `CONVERGE_OPENCODE_REVIEW_MODEL` | Reviewer model of the `opencode` harness. Default: `opencode/gpt-5.6-sol`. |
+
+`converge` also reads the standard variables `XDG_STATE_HOME`, `TMPDIR`,
+`HOMEBREW_PREFIX`, and `HOME`:
+
+- `XDG_STATE_HOME` — base of the state directory. Default: `$HOME/.local/state`.
+- `TMPDIR` — base of the runtime directory. Default: `/tmp`.
+- `HOMEBREW_PREFIX` — optional. On macOS, `converge` looks here first for the
+  GNU tools, then in `/opt/homebrew` and `/usr/local`.
+- `HOME` — `converge` needs `HOME` or `XDG_STATE_HOME` to find its state.
+
+Each agent that the loop starts gets two variables in its environment:
+
+- `CONVERGE_ROLE` — the role of the agent: `worker`, `reviewer`, or `coach`.
+- `CONVERGE_ITERATION` — the number of the current iteration.
+
+`cbugs` reads `CONVERGE_ROLE` and `CONVERGE_ITERATION`. It records them as the
+provenance of each bug. When `CONVERGE_ROLE` is set, `cbugs add --kind user`
+fails, because a user bug is a request from a human.
+
 ## State
 
 `converge` writes nothing into your repository. It keeps the guidance, the
