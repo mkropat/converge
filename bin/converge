@@ -48,7 +48,7 @@ Options:
                           variable, then the harness default.
   --review-model <model>  Reviewer model. Default: the harness environment
                           variable, then the harness default.
-  --consensus <N>         Consecutive done votes that stop the loop. Default: 2.
+  --consensus <N>         Consecutive converged votes that stop the loop. Default: 2.
   --coach-every <K>       Worker iterations between coach runs. Default: 5.
   --no-coach              Disable the coach.
   --review-every <R>      Worker iterations between review passes. Default: 5.
@@ -208,7 +208,7 @@ G_OK="✓"; G_ERR="✗"; G_WARN="▲"; G_CLOCK="◷"
 G_WORKER="⚙"; G_COACH="◎"; G_REVIEW="◐"; G_LOOP="⟳"
 G_VOTE="●"; G_NOVOTE="○"
 G_GUT="┆"; G_READ="○"; G_EDIT="◆"; G_SHELL="❯"; G_SAY="▍"; G_COMMIT="⑂"
-E_DONE="🏁"; E_STOP="🛑"
+E_CONVERGED="🏁"; E_STOP="🛑"
 
 # width  Reports the usable width of the output, between 40 and 96 columns.
 width() {
@@ -329,7 +329,7 @@ scope_list() {
   printf '%s' "$out"
 }
 
-# votes <count> <total>   Draws the done votes as a meter.
+# votes <count> <total>   Draws the converged votes as a meter.
 votes() {
   local have=$1 want=$2 i
   for ((i = 0; i < want; i++)); do
@@ -836,7 +836,7 @@ PANEL_ROWS+=(
   "worker|$MODEL, $LIMIT_SUMMARY"
   "review|$REVIEW_SUMMARY"
   "coach|$COACH_SUMMARY"
-  "stop|$(plural "$CONSENSUS" "done vote") in a row"
+  "stop|$(plural "$CONSENSUS" "converged vote") in a row"
   "timeout|${TIMEOUT}s for one invocation"
 )
 panel "$G_LOOP converge" "${PANEL_ROWS[@]}"
@@ -1078,9 +1078,9 @@ final_message() {
   esac
 }
 
-# voted_done <final message>
+# voted_converged <final message>
 # True when the message holds the token CONVERGED alone on a line.
-voted_done() {
+voted_converged() {
   local line
   while IFS= read -r line; do
     [[ $line =~ ^[[:space:]]*CONVERGED[[:space:]]*$ ]] && return 0
@@ -1526,7 +1526,7 @@ future workers through a short guidance file that the loop puts in every
 worker prompt.
 
 Paths: worker logs in $LOG_DIR; loop event log $RUN_LOG (iteration starts,
-done votes, timeouts, errors, waits); guidance file $GUIDANCE; your journal
+converged votes, timeouts, errors, waits); guidance file $GUIDANCE; your journal
 $JOURNAL.
 
 The worker logs since your previous run:
@@ -1662,7 +1662,7 @@ run_review_pass() {
 }
 
 ITERATION=0
-DONE_VOTES=0
+CONVERGED_VOTES=0
 FAIL_WAIT=0
 PENDING_LOGS=()
 SINCE_COACH=0
@@ -1728,25 +1728,25 @@ while true; do
     # exhausted quota: the invocation could not even start. A failure that did
     # produce output is a different kind of problem, and does not grow the
     # wait; handle_invocation_wait below tells the two apart.
-    DONE_VOTES=0
+    CONVERGED_VOTES=0
     if ((RUN_STATUS != 0)); then
       warn "iteration $ITERATION failed; see $LOG_FILE"
     else
       warn "iteration $ITERATION produced no output; see $LOG_FILE"
     fi
   elif ((RUN_STATUS != 0)); then
-    DONE_VOTES=0
+    CONVERGED_VOTES=0
     warn "iteration $ITERATION failed; see $LOG_FILE"
-    note "no done vote; consecutive count reset to 0"
+    note "no converged vote; consecutive count reset to 0"
   else
-    if voted_done "$RESULT_TEXT"; then
-      ((++DONE_VOTES))
-      printf '  %s%s%s %s%s%s done vote %s of %s\n' \
+    if voted_converged "$RESULT_TEXT"; then
+      ((++CONVERGED_VOTES))
+      printf '  %s%s%s %s%s%s converged vote %s of %s\n' \
         "$GREEN" "$G_OK" "$OFF" \
-        "$GREEN" "$(votes "$DONE_VOTES" "$CONSENSUS")" "$OFF" \
-        "$DONE_VOTES" "$CONSENSUS"
-      note "done vote $DONE_VOTES of $CONSENSUS"
-      if ((DONE_VOTES >= CONSENSUS)); then
+        "$GREEN" "$(votes "$CONVERGED_VOTES" "$CONSENSUS")" "$OFF" \
+        "$CONVERGED_VOTES" "$CONSENSUS"
+      note "converged vote $CONVERGED_VOTES of $CONSENSUS"
+      if ((CONVERGED_VOTES >= CONSENSUS)); then
         note "converged after $ITERATION iterations"
         EXIT_STATUS=0
         break
@@ -1755,9 +1755,9 @@ while true; do
         run_review_pass
       fi
     else
-      DONE_VOTES=0
-      info "no done vote; work remains"
-      note "no done vote; consecutive count reset to 0"
+      CONVERGED_VOTES=0
+      info "no converged vote; work remains"
+      note "no converged vote; consecutive count reset to 0"
     fi
   fi
   # A failure on the last permitted iteration has no next iteration to delay,
@@ -1775,7 +1775,7 @@ done
 TOTAL=$(duration $((SECONDS - RUN_START)))
 if ((EXIT_STATUS == 0)); then
   CLOSING_TEXT="converged after $(plural "$ITERATION" iteration) in $TOTAL"
-  banner "$GREEN" "$E_DONE" "$CLOSING_TEXT"
+  banner "$GREEN" "$E_CONVERGED" "$CLOSING_TEXT"
 elif ((STOP_REQUESTED)); then
   EXIT_STATUS=130
   CLOSING_TEXT="stopped on the request of the operator after $(plural "$ITERATION" iteration) in $TOTAL"
