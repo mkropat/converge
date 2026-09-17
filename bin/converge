@@ -122,24 +122,18 @@ while (($#)); do
   esac
 done
 
-# Each scope path must exist, resolved against the working directory of the
-# operator. A typo must not become a run that silently ignores the scope.
-#
-# The client checks this, once, in the directory the operator ran it from.
-# The background loop is a second invocation of this same script, spawned by
-# the client after the client has already changed directory to the
-# repository root (see "cd "$REPO"" below), so a repeat of this check here
-# would run from the wrong directory and could reject a path the operator's
-# own check already accepted. CONVERGE_DAEMON marks that second invocation,
-# so only the client, which alone knows the operator's directory, checks.
-if [[ -z ${CONVERGE_DAEMON:-} ]]; then
-  for scope_path in ${SCOPE[@]+"${SCOPE[@]}"}; do
-    if [[ ! -e $scope_path ]]; then
-      echo "converge: scope path '$scope_path' does not exist" >&2
-      exit 2
-    fi
-  done
-fi
+# Each scope path must exist, resolved against the run directory: the working
+# directory of the operator. The script never changes its own working
+# directory, so the background loop -- a second invocation of this same
+# script, spawned by the client with the same cwd -- resolves a relative path
+# exactly as the operator's own check did. A typo must not become a run that
+# silently ignores the scope.
+for scope_path in ${SCOPE[@]+"${SCOPE[@]}"}; do
+  if [[ ! -e $scope_path ]]; then
+    echo "converge: scope path '$scope_path' does not exist" >&2
+    exit 2
+  fi
+done
 
 # is_number <text>   True when the text is a whole number.
 is_number() {
@@ -388,11 +382,17 @@ gutter() {
   fi
 }
 
-# The repository to work on is the current working directory.
-REPO="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-cd "$REPO" || exit 2
+# The run directory is the current working directory of the operator: the
+# root of the repository, or any subdirectory of it. The script never changes
+# its own working directory, so every relative path that follows, and the
+# working directory of every agent the loop starts, stay anchored there. The
+# repository that contains it supplies the git state of the run: the commits,
+# and the history that a review pass reads.
+RUN_DIR="$(pwd -P)"
+REPO="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$RUN_DIR")"
 
-# State lives outside the repository, at a path that is stable per repository.
+# State lives outside the repository, at a path that is stable per run
+# directory.
 hash_path() {
   if command -v md5sum >/dev/null 2>&1; then
     printf '%s' "$1" | md5sum | cut -c1-12
@@ -400,10 +400,18 @@ hash_path() {
     printf '%s' "$1" | cksum | tr -d ' ' | cut -c1-12
   fi
 }
-# The name of the repository, for a person, and a hash of its path, to keep two
-# repositories of one name apart. A repository that moves gets a new name, and
-# starts with no guidance.
-SLUG="${REPO##*/}-$(hash_path "$REPO")"
+# The name of the repository, the path of the run directory within it (when
+# the run directory is not the root), and a hash of the run directory's own
+# absolute path. The name lets an operator tell the run directories of one
+# repository apart in a listing; the hash keeps two run directories of one
+# name apart, and gives a run directory that moves or is renamed a fresh name,
+# with no guidance carried over.
+if [[ $RUN_DIR == "$REPO" ]]; then
+  RUN_SUBPATH=""
+else
+  RUN_SUBPATH="${RUN_DIR#"$REPO"/}"
+fi
+SLUG="${REPO##*/}${RUN_SUBPATH:+-${RUN_SUBPATH//\//-}}-$(hash_path "$RUN_DIR")"
 if [[ -z ${XDG_STATE_HOME:-} && -z ${HOME:-} ]]; then
   echo "converge: set HOME or XDG_STATE_HOME; converge keeps its state there" >&2
   exit 2
@@ -823,7 +831,7 @@ else
   REVIEW_SUMMARY="disabled ($REVIEW_MODEL)"
 fi
 PANEL_ROWS=(
-  "repo|$(home_relative "$REPO")"
+  "run dir|$(home_relative "$RUN_DIR")"
   "scope|$SCOPE_SUMMARY"
   "run log|$(home_relative "$RUN_LOG")"
 )
@@ -954,8 +962,12 @@ run_agent() {
     (
       # The bug tracker reads CONVERGE_ROLE and CONVERGE_ITERATION from the
       # environment, so an agent cannot record the wrong role, and a prompt
-      # does not have to carry the values.
+      # does not have to carry the values. CONVERGE_RUN_DIR lets cbugs find
+      # the bugs of this run directory even after an agent changes its own
+      # working directory, and never the bugs of another run directory that
+      # it moved into.
       export CONVERGE_ROLE="$role" CONVERGE_ITERATION="$ITERATION"
+      export CONVERGE_RUN_DIR="$RUN_DIR"
       export PATH="$BIN_DIR:$PATH"
       trap '' INT
       exec timeout -k 10 "$TIMEOUT" "${ARGV[@]}"

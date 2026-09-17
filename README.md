@@ -73,14 +73,17 @@ override the matching variable.
   GNU tools, then in `/opt/homebrew` and `/usr/local`.
 - `HOME` — `converge` needs `HOME` or `XDG_STATE_HOME` to find its state.
 
-Each agent that the loop starts gets two variables in its environment:
+Each agent that the loop starts gets three variables in its environment:
 
 - `CONVERGE_ROLE` — the role of the agent: `worker`, `reviewer`, or `coach`.
 - `CONVERGE_ITERATION` — the number of the current iteration.
+- `CONVERGE_RUN_DIR` — the absolute path of the run directory.
 
-`cbugs` reads `CONVERGE_ROLE` and `CONVERGE_ITERATION`. It records them as the
-provenance of each bug. When `CONVERGE_ROLE` is set, `cbugs add --kind user`
-fails, because a user bug is a request from a human.
+`cbugs` reads all three. It records the role and the iteration as the
+provenance of each bug, and it uses the run directory to find the right bug
+database even after an agent changes its own working directory. When
+`CONVERGE_ROLE` is set, `cbugs add --kind user` fails, because a user bug is a
+request from a human.
 
 ## State
 

@@ -155,9 +155,14 @@ need_value() {
 
 # ------------------------------------------------------------- state and db
 #
-# cbugs derives the state directory from the absolute path of the current
-# directory, by the same rule that converge uses, so that a directory converge
-# has run in gives the same state directory to both commands.
+# cbugs derives the state directory from the absolute path of the run
+# directory of the call -- CONVERGE_RUN_DIR when the environment holds it,
+# else the current directory -- by the same rule that converge uses, so that
+# a directory converge has run in gives the same state directory to both
+# commands. converge exports CONVERGE_RUN_DIR for every agent it starts, so
+# an agent that changes its own working directory still reads and writes the
+# bugs of its own run, and never the bugs of another run directory that it
+# moved into.
 
 hash_path() {
   if command -v md5sum >/dev/null 2>&1; then
@@ -187,8 +192,22 @@ for arg in "$@"; do
   esac
 done
 
-REPO="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-SLUG="${REPO##*/}-$(hash_path "$REPO")"
+if [[ -n ${CONVERGE_RUN_DIR:-} ]]; then
+  if ((! HELP_REQUESTED)) && [[ ! -d $CONVERGE_RUN_DIR ]]; then
+    echo "cbugs: CONVERGE_RUN_DIR '$CONVERGE_RUN_DIR' names no directory" >&2
+    exit 2
+  fi
+  RUN_DIR=$CONVERGE_RUN_DIR
+else
+  RUN_DIR="$(pwd -P)"
+fi
+REPO="$(git -C "$RUN_DIR" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$RUN_DIR")"
+if [[ $RUN_DIR == "$REPO" ]]; then
+  RUN_SUBPATH=""
+else
+  RUN_SUBPATH="${RUN_DIR#"$REPO"/}"
+fi
+SLUG="${REPO##*/}${RUN_SUBPATH:+-${RUN_SUBPATH//\//-}}-$(hash_path "$RUN_DIR")"
 if [[ -z ${XDG_STATE_HOME:-} && -z ${HOME:-} ]]; then
   echo "cbugs: set HOME or XDG_STATE_HOME; cbugs keeps its state there" >&2
   exit 2
