@@ -1727,11 +1727,14 @@ while true; do
 
   HEAD_BEFORE=$(git rev-parse HEAD 2>/dev/null) || HEAD_BEFORE=
   run_agent worker "$MODEL" "$(worker_prompt)"
-  # A first SIGINT lets this invocation finish, but the timeout can be the
-  # event that lets it finish. Do not process the rest of the iteration or
-  # schedule any follow-up work after that requested stop.
-  ((STOP_REQUESTED)) && break
+  # The loop must report what a worker committed even when a first SIGINT
+  # arrived while it ran: the invocation still finished, and the report is
+  # about what it did, not about scheduling more work.
   report_changes "$HEAD_BEFORE"
+  # A first SIGINT lets this invocation finish, but the timeout can be the
+  # event that lets it finish. Do not schedule any follow-up work after that
+  # requested stop.
+  ((STOP_REQUESTED)) && break
   PENDING_LOGS+=("$LOG_FILE")
   ((++SINCE_COACH))
   ((++SINCE_REVIEW))
