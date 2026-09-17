@@ -1517,10 +1517,10 @@ EOF
 
   if ((${#SCOPE[@]})); then
     read_line="Read the code and these requirements documents, and work on them only: $(scope_list). A path that is a directory names every requirements document under it. A change that contradicts a requirements document outside this scope is still a spec bug: log it, and do not make the change."
-    vote_line="If you judge that the repository satisfies the requirements documents of the scope, no code or user bug is open, and no work remains: do no work, write the exact token CONVERGED on a line of its own in your final message, and stop. The loop counts only that: the token alone on a line, in a final message where you did no work, with no code or user bug open. The token inside a sentence never votes."
+    vote_line="Do not vote while an open code bug or an open user bug exists. If you judge that the repository satisfies the requirements documents of the scope, no code or user bug is open, and no work remains: do no work, write the exact token CONVERGED on a line of its own in your final message, and stop. The loop counts only that: the token alone on a line, in a final message where you did no work, with no code or user bug open. The token inside a sentence never votes."
   else
     read_line="Read the code and the requirements documents; find them under the run directory. They describe behavior, not implementation steps."
-    vote_line="If every requirements document is satisfied, no code or user bug is open, and no work remains: do no work, write the exact token CONVERGED on a line of its own in your final message, and stop. The loop counts only that: the token alone on a line, in a final message where you did no work, with no code or user bug open. The token inside a sentence never votes."
+    vote_line="Do not vote while an open code bug or an open user bug exists. If every requirements document is satisfied, no code or user bug is open, and no work remains: do no work, write the exact token CONVERGED on a line of its own in your final message, and stop. The loop counts only that: the token alone on a line, in a final message where you did no work, with no code or user bug open. The token inside a sentence never votes."
   fi
   body=${body/__SCOPE_READ__/$read_line}
   body=${body/__SCOPE_VOTE__/$vote_line}
