@@ -535,7 +535,7 @@ add_citation() {
     exit 2
   fi
   test_path=$path
-  [[ $path == /* ]] || test_path="$REPO/$path"
+  [[ $path == /* ]] || test_path="$RUN_DIR/$path"
   if [[ ! -e $test_path ]]; then
     echo "cbugs: --cite path '$path' names no file" >&2
     exit 2
