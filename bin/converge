@@ -60,7 +60,7 @@ Options:
 A positional argument before -- names a requirements document file or a
 directory of them. This is the scope: the agents work on those documents
 only. With no positional argument, the scope is empty and the agents find
-the requirements documents of the whole repository themselves.
+the requirements documents under the run directory themselves.
 
 Everything after the first -- goes to the harness, unchanged.
 
@@ -438,7 +438,7 @@ HARNESS_FILE="$STATE_DIR/harness"
 RUNTIME_DIR="${TMPDIR:-/tmp}/converge/$SLUG"
 # The loop holds this lock while it runs. The kernel releases the lock when the
 # loop dies, so the lock, and not a file that a dead loop leaves behind, tells
-# a client whether a loop runs for this repository.
+# a client whether a loop runs for this run directory.
 LOOP_LOCK="$RUNTIME_DIR/loop.lock"
 # One client at a time looks for a loop and starts one. This directory is the
 # gate. A directory is a lock, because mkdir either makes it or fails.
@@ -540,7 +540,7 @@ bad() {
 # run converge again in the same directory. Ctrl-C stops the loop and the
 # client together.
 
-# loop_runs   True when a loop holds the lock for this repository.
+# loop_runs   True when a loop holds the lock for this run directory.
 loop_runs() {
   local free=1
   exec 9>"$LOOP_LOCK" || return 1
@@ -591,7 +591,7 @@ attach() {
 
   pid=$(first_line "$RUNTIME_DIR/$session.pid")
   if ! is_number "$pid"; then
-    bad "the loop for this repository left no process id"
+    bad "the loop for this run directory left no process id"
     exit 2
   fi
 
@@ -634,12 +634,12 @@ attach() {
   exit "$status"
 }
 
-# attach_current   Attaches to the loop that runs for this repository.
+# attach_current   Attaches to the loop that runs for this run directory.
 attach_current() {
   local session
   session=$(first_line "$CURRENT")
   if [[ -z $session || ! -f $SESSION_DIR/$session.out ]]; then
-    bad "a loop runs for this repository, but converge cannot find its output"
+    bad "a loop runs for this run directory, but converge cannot find its output"
     exit 2
   fi
   attach "$session" again
@@ -684,7 +684,7 @@ spawn_loop() {
   return 0
 }
 
-# attach_if_running   Attaches to the loop for this repository, when one runs,
+# attach_if_running   Attaches to the loop for this run directory, when one runs,
 # after a warning if the operator gave options that an attach cannot apply.
 # Every place that might attach instead of starting a loop must warn the same
 # way, so this is the one place that does both.
@@ -697,7 +697,7 @@ attach_if_running() {
   fi
 }
 
-# client_main   Attaches to the loop for this repository, and starts one first
+# client_main   Attaches to the loop for this run directory, and starts one first
 # when none runs.
 client_main() {
   local waited=0
@@ -791,10 +791,10 @@ fi
 rm -f "$fifo_probe"
 
 if ! hold_lock; then
-  bad "a converge loop already runs for this repository"
+  bad "a converge loop already runs for this run directory"
   exit 2
 fi
-# A later run in this repository keeps this harness.
+# A later run in this run directory keeps this harness.
 printf '%s\n' "$HARNESS" >"$HARNESS_FILE"
 # A --foreground run is a session too, with no separate client process. It
 # must still record its process id, become the current session, and report
@@ -811,7 +811,7 @@ note "passthrough: ${PASSTHROUGH[*]:-none}"
 if ((${#SCOPE[@]})); then
   SCOPE_SUMMARY=$(scope_list)
 else
-  SCOPE_SUMMARY="empty (the whole repository)"
+  SCOPE_SUMMARY="empty (the run directory)"
 fi
 note "scope: $SCOPE_SUMMARY"
 
