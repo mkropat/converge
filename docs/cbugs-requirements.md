@@ -1,7 +1,8 @@
 # Requirements: cbugs
 
-`bin/cbugs` is a bug tracker for one converge project. It gives query and CRUD
-operations on a database in the state directory of that project.
+`bin/cbugs` is a bug tracker for one run directory of a converge project. It
+gives query and CRUD operations on a database in the state directory of that
+run directory.
 
 This document gives the required behavior only. It does not give an
 implementation plan. `docs/cbugs-schema.sql` gives the data model.
@@ -55,8 +56,11 @@ These are the section codes.
 
 ## Terms
 
-- **Project**: the repository that `converge` operates on. One project has one
-  bug database.
+- **Project**: the repository that the operator works on with `converge`. A
+  project holds one or more run directories.
+- **Run directory**: the directory that a run of `converge` works from, as
+  `docs/converge-requirements.md` defines it. One run directory has one bug
+  database.
 - **Bug**: one defect. A bug has an identifier and a kind, and nothing else
   that cannot change.
 - **Kind**: `code`, `spec`, or `user`. See "Kinds of bug".
@@ -67,7 +71,7 @@ These are the section codes.
 - **Human user**: the person who runs the project. An agent is not a human
   user.
 - **Caller**: the agent or the operator that runs the command.
-- **State directory**: the durable directory of the project, as
+- **State directory**: the durable directory of one run directory, as
   `docs/converge-requirements.md` defines it.
 
 ## Purpose
@@ -142,8 +146,9 @@ work that no person requested, and a worker then does it.
 ## Invocation
 
 - **CB-INV-1**: The command must live at `bin/cbugs`.
-- **CB-INV-2**: The command must operate on the project in the current working
-  directory.
+- **CB-INV-2**: The command must operate on the run directory of the call: the
+  current working directory, or the value of `CONVERGE_RUN_DIR` when the
+  environment holds it.
 - **CB-INV-3**: The first argument must be a verb, or the id of a bug. The verbs
   are `add`, `list`, `show`, `search`, `note`, `close`, `dismiss`, and `reopen`.
 - **CB-INV-4**: A first argument that is a whole number is the id of a bug.
@@ -156,8 +161,9 @@ work that no person requested, and a worker then does it.
 - **CB-INV-7**: `cbugs --help` must list the verbs. `cbugs <verb> --help` must
   give the options of that verb.
 - **CB-INV-8**: Every verb must accept `--json`. See "Output".
-- **CB-INV-9**: The command must take no option that names a project. The
-  current directory names the project.
+- **CB-INV-9**: The command must take no option that names a run directory. The
+  current directory, or the environment of an agent of the loop, names the run
+  directory.
 
 ## Platform
 
@@ -170,25 +176,35 @@ work that no person requested, and a worker then does it.
 ## The database
 
 - **CB-DB-1**: The database must be a SQLite database in the state directory of
-  the project.
+  the run directory. One run directory has one bug database, and two run
+  directories of one project share no bug.
 - **CB-DB-2**: The command must derive the state directory from the absolute
-  path of the current directory, by the same rule that `converge` uses. A
-  directory that `converge` has run in must give the same state directory to
+  path of the run directory of the call, by the same rule that `converge`
+  uses. The current working directory names the run directory, and
+  `CONVERGE_RUN_DIR` names it in place of the current directory when the
+  environment holds it. The loop exports that variable for every agent, so an
+  agent that changes its working directory still reads and writes the bugs of
+  its own run, and never the bugs of another run directory that it moved into.
+  A directory that `converge` has run in must give the same state directory to
   both commands.
 - **CB-DB-3**: The command must stop with an error when the state directory does
   not exist. The error must tell the operator to run `converge` first. This keeps
-  a bug database out of a directory that is not a converge project.
+  a bug database out of a directory that no converge run has worked from.
 - **CB-DB-4**: The command must create the database on first use, inside a state
   directory that exists.
 - **CB-DB-5**: The command must never write into the repository.
+- **CB-DB-6**: The command must not look for the state directory of a parent of
+  the run directory. A directory that no converge run has worked from has no
+  bug database, whatever its parent holds. The caller that wants the bugs of a
+  run directory changes its working directory to it.
 
 ## Bugs
 
 A bug holds these values, and no more.
 
-- **CB-BUG-1**: **Id**: a small integer, unique in the project, that counts from
-  1. The operator and the agent name a bug by this integer. An agent can cite it
-  in a commit message.
+- **CB-BUG-1**: **Id**: a small integer, unique in the bug database, that counts
+  from 1. The operator and the agent name a bug by this integer. An agent can
+  cite it in a commit message.
 - **CB-BUG-2**: **Kind**: `code`, `spec`, or `user`. It never changes.
 
 ## Revisions
@@ -368,7 +384,7 @@ next, and the help text does not tell it which bugs are open.
 
 ### list
 
-- **CB-LIST-1**: `cbugs list` must print the bugs of the project.
+- **CB-LIST-1**: `cbugs list` must print the bugs of the run directory.
 - **CB-LIST-2**: Options:
   - **CB-LIST-2.1**: `--kind code|spec|user`: show only that kind. The option
     must be repeatable, and several values mean the union, so that a worker can
@@ -450,7 +466,8 @@ next, and the help text does not tell it which bugs are open.
 - **CB-ERR-3**: These are failures: a first argument that is neither a verb nor a
   whole number, an option that does not exist, a value that a field does not
   accept, a missing required option, an id that names no bug, a citation whose
-  path names no file, and a state directory that does not exist. `add --kind
+  path names no file, a state directory that does not exist, and a value of
+  `CONVERGE_RUN_DIR` that names no directory. `add --kind
   user` from an agent of the loop is also a failure.
 - **CB-ERR-4**: The command specifies no further exit statuses. A caller reads
   the message.
@@ -515,9 +532,10 @@ These are recorded decisions, not oversights.
 - **CB-OOS-13** — **A filter on role, iteration, or commit**: rejected for v1.
   `search` finds a bug by its text, and `show` gives the revisions. Add a filter
   when a role needs one.
-- **CB-OOS-14** — **`--limit`**: rejected for v1. A project holds few enough bugs
-  for a full listing. The newest-first order puts the recent bugs at the top. The
-  summary shows ten bugs, but that count is fixed, and `list` shows every bug.
+- **CB-OOS-14** — **`--limit`**: rejected for v1. A run directory holds few
+  enough bugs for a full listing. The newest-first order puts the recent bugs at
+  the top. The summary shows ten bugs, but that count is fixed, and `list` shows
+  every bug.
 - **CB-OOS-15** — **Delete**: rejected. `dismiss` covers a bug that no one wants,
   and the record stays for the coach to read. A permanent record is the point.
 - **CB-OOS-16** — **A link between two bugs**: rejected for v1. A note that names
@@ -525,9 +543,9 @@ These are recorded decisions, not oversights.
 - **CB-OOS-17** — **A veto of the `CONVERGED` vote by the loop**: rejected for
   v1. The worker prompt instructs the worker not to vote while an open code bug
   exists. The loop does not query the database, and `cbugs` stays a plain tool.
-- **CB-OOS-18** — **An option that names a project**: rejected for v1. Every
-  caller runs in the repository. An operator who wants another project changes
-  directory.
+- **CB-OOS-18** — **An option that names a run directory**: rejected. The
+  current directory, or the environment of an agent of the loop, names the run
+  directory. An operator who wants another run directory changes directory.
 - **CB-OOS-19** — **A bug database in the repository**: rejected. `converge`
   writes nothing into the repository, and a bug list in git would collide with the
   work of a worker.
