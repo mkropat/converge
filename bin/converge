@@ -1509,6 +1509,9 @@ Rules:
   re-orient from the repository and the requirements only.
 - Do not edit the requirements documents. They are the target.
 - Do not work on a spec bug, and do not wait for one. An engineer resolves it.
+- If a commit fails because another process holds a lock of git, wait and
+  try the commit again. A second loop can run in a second run directory of
+  the same repository.
 EOF
 )
 
