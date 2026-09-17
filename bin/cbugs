@@ -489,10 +489,13 @@ where_clause() {
   printf '%s' "$out"
 }
 
-# validate_kind <kind>   Stops with an error unless the kind is code, spec,
-# or user.
+# validate_kind <kind> [allow-empty]   Stops with an error unless the kind is
+# code, spec, or user. With allow-empty set to 1, an empty kind passes, for a
+# caller that checks "required" itself.
 validate_kind() {
-  [[ -z $1 || $1 == code || $1 == spec || $1 == user ]] || {
+  local allow_empty=${2:-0}
+  [[ -z $1 && $allow_empty == 1 ]] && return 0
+  [[ $1 == code || $1 == spec || $1 == user ]] || {
     echo "cbugs: --kind must be 'code', 'spec', or 'user', got '$1'" >&2
     exit 2
   }
@@ -587,7 +590,7 @@ verb_add() {
       *) echo "cbugs add: unexpected argument '$1'" >&2; exit 2 ;;
     esac
   done
-  validate_kind "$kind"
+  validate_kind "$kind" 1
   [[ -n $kind ]] || { echo "cbugs add: --kind is required" >&2; exit 2; }
   ((title_set)) || { echo "cbugs add: --title is required" >&2; exit 2; }
   [[ -n $title ]] || { echo "cbugs add: --title must not be empty" >&2; exit 2; }
@@ -642,7 +645,7 @@ COMMIT;
 }
 
 verb_note() {
-  local id_arg="" note="" note_set=0 commit="" json=0
+  local id_arg="" note="" note_set=0 commit="" json=0 title_set=0
   TITLE_OVERRIDE=""
   [[ ${1:-} == -h || ${1:-} == --help ]] && { usage_note; exit 0; }
   [[ $# -ge 1 && $1 != -* ]] || { usage_note; exit 2; }
@@ -654,8 +657,8 @@ verb_note() {
     case $1 in
       --note) need_value "$1" $#; note=$2; note_set=1; shift 2 ;;
       --note=*) note=${1#*=}; note_set=1; shift ;;
-      --title) need_value "$1" $#; TITLE_OVERRIDE=$2; shift 2 ;;
-      --title=*) TITLE_OVERRIDE=${1#*=}; shift ;;
+      --title) need_value "$1" $#; TITLE_OVERRIDE=$2; title_set=1; shift 2 ;;
+      --title=*) TITLE_OVERRIDE=${1#*=}; title_set=1; shift ;;
       --cite) need_value "$1" $#; add_citation "$2"; shift 2 ;;
       --cite=*) add_citation "${1#*=}"; shift ;;
       --commit) need_value "$1" $#; commit=$2; shift 2 ;;
@@ -665,6 +668,7 @@ verb_note() {
       *) echo "cbugs note: unexpected argument '$1'" >&2; exit 2 ;;
     esac
   done
+  ((title_set)) && [[ -z $TITLE_OVERRIDE ]] && { echo "cbugs note: --title must not be empty" >&2; exit 2; }
   local id; id=$(parse_id "$id_arg") || exit $?
   require_bug "$id"
   note=$(resolve_note note "$note_set" "$note") || exit $?
@@ -676,7 +680,7 @@ verb_note() {
 # verb_status_change <verb> <status> <args...>
 verb_status_change() {
   local verb=$1 status=$2; shift 2
-  local id_arg="" note="" note_set=0 commit="" json=0
+  local id_arg="" note="" note_set=0 commit="" json=0 title_set=0
   TITLE_OVERRIDE=""
   [[ ${1:-} == -h || ${1:-} == --help ]] && { usage_status_verb "$verb" "$status"; exit 0; }
   [[ $# -ge 1 && $1 != -* ]] || { usage_status_verb "$verb" "$status"; exit 2; }
@@ -685,8 +689,8 @@ verb_status_change() {
     case $1 in
       --note) need_value "$1" $#; note=$2; note_set=1; shift 2 ;;
       --note=*) note=${1#*=}; note_set=1; shift ;;
-      --title) need_value "$1" $#; TITLE_OVERRIDE=$2; shift 2 ;;
-      --title=*) TITLE_OVERRIDE=${1#*=}; shift ;;
+      --title) need_value "$1" $#; TITLE_OVERRIDE=$2; title_set=1; shift 2 ;;
+      --title=*) TITLE_OVERRIDE=${1#*=}; title_set=1; shift ;;
       --cite) need_value "$1" $#; add_citation "$2"; shift 2 ;;
       --cite=*) add_citation "${1#*=}"; shift ;;
       --commit) need_value "$1" $#; commit=$2; shift 2 ;;
@@ -696,6 +700,7 @@ verb_status_change() {
       *) echo "cbugs $verb: unexpected argument '$1'" >&2; exit 2 ;;
     esac
   done
+  ((title_set)) && [[ -z $TITLE_OVERRIDE ]] && { echo "cbugs $verb: --title must not be empty" >&2; exit 2; }
   local id; id=$(parse_id "$id_arg") || exit $?
   require_bug "$id"
   note=$(resolve_note "$verb" "$note_set" "$note") || exit $?
