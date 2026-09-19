@@ -38,6 +38,7 @@ These are the section codes.
 | `REV` | Revisions |
 | `CITE` | Citations |
 | `PROV` | Provenance |
+| `RVW` | Reviewed commits |
 | `SUM` | The summary |
 | `WRITE` | Options that every verb that writes a revision accepts |
 | `ADD` | add |
@@ -73,9 +74,14 @@ through `CB-MIG-6` replace it.
   revision carries the full state of the bug and a note.
 - **Citation**: a reference from a revision to a documented requirement. It
   names a requirements document, and can also name an identifier inside it.
+- **Reviewed commit**: a commit of the repository that the table of reviewed
+  commits names. The loop records one after a review pass, as
+  `docs/converge-requirements.md` gives.
+- **Unreviewed commit**: a commit that the table of reviewed commits does not
+  name, and that git reaches from the HEAD of the repository.
 - **Human user**: the person who runs the project. An agent is not a human
   user.
-- **Caller**: the agent or the operator that runs the command.
+- **Caller**: the loop, an agent, or the operator that runs the command.
 - **State directory**: the durable directory of one run directory, as
   `docs/converge-requirements.md` defines it.
 
@@ -88,6 +94,11 @@ it on each run and keeps it short.
 
 `cbugs` is that second channel. It holds a durable, queryable list of defects
 that survives the loss of memory between iterations.
+
+The database holds one more record: the reviewed commits. A review pass of
+`converge` covers the commits that no earlier pass recorded, and the loop
+reads that record to learn when a pass must run. The record must survive the
+death of the loop, so it lives beside the bugs.
 
 This document specifies the command. The roles that use it, the prompts that
 instruct them, and the order in which a worker takes up work, belong to
@@ -155,7 +166,8 @@ work that no person requested, and a worker then does it.
   current working directory, or the value of `CONVERGE_RUN_DIR` when the
   environment holds it.
 - **CB-INV-3**: The first argument must be a verb, or the id of a bug. The verbs
-  are `add`, `list`, `show`, `search`, `note`, `close`, `dismiss`, and `reopen`.
+  are `add`, `list`, `show`, `search`, `note`, `close`, `dismiss`, `reopen`,
+  `reviewed add`, and `reviewed pending`.
 - **CB-INV-4**: A first argument that is a whole number is the id of a bug.
   `cbugs <id>` must do what `cbugs show <id>` does, with the same options and
   the same output. A reader that saw an id in a listing therefore types the id
@@ -247,7 +259,7 @@ A database of an earlier version is a record, not a dead file. The command
 migrates it, and the history carries over.
 
 - **CB-MIG-1**: The database records the version of its model in `PRAGMA
-  user_version`. The current version is 3.
+  user_version`. The current version is 4.
 - **CB-MIG-2**: The command knows how to migrate version 2. When a call finds a
   database of version 2, the command must migrate the database to the current
   version before it answers the call, whatever the verb. A read migrates the
@@ -266,6 +278,13 @@ migrates it, and the history carries over.
   not know, the command must stop with an error that names the version of the
   database and the current version. The error must not tell the operator to
   delete the file.
+- **CB-MIG-7**: The command knows how to migrate version 3. When a call finds
+  a database of version 3, the command must migrate the database to the
+  current version before it answers the call, whatever the verb, in the way
+  that CB-MIG-2 gives for version 2.
+- **CB-MIG-8**: The migration from version 3 to version 4 creates the table of
+  reviewed commits, and nothing else. Every bug, every revision, and every
+  citation must be the same after the migration as before it.
 
 ## Bugs
 
@@ -365,6 +384,54 @@ it means.
   is the HEAD of the repository at the time of the call.
 - **CB-PROV-5**: When the repository has no commit, the command must record no
   commit and must continue.
+
+## Reviewed commits
+
+The database holds a second record beside the bugs: the commits that a review
+pass of `converge` covered. A commit is reviewed or it is not. There is no
+history to keep, and no note to write. The loop records the commits, and no
+agent records one.
+
+- **CB-RVW-1**: The database must hold one table of reviewed commits. One row
+  names one commit of the repository. The command must write the full hash of
+  the commit that git resolves from the value that the caller gave.
+- **CB-RVW-2**: A row must hold the commit, the worker iteration that the
+  review pass followed, and the created time, and nothing else. The iteration
+  comes from the `--iteration` option of `reviewed add`, and a call that gives
+  no iteration records none. The loop is not an agent, and the environment
+  names the provenance of an agent, so the iteration comes as an option.
+- **CB-RVW-3**: A commit that a row already names stays one row. A call that
+  names it again changes nothing, and the command must report success.
+- **CB-RVW-4**: The command must never change a row of reviewed commits, and
+  must never remove one. A commit that the history drops can come back, and a
+  row that waits does no harm.
+- **CB-RVW-5**: The command must offer the verbs `reviewed add` and `reviewed
+  pending`. `cbugs reviewed`, with no second word, must stop with an error
+  that names the two verbs.
+- **CB-RVW-6**: `cbugs reviewed add` must record the commits that the caller
+  names. The commits come as arguments, or on standard input, one commit per
+  line. The record of one call is one transaction: a call that fails records
+  nothing. A call that names no commit must stop with an error. The command
+  must print one line that gives the number of commits that the call added and
+  the number that a row already named.
+- **CB-RVW-7**: `reviewed add` must stop with an error when the environment
+  holds `CONVERGE_ROLE`. The loop records the commits of a pass, and no agent
+  of the loop records one. The error must name the role that the call read.
+  An operator who runs the command by hand may record commits. The command
+  must apply this test to `reviewed add` only: `reviewed pending` changes
+  nothing, and every caller may run it.
+- **CB-RVW-8**: `cbugs reviewed pending` must print the commits that no row
+  names and that git reaches from the HEAD of the repository, the newest
+  first. The command must read the repository at the time of the call. When
+  the repository holds no commit, and when no commit is unreviewed, the
+  command must print nothing and exit with the status 0.
+- **CB-RVW-9**: The human form of `reviewed pending` must give one line for
+  each commit, with the hash and the subject of the commit. The `--json` form
+  must give the same information as JSON.
+- **CB-RVW-10**: The command must stop with an error when a value that
+  `reviewed add` names does not name a commit of the repository. The command
+  reads the repository for these verbs as it reads HEAD for the provenance of
+  a revision, as CB-PROV-4 gives.
 
 ## The summary
 
@@ -537,7 +604,9 @@ next, and the help text does not tell it which bugs are open.
   accept, a missing required option, an id that names no bug, a citation whose
   path names no file, a value of `CONVERGE_RUN_DIR` that names no directory,
   and a creation call that fails or that finds no `converge` command on PATH.
-  `add --kind task` from an agent of the loop is also a failure.
+  `add --kind task` from an agent of the loop is also a failure. `reviewed add`
+  that names no commit of the repository is also a failure. `reviewed add`
+  from an agent of the loop is also a failure.
 - **CB-ERR-4**: The command specifies no further exit statuses. A caller reads
   the message.
 
@@ -562,7 +631,9 @@ next, and the help text does not tell it which bugs are open.
 These are recorded decisions, not oversights.
 
 - **CB-OOS-1** — **A record of a pass that found no defect**: rejected. Only a
-  defect makes a record. The logs of the loop show that a pass ran.
+  defect makes a record. The logs of the loop show that a pass ran. The
+  reviewed commits are not that record: they name the coverage of a pass, and
+  they hold no finding.
 - **CB-OOS-2** — **A change of the kind of a bug**: rejected. The kind decides
   who acts. The caller dismisses the bug and logs a new one.
 - **CB-OOS-3** — **A revision that gives only what changed**: rejected. A full
@@ -629,3 +700,7 @@ These are recorded decisions, not oversights.
   different model: it holds reports and stored state, not revisions. It gets
   the same error as any version that the command does not know. See
   "Migration".
+- **CB-OOS-25** — **A removal of a reviewed commit**: rejected. A commit that
+  the history drops can come back, as a cherry-pick brings one back, and the
+  row does no harm while the commit is away. The count of the unreviewed
+  commits reads the history that HEAD reaches, and no other.

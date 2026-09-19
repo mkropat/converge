@@ -9,8 +9,11 @@
 -- bug is the current state. Nothing is ever changed, and nothing is ever
 -- removed. The history is therefore true by construction, and no stored value
 -- can disagree with it.
+--
+-- The reviewed commits are a set, and not a history: a commit is reviewed or
+-- it is not, and a row that names one never changes.
 
-PRAGMA user_version = 3;
+PRAGMA user_version = 4;
 
 -- The identity of a defect.
 --
@@ -101,6 +104,34 @@ FROM bug AS b
 JOIN revision AS r
   ON r.id = (SELECT MAX(id) FROM revision WHERE bug_id = b.id);
 
+-- One commit that a review pass covered.
+--
+-- The loop records one row for every commit that it gave to a review pass,
+-- after the pass ends with success. The count of the commits that no row
+-- names, and that HEAD reaches, tells the loop when the next pass runs. The
+-- record lives here because it must survive the death of the loop: a pass
+-- that a Ctrl-C kills records nothing, and the next run of the loop reviews
+-- the same commits.
+--
+-- `commit_id` is the full hash that git resolves from the value that the
+-- caller gave. A rebase or an amendment gives a commit a new hash, so work
+-- that a pass covered before the change names no row after it, and the loop
+-- reviews the new history.
+--
+-- `iteration` is the worker iteration that the pass followed. The loop is
+-- not an agent, so the value comes from the `--iteration` option of the call,
+-- and not from the environment. It is null when a person records a commit by
+-- hand.
+--
+-- Nothing changes a row, and nothing removes one. A commit that the history
+-- drops can come back, and a row that waits does no harm.
+CREATE TABLE reviewed (
+  id         INTEGER PRIMARY KEY,
+  commit_id  TEXT NOT NULL UNIQUE,
+  iteration  INTEGER,
+  created_at TEXT NOT NULL
+);
+
 -- Notes on the model
 --
 -- Times are ISO-8601 strings in UTC, to the second. SQLite compares them
@@ -121,7 +152,10 @@ JOIN revision AS r
 -- the defect.
 --
 -- `PRAGMA user_version` records the version of this model. A command that
--- meets a database of version 2 migrates it to this version on first use: it
--- renames every kind `user` to `task`, in one transaction, and changes nothing
--- else. A command that meets a database of any other version stops with an
--- error that names the version of the database and the current version.
+-- meets a database of an earlier version migrates it to this version on first
+-- use, one step at a time, and each step is one transaction. The step from
+-- version 2 to version 3 renames every kind `user` to `task`, and changes
+-- nothing else. The step from version 3 to version 4 creates the reviewed
+-- table, and changes nothing else. A command that meets a database of any
+-- other version stops with an error that names the version of the database
+-- and the current version.
