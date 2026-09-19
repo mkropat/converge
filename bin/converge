@@ -24,6 +24,7 @@ REVIEW_ENABLED=1
 TIMEOUT=3600
 MAX_ITERATIONS=""
 FOREGROUND=0
+INIT_STATE=0
 PASSTHROUGH=()
 ORIGINAL_ARGS="$*"
 # The client starts the loop again, in the background, with the same options.
@@ -56,6 +57,8 @@ Options:
   --timeout <seconds>     Maximum duration of one invocation. Default: 3600.
   --max-iterations <N>    Maximum worker iterations. Default: unbounded.
   --foreground            Run the loop in this terminal, not in the background.
+  --init-state            Make the state and runtime directories of this run
+                          directory and exit. Starts no loop.
 
 A positional argument before -- names a requirements document file or a
 directory of them. This is the scope: the agents work on those documents
@@ -107,6 +110,7 @@ while (($#)); do
     --max-iterations) need_value "$1" $#; MAX_ITERATIONS=$2; shift 2 ;;
     --max-iterations=*) MAX_ITERATIONS=${1#*=}; shift ;;
     --foreground) FOREGROUND=1; shift ;;
+    --init-state) INIT_STATE=1; shift ;;
     -h|--help) usage; exit 0 ;;
     # An option before -- that this script does not know is a typo, not a
     # harness option. Only the arguments after -- reach the harness.
@@ -121,6 +125,21 @@ while (($#)); do
       ;;
   esac
 done
+
+# The init operation knows no settings: it works on the current directory
+# alone, as CV-INV-10.1 gives. A positional argument or another option of
+# CV-INV-3 on such a call is a stop that names the argument (CV-INV-10.4).
+# A call may still ask for help, which is no option of CV-INV-3.
+if ((INIT_STATE)); then
+  for arg in ${ORIGINAL_ARGV[@]+"${ORIGINAL_ARGV[@]}"}; do
+    [[ $arg == -- ]] && break
+    case $arg in
+      --init-state|-h|--help) continue ;;
+    esac
+    echo "converge: --init-state cannot be combined with '$arg'" >&2
+    exit 2
+  done
+fi
 
 # Each scope path must exist, resolved against the run directory: the working
 # directory of the operator. The script never changes its own working
@@ -492,6 +511,22 @@ LOOP_LOCK="$RUNTIME_DIR/loop.lock"
 # One client at a time looks for a loop and starts one. This directory is the
 # gate. A directory is a lock, because mkdir either makes it or fails.
 SPAWN_LOCK="$RUNTIME_DIR/spawn.lock"
+# --init-state performs the init operation and exits (CV-INV-10). It makes
+# the state directory, the subdirectories of it, and the runtime directory
+# when they do not exist, and leaves a directory that exists as it is; two
+# init calls that run at the same time both succeed, because mkdir -p is
+# safe for both (CV-INV-10.2). It prints one line that names the path of the
+# state directory, and writes no session output, no session status, no
+# harness record, and no log (CV-INV-10.3). It tests no harness command,
+# because it makes directories and runs no agent (CV-INV-10.5).
+if ((INIT_STATE)); then
+  if ! mkdir -p "$STATE_DIR" "$LOG_DIR" "$SESSION_DIR" "$RUNTIME_DIR"; then
+    echo "converge: cannot make the state directory or the runtime directory; check XDG_STATE_HOME, HOME, and TMPDIR" >&2
+    exit 2
+  fi
+  printf '%s\n' "$STATE_DIR"
+  exit 0
+fi
 if ! mkdir -p "$LOG_DIR" "$SESSION_DIR" "$RUNTIME_DIR"; then
   echo "converge: cannot make the state directory or the runtime directory; check XDG_STATE_HOME, HOME, and TMPDIR" >&2
   exit 2
