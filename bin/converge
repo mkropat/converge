@@ -328,7 +328,9 @@ plural() {
 # prompt or the startup panel.
 scope_list() {
   local out="" path
-  for path in "${SCOPE[@]}"; do
+  # The guarded form, not "${SCOPE[@]}", so that a caller on bash 4.2, whose
+  # set -u treats an empty array expansion as unbound, survives an empty list.
+  for path in ${SCOPE[@]+"${SCOPE[@]}"}; do
     if [[ -z $out ]]; then out=$path; else out="$out, $path"; fi
   done
   printf '%s' "$out"
@@ -508,11 +510,12 @@ harness_argv() {
   case $HARNESS in
     claude)
       ARGV=(claude --print --output-format stream-json --verbose
-        --model "$1" --dangerously-skip-permissions "${PASSTHROUGH[@]}" "$2")
+        --model "$1" --dangerously-skip-permissions
+        "${PASSTHROUGH[@]+"${PASSTHROUGH[@]}"}" "$2")
       ;;
     opencode)
       ARGV=(opencode run --format json --model "$1" --auto
-        "${PASSTHROUGH[@]}" "$2")
+        "${PASSTHROUGH[@]+"${PASSTHROUGH[@]}"}" "$2")
       ;;
   esac
 }
@@ -686,8 +689,11 @@ client_int() {
 spawn_loop() {
   local waited=0
   : >"$SESSION_OUT"
+  # Empty on the most common invocation, so bash 4.2 needs the guarded form
+  # here too.
   CONVERGE_DAEMON=1 CONVERGE_SESSION="$RUN_ID" CONVERGE_COLS="$COLS" \
-    setsid "$SELF" "${ORIGINAL_ARGV[@]}" </dev/null >>"$SESSION_OUT" 2>&1 &
+    setsid "$SELF" ${ORIGINAL_ARGV[@]+"${ORIGINAL_ARGV[@]}"} \
+    </dev/null >>"$SESSION_OUT" 2>&1 &
   while [[ ! -s $SESSION_PID ]]; do
     sleep 0.1
     ((++waited > 100)) && return 1
@@ -1722,7 +1728,10 @@ while true; do
     note "coach reviews: ${PENDING_LOGS[*]:-none}"
     info "reviews $(plural "${#PENDING_LOGS[@]}" "worker log")"
     GUIDANCE_BEFORE=$(guidance_state)
-    run_agent coach "$COACH_MODEL" "$(coach_prompt "$(printf '%s\n' "${PENDING_LOGS[@]}")")"
+    # The guarded form, on its own line: inside a double-nested command
+    # substitution, the single-quoted printf format derails the parser.
+    PENDING_LOGS_TEXT=$(printf '%s\n' ${PENDING_LOGS[@]+"${PENDING_LOGS[@]}"})
+    run_agent coach "$COACH_MODEL" "$(coach_prompt "$PENDING_LOGS_TEXT")"
     ((STOP_REQUESTED)) || handle_invocation_wait "$LOG_FILE"
     show_guidance "$GUIDANCE_BEFORE"
     if ((RUN_STATUS == 0)); then
