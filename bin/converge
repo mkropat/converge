@@ -714,7 +714,12 @@ attach() {
   INTERRUPTED=0
   CLIENT_STOP_REQUESTED=0
   trap 'client_int '"$pid" INT
-  trap 'INTERRUPTED=1; stop_loop '"$pid" TERM
+  # TERM relays the stop only. A failed test driver or an operator kill sends
+  # TERM to a client that would have run on, so the client must not read that
+  # as a Ctrl-C of its own: CV-BG-9 gives the client the status that the loop
+  # recorded, and CV-BG-8.3 reserves 130 for the two Ctrl-C cases. The loop
+  # records its own 143 on a TERM stop, which the end of attach reads below.
+  trap 'stop_loop '"$pid" TERM
 
   # An attach shows the last screen of earlier output, then a rule, then the
   # new output, in that order. The replay must finish printing before the
