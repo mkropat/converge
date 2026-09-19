@@ -1266,7 +1266,13 @@ say_stats() {
 render_tool() {
   local name=$1 arg=$2 lines=${3:-1} budget suffix=""
   is_number "$lines" || lines=1
-  arg=${arg#"$REPO"/}
+  # The repository prefix is only shortened for the tools whose main argument
+  # is a path. A shell command reaches the operator as the agent wrote it:
+  # shortening it wordlessly, even by a prefix, would hide text (CV-OUT-3.2),
+  # and a marked shortening is fit's job, not this strip's.
+  if [[ ${name,,} != bash ]]; then
+    arg=${arg#"$REPO"/}
+  fi
   budget=$((GUT_WIDTH - ${#name} - 1))
   if [[ ${name,,} == bash && $lines -gt 1 && ${#arg} -gt $budget ]]; then
     suffix=" ($lines lines)"
