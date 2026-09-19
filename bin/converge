@@ -152,33 +152,48 @@ if ((HELP_REQUESTED)); then
   exit 0
 fi
 
-# Each scope path must exist, resolved against the run directory: the working
-# directory of the operator. The script never changes its own working
-# directory, so the background loop -- a second invocation of this same
-# script, spawned by the client with the same cwd -- resolves a relative path
-# exactly as the operator's own check did. A typo must not become a run that
-# silently ignores the scope.
-for scope_path in ${SCOPE[@]+"${SCOPE[@]}"}; do
-  if [[ ! -e $scope_path ]]; then
-    echo "converge: scope path '$scope_path' does not exist" >&2
-    exit 2
-  fi
-done
-
 # is_number <text>   True when the text is a whole number.
 is_number() {
   [[ $1 =~ ^[0-9]+$ ]]
 }
 
-for pair in "consensus:$CONSENSUS" "coach-every:$COACH_EVERY" "review-every:$REVIEW_EVERY" "timeout:$TIMEOUT"; do
-  if ! is_number "${pair#*:}"; then
-    echo "converge: --${pair%%:*} needs a whole number, got '${pair#*:}'" >&2
+# validate_start_options   Checks the settings that only a run needs to hold:
+# each scope path must exist, resolved against the run directory, and each
+# count must be a whole number. The script never changes its own working
+# directory, so the background loop -- a second invocation of this same
+# script, spawned by the client with the same cwd -- resolves a relative path
+# exactly as the operator's own check did. A typo must not become a run that
+# silently ignores the scope.
+#
+# A client that attaches to a loop that runs skips these checks. The scope
+# and the values that the client names belong to that loop, not to the call
+# (CV-SCOPE-9, CV-BG-6): the client keeps them, and warns that it ignored
+# the options, so it must not refuse to attach over a value that the loop
+# will never read. client_main runs this check again before it starts a
+# loop, when no loop runs.
+validate_start_options() {
+  for scope_path in ${SCOPE[@]+"${SCOPE[@]}"}; do
+    if [[ ! -e $scope_path ]]; then
+      echo "converge: scope path '$scope_path' does not exist" >&2
+      exit 2
+    fi
+  done
+  for pair in "consensus:$CONSENSUS" "coach-every:$COACH_EVERY" "review-every:$REVIEW_EVERY" "timeout:$TIMEOUT"; do
+    if ! is_number "${pair#*:}"; then
+      echo "converge: --${pair%%:*} needs a whole number, got '${pair#*:}'" >&2
+      exit 2
+    fi
+  done
+  if [[ -n $MAX_ITERATIONS ]] && ! is_number "$MAX_ITERATIONS"; then
+    echo "converge: --max-iterations needs a whole number" >&2
     exit 2
   fi
-done
-if [[ -n $MAX_ITERATIONS ]] && ! is_number "$MAX_ITERATIONS"; then
-  echo "converge: --max-iterations needs a whole number" >&2
-  exit 2
+}
+
+# The daemon and a --foreground loop start a loop here, and the settings
+# above apply to what they start. A plain client attaches first, or may.
+if ((FOREGROUND != 0)) || [[ -n ${CONVERGE_DAEMON:-} ]]; then
+  validate_start_options
 fi
 
 # The loop needs the GNU versions of the tools below. macOS supplies the BSD
@@ -812,6 +827,12 @@ attach_if_running() {
 client_main() {
   local waited=0
   attach_if_running
+
+  # No loop runs, so this client starts one. Now the settings that the call
+  # names must hold, and the error is this client's own (CV-SCOPE-2). The
+  # call above attaches and never returns when a loop runs, so a client that
+  # reaches this point is a client that starts a loop.
+  validate_start_options
 
   # Two clients must not start two loops. The one that makes the gate wins.
   while ! mkdir "$SPAWN_LOCK" 2>/dev/null; do
