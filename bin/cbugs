@@ -315,7 +315,13 @@ if ((! HELP_REQUESTED)); then
   DB="$STATE_DIR/cbugs.db"
 fi
 
-ERRFILE=$(mktemp "${TMPDIR:-/tmp}/cbugs.XXXXXX")
+# The temporary file takes the stderr of every sqlite call. A creation that
+# fails names its cause in the same way (CB-ERR-2): fail here, before any
+# answer, when no temporary file can be made.
+if ! ERRFILE=$(mktemp "${TMPDIR:-/tmp}/cbugs.XXXXXX"); then
+  echo "cbugs: cannot make a temporary file; check TMPDIR" >&2
+  exit 2
+fi
 trap 'rm -f "$ERRFILE"' EXIT
 
 # sqlite3_run <raw|json> <sql>
