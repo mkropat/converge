@@ -1208,10 +1208,15 @@ handle_invocation_wait() {
 # Reports the final message of the invocation. claude reports it in one result
 # message. opencode reports no result, so the final message is the text of the
 # last assistant message.
+#
+# The reader drops a line that it cannot parse, as the transcript filters do.
+# A plain jq -s slurp would stop at the first stray line and lose the result
+# that a later line carries, and a converged vote would be lost with it.
 final_message() {
   case $HARNESS in
     claude)
-      jq -rs 'map(select(.type == "result")) | last | .result // ""' \
+      jq -Rsr 'split("\n") | map(fromjson? // empty)
+              | map(select(.type == "result")) | last | (.result // "")' \
         "$1" 2>/dev/null || true
       ;;
     opencode)
