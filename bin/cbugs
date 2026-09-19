@@ -37,7 +37,7 @@ EOF
 
 usage_add() {
   cat >&2 <<'EOF'
-Usage: cbugs add --kind code|spec|user --title <text> [--note <text>]
+Usage: cbugs add --kind code|spec|task --title <text> [--note <text>]
                   [--cite <path>[:<id>]]... [--commit <id>] [--json]
 
 Creates one bug with the status "open" and prints its id.
@@ -45,9 +45,9 @@ Creates one bug with the status "open" and prints its id.
 --note is read from standard input when it is not given, unless standard
 input is a terminal, in which case add stops with an error.
 
---kind user stops with an error when the environment holds CONVERGE_ROLE. A
-user bug records what a human user asked for; an agent of the loop must
-never log one, whatever a prompt tells it.
+--kind task stops with an error when the environment holds CONVERGE_ROLE. A
+task records what a human user asked for, and an agent must never log one
+unless a human user directed it.
 EOF
 }
 
@@ -79,7 +79,7 @@ EOF
 
 usage_list() {
   cat >&2 <<'EOF'
-Usage: cbugs list [--kind code|spec|user]... [--status open|closed|wontfix]... [--json]
+Usage: cbugs list [--kind code|spec|task]... [--status open|closed|wontfix]... [--json]
 
 Prints the bugs of the project, newest revision first. Repeat --kind or
 --status to show more than one value; several values of one option mean
@@ -98,7 +98,7 @@ EOF
 
 usage_search() {
   cat >&2 <<'EOF'
-Usage: cbugs search <text> [--kind code|spec|user]... [--status open|closed|wontfix]... [--json]
+Usage: cbugs search <text> [--kind code|spec|task]... [--status open|closed|wontfix]... [--json]
 
 Prints the bugs whose title, in any revision, whose notes, or whose
 citations contain the text. The search ignores the difference between
@@ -260,13 +260,31 @@ like_escape() {
 
 # The data model. This mirrors docs/cbugs-schema.sql. Nothing here is ever
 # changed or removed: the newest revision of a bug is its current state.
-DB_VERSION=2
-SCHEMA_SQL=$(cat <<'SQL'
-PRAGMA user_version = 2;
+DB_VERSION=3
+
+# The current-state view, which both the schema and the migration rebuild.
+BUG_CURRENT_VIEW_SQL=$(cat <<'SQL'
+CREATE VIEW IF NOT EXISTS bug_current AS
+SELECT
+  b.id                                                              AS id,
+  b.kind                                                            AS kind,
+  r.status                                                          AS status,
+  r.title                                                           AS title,
+  r.id                                                              AS revision_id,
+  (SELECT MIN(created_at) FROM revision WHERE bug_id = b.id)        AS created_at,
+  r.created_at                                                      AS updated_at
+FROM bug AS b
+JOIN revision AS r
+  ON r.id = (SELECT MAX(id) FROM revision WHERE bug_id = b.id);
+SQL
+)
+
+SCHEMA_SQL=$(cat <<SQL
+PRAGMA user_version = $DB_VERSION;
 
 CREATE TABLE IF NOT EXISTS bug (
   id   INTEGER PRIMARY KEY,
-  kind TEXT NOT NULL CHECK (kind IN ('code', 'spec', 'user'))
+  kind TEXT NOT NULL CHECK (kind IN ('code', 'spec', 'task'))
 );
 
 CREATE TABLE IF NOT EXISTS revision (
@@ -292,33 +310,55 @@ CREATE TABLE IF NOT EXISTS citation (
 
 CREATE INDEX IF NOT EXISTS citation_revision ON citation (revision_id, id);
 
-CREATE VIEW IF NOT EXISTS bug_current AS
-SELECT
-  b.id                                                              AS id,
-  b.kind                                                            AS kind,
-  r.status                                                          AS status,
-  r.title                                                           AS title,
-  r.id                                                              AS revision_id,
-  (SELECT MIN(created_at) FROM revision WHERE bug_id = b.id)        AS created_at,
-  r.created_at                                                      AS updated_at
-FROM bug AS b
-JOIN revision AS r
-  ON r.id = (SELECT MAX(id) FROM revision WHERE bug_id = b.id);
+$BUG_CURRENT_VIEW_SQL
 SQL
 )
 
-# init_db   Creates the database on first use. Stops with an error when the
-# database on disk is a model version that this command does not know.
+# The migration from version 2. It renames the kind 'user' to 'task', and
+# nothing else. The CHECK of the bug table must accept the new value, so the
+# table is rebuilt around the copied rows; the copy carries every id across,
+# and the revisions and the citations are untouched. One transaction: a
+# failure leaves the database as it was, and the next call tries again.
+# BEGIN IMMEDIATE makes two callers that find the same old database
+# serialize: the second waits on the lock, then proceeds against the
+# database that the first one migrated.
+MIGRATE_SQL=$(cat <<SQL
+BEGIN IMMEDIATE;
+DROP VIEW IF EXISTS bug_current;
+CREATE TABLE bug_migrate (
+  id   INTEGER PRIMARY KEY,
+  kind TEXT NOT NULL CHECK (kind IN ('code', 'spec', 'task'))
+);
+INSERT INTO bug_migrate (id, kind)
+  SELECT id, CASE kind WHEN 'user' THEN 'task' ELSE kind END FROM bug;
+DROP TABLE bug;
+ALTER TABLE bug_migrate RENAME TO bug;
+$BUG_CURRENT_VIEW_SQL
+PRAGMA user_version = $DB_VERSION;
+COMMIT;
+SQL
+)
+
+# init_db   Prepares the database before the command answers the call. It
+# creates the database on first use, migrates a version 2 database in place,
+# and stops with an error when the version is one that this command does not
+# know.
 init_db() {
   local ver
   ver=$(sqlite3_run raw "PRAGMA user_version;")
   if [[ -z $ver || $ver == 0 ]]; then
     sqlite3_run raw "$SCHEMA_SQL" >/dev/null
-  elif [[ $ver != "$DB_VERSION" ]]; then
-    echo "cbugs: $DB is database version $ver, which this command does not know" >&2
-    echo "cbugs: delete the file to start over" >&2
-    exit 1
+    return
   fi
+  if [[ $ver == "$DB_VERSION" ]]; then
+    return
+  fi
+  if [[ $ver == 2 ]]; then
+    sqlite3_run raw "$MIGRATE_SQL" >/dev/null
+    return
+  fi
+  echo "cbugs: $DB is database version $ver, but this command knows version $DB_VERSION and migrates only version 2" >&2
+  exit 1
 }
 ((HELP_REQUESTED)) || init_db
 
@@ -410,11 +450,11 @@ row_line() {
   esac
   # A spec bug waits for an engineer, and no agent will act on it, so it
   # earns a touch of color that a reader notices without it competing with
-  # the status column. A code bug and a user bug stay subdued, and different
+  # the status column. A code bug and a task stay subdued, and different
   # from each other, so a reader sees which rows are punchlist items.
   case $kind in
     spec) kind_color=$MAGENTA ;;
-    user) kind_color=$CYAN ;;
+    task) kind_color=$CYAN ;;
     code) kind_color=$DIM ;;
   esac
   printf '%4s  %s%-4s%s  %s%-7s%s  %s\n' \
@@ -452,7 +492,7 @@ print_bug() {
 
 # where_clause <kinds[]> -- <statuses[]>   Builds the shared filter of
 # list/search. Several values of one option mean their union, so a caller can
-# ask for the open code bugs and the open user bugs in one call.
+# ask for the open code bugs and the open tasks in one call.
 where_clause() {
   local -a kinds=()
   local -a statuses=()
@@ -490,13 +530,13 @@ where_clause() {
 }
 
 # validate_kind <kind> [allow-empty]   Stops with an error unless the kind is
-# code, spec, or user. With allow-empty set to 1, an empty kind passes, for a
+# code, spec, or task. With allow-empty set to 1, an empty kind passes, for a
 # caller that checks "required" itself.
 validate_kind() {
   local allow_empty=${2:-0}
   [[ -z $1 && $allow_empty == 1 ]] && return 0
-  [[ $1 == code || $1 == spec || $1 == user ]] || {
-    echo "cbugs: --kind must be 'code', 'spec', or 'user', got '$1'" >&2
+  [[ $1 == code || $1 == spec || $1 == task ]] || {
+    echo "cbugs: --kind must be 'code', 'spec', or 'task', got '$1'" >&2
     exit 2
   }
 }
@@ -594,8 +634,8 @@ verb_add() {
   [[ -n $kind ]] || { echo "cbugs add: --kind is required" >&2; exit 2; }
   ((title_set)) || { echo "cbugs add: --title is required" >&2; exit 2; }
   [[ -n $title ]] || { echo "cbugs add: --title must not be empty" >&2; exit 2; }
-  if [[ $kind == user && -n ${CONVERGE_ROLE:-} ]]; then
-    echo "cbugs add: a user bug records a request from a human user; refused for role '$CONVERGE_ROLE'" >&2
+  if [[ $kind == task && -n ${CONVERGE_ROLE:-} ]]; then
+    echo "cbugs add: a task records a request from a human user; refused for role '$CONVERGE_ROLE'" >&2
     exit 1
   fi
 
