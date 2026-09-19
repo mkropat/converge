@@ -1720,7 +1720,8 @@ Commit range to review: $range
    found a spec bug instead.
 4. When the changes reveal a requirement that is ambiguous, absent, or in
    conflict with another, log \`cbugs add --kind spec --title <text>\`, cite
-   each document involved with \`--cite\`, and say in the note what you could
+   each document and requirement that raised the question with
+   \`--cite <path>[:<id>]\`, and say in the note what you could
    not decide and why the changes raised it.
 5. Log nothing when you find nothing. That is a normal result, and an
    invented defect costs a worker a whole iteration.
