@@ -921,8 +921,12 @@ fi
 printf '%s\n' "$HARNESS" >"$HARNESS_FILE"
 # A --foreground run is a session too, with no separate client process. It
 # must still record its process id, become the current session, and report
-# its exit status, so that the next run's "last run" report is accurate.
-printf '%s\n' "$$" >"$SESSION_PID"
+# its exit status, so that the next run's "last run" report is accurate. In
+# a --foreground run, the body runs in a pipeline subshell, and only that
+# subshell owns the loop's signal handlers; $$ names the wrapper there, and
+# a USR1 to the wrapper kills it while the loop runs on. BASHPID (same value
+# as $$ in the main shell of a background run) names the loop itself.
+printf '%s\n' "${BASHPID:-$$}" >"$SESSION_PID"
 printf '%s\n' "$RUN_ID" >"$CURRENT"
 # The client reads this file to learn how the loop ended.
 trap 'printf "%s\n" "$?" >"$SESSION_STATUS"' EXIT
