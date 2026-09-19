@@ -711,7 +711,13 @@ stop_loop() {
 # first asks the loop to stop gracefully, at the end of its current
 # iteration; the second stops it at once, the way stop_loop always did. The
 # loop lives in its own process group, so the terminal's Ctrl-C reaches only
-# the client; the client must relay it.
+# the client; the client must relay it. The relay cannot use SIGINT: the
+# loop was started as an asynchronous command of a non-interactive shell,
+# which bash starts with SIGINT ignored, and a shell cannot trap a signal
+# that it inherited ignored. The relay therefore uses USR1, which the loop
+# traps as the graceful request, sent to the loop's process id alone, so
+# that the agents below it -- whose USR1 disposition is still the default,
+# fatal one -- run on to the end of the invocation.
 client_int() {
   local pid=$1
   INTERRUPTED=1
@@ -723,7 +729,7 @@ client_int() {
   printf '\n  %s%s%s\n' "$BOLD$WHITE" \
     "the loop stops at the end of the current iteration; press Ctrl-C again to stop it at once" \
     "$OFF" >&2
-  kill -INT -"$pid" 2>/dev/null || kill -INT "$pid" 2>/dev/null || true
+  kill -USR1 "$pid" 2>/dev/null || kill -INT "$pid" 2>/dev/null || true
 }
 
 # spawn_loop   Starts the loop in a session of its own, then waits for it.
@@ -910,17 +916,22 @@ for row in "${PANEL_ROWS[@]}"; do
   note "${row%%|*}: ${row#*|}"
 done
 
-# STOP_REQUESTED: set by the first SIGINT. The loop lets the running
-# invocation finish, starts no further one, and stops at the top of the main
-# loop. IN_INVOCATION: true while $CHILD is a worker, reviewer, or coach
-# process, so the first SIGINT knows whether there is one to let finish, as
-# opposed to a backoff sleep, which it can cut short right away.
+# STOP_REQUESTED: set by the graceful stop request. The request reaches the
+# loop as USR1 from the client that attaches, because the loop, started as
+# an asynchronous command of a non-interactive shell, inherits SIGINT
+# ignored and cannot trap it; a --foreground loop is in the terminal's
+# foreground group and hears the first Ctrl-C as INT directly. Either way
+# the loop lets the running invocation finish, starts no further one, and
+# stops at the top of the main loop. IN_INVOCATION: true while $CHILD is a
+# worker, reviewer, or coach process, so the graceful request knows whether
+# there is one to let finish, as opposed to a backoff sleep, which it cut
+# short right away.
 STOP_REQUESTED=0
 IN_INVOCATION=0
 
 on_signal() {
   local sig=$1 text
-  if [[ $sig == INT ]] && ((STOP_REQUESTED == 0)); then
+  if [[ $sig == INT || $sig == USR1 ]] && ((STOP_REQUESTED == 0)); then
     STOP_REQUESTED=1
     warn "stop requested; finishing the current invocation, then stopping"
     if ((! IN_INVOCATION)) && [[ -n $CHILD ]]; then
@@ -936,9 +947,9 @@ on_signal() {
   if [[ -n $FORMATTER ]]; then
     wait "$FORMATTER" 2>/dev/null
   fi
-  if [[ $sig == INT ]]; then
-    text="stopped by a second SIGINT after $(duration $((SECONDS - RUN_START)))"
-    note "=== run end: signal INT ==="
+  if [[ $sig == INT || $sig == USR1 ]]; then
+    text="stopped after a repeated stop request $(duration $((SECONDS - RUN_START)))"
+    note "=== run end: signal $sig ==="
     note "$text"
     banner "$YELLOW" "$E_STOP" "$text"
     exit 130
@@ -951,6 +962,7 @@ on_signal() {
 }
 trap 'on_signal INT' INT
 trap 'on_signal TERM' TERM
+trap 'on_signal USR1' USR1
 
 # run_agent <role> <model> <prompt>
 # Runs one non-interactive harness invocation. Writes the full message stream
