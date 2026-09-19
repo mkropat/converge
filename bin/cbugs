@@ -159,10 +159,11 @@ need_value() {
 # directory of the call -- CONVERGE_RUN_DIR when the environment holds it,
 # else the current directory -- by the same rule that converge uses, so that
 # a directory converge has run in gives the same state directory to both
-# commands. converge exports CONVERGE_RUN_DIR for every agent it starts, so
-# an agent that changes its own working directory still reads and writes the
-# bugs of its own run, and never the bugs of another run directory that it
-# moved into.
+# commands (CB-DB-2). When no run directory of the walk holds one, cbugs
+# creates one, as CB-DB-7 gives. converge exports CONVERGE_RUN_DIR for
+# every agent it starts, so an agent that changes its own working directory
+# still reads and writes the bugs of its own run, and never the bugs of
+# another run directory that it moved into.
 
 hash_path() {
   if command -v md5sum >/dev/null 2>&1; then
@@ -170,6 +171,52 @@ hash_path() {
   else
     printf '%s' "$1" | cksum | tr -d ' ' | cut -c1-12
   fi
+}
+
+# state_for <dir>   Prints the state directory that converge would use for a
+# run from <dir>, at the path of <dir>, by the rule of CB-DB-2: the name of
+# the repository that contains <dir>, the path of <dir> within it, and a
+# hash of the absolute path of <dir>. Every ancestor of the walk gets its
+# own derivation, so the state directory of another repository never takes
+# the bugs of this one (CB-DB-8.2).
+state_for() {
+  local dir=$1 repo sub=""
+  if ! repo=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null); then
+    repo=$dir
+  fi
+  [[ $dir == "$repo" ]] || sub="${dir#"$repo"/}"
+  printf '%s/%s' "${XDG_STATE_HOME:-${HOME:-}/.local/state}/converge" \
+    "${repo##*/}${sub:+-${sub//\//-}}-$(hash_path "$dir")"
+}
+
+# create_state_dir   Creates the state directory of the run directory of the
+# call. The command makes no directory of its own: it runs 'converge
+# --init-state' as PATH names it, with the working directory of the child
+# set to the run directory of the call (CB-DB-7.1). It discards the output
+# of a creation that succeeds; when the creation fails, it stops with an
+# error that names the cause, and prints no bug, whatever the verb asked
+# for (CB-DB-7.2, CB-ERR-3).
+create_state_dir() {
+  local errfile status
+  if ! command -v converge >/dev/null 2>&1; then
+    echo "cbugs: cannot create the state directory: 'converge' is not on PATH" >&2
+    exit 2
+  fi
+  if ! errfile=$(mktemp "${TMPDIR:-/tmp}/cbugs.XXXXXX"); then
+    echo "cbugs: cannot make a temporary file; check TMPDIR" >&2
+    exit 2
+  fi
+  (cd "$RUN_DIR" && converge --init-state) >/dev/null 2>"$errfile"
+  status=$?
+  if ((status != 0)); then
+    echo "cbugs: cannot create the state directory: 'converge --init-state' failed" >&2
+    while IFS= read -r line; do
+      [[ -n $line ]] && echo "cbugs: $line" >&2
+    done <"$errfile"
+    rm -f "$errfile"
+    exit 2
+  fi
+  rm -f "$errfile"
 }
 
 # --help needs no project state: it only prints usage. Detect it ahead of the
@@ -201,23 +248,72 @@ if [[ -n ${CONVERGE_RUN_DIR:-} ]]; then
 else
   RUN_DIR="$(pwd -P)"
 fi
-REPO="$(git -C "$RUN_DIR" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$RUN_DIR")"
-if [[ $RUN_DIR == "$REPO" ]]; then
-  RUN_SUBPATH=""
-else
-  RUN_SUBPATH="${RUN_DIR#"$REPO"/}"
+# Name the run directory by absolute path that pwd -P gives, as converge
+# names it, so that one directory derives one state directory, however the
+# caller spells its path (CB-DB-2). The walk below starts from the parent
+# of it, by string, so the path must be in that form already.
+if ((! HELP_REQUESTED)) && ! RUN_DIR=$(cd "$RUN_DIR" && pwd -P); then
+  echo "cbugs: cannot reach the run directory '$RUN_DIR'" >&2
+  exit 2
 fi
-SLUG="${REPO##*/}${RUN_SUBPATH:+-${RUN_SUBPATH//\//-}}-$(hash_path "$RUN_DIR")"
 if [[ -z ${XDG_STATE_HOME:-} && -z ${HOME:-} ]]; then
   echo "cbugs: set HOME or XDG_STATE_HOME; cbugs keeps its state there" >&2
   exit 2
 fi
-STATE_DIR="${XDG_STATE_HOME:-${HOME:-}/.local/state}/converge/$SLUG"
-if ((! HELP_REQUESTED)) && [[ ! -d $STATE_DIR ]]; then
-  echo "cbugs: no state directory for this project; run 'converge' here first" >&2
-  exit 2
+
+# State resolution. A call for help resolves no state directory and creates
+# none (CB-DB-8.4); every other call resolves one, and a read resolves it
+# exactly as a write does.
+STATE_DIR=""
+DB=""
+if ((! HELP_REQUESTED)); then
+  # The walk of CB-DB-8 ends with the root of the repository when the run
+  # directory sits in one, and with the root of the file system when it
+  # does not (CB-DB-8.2). When the run directory is itself the root of its
+  # repository, no ancestor of the walk lies within it, and the walk tests
+  # nothing: the state directory of another repository must never take the
+  # bugs of this one (CB-DB-8.2).
+  if REPO=$(git -C "$RUN_DIR" rev-parse --show-toplevel 2>/dev/null); then
+    if [[ $REPO == "$RUN_DIR" ]]; then
+      walk=0
+    else
+      walk=1
+      limit=$REPO
+    fi
+  else
+    REPO=$RUN_DIR
+    walk=1
+    limit=/
+  fi
+  own=$(state_for "$RUN_DIR")
+  if [[ -d $own ]]; then
+    # CB-DB-8: the state directory of the run directory, when it exists.
+    STATE_DIR=$own
+  else
+    dir=${RUN_DIR%/*}; [[ -z $dir ]] && dir=/
+    while ((walk)); do
+      cand=$(state_for "$dir")
+      if [[ -d $cand ]]; then
+        # The one case of CB-DB-8.3: the call writes its bugs into the
+        # database of the nearest ancestor that holds a state directory.
+        STATE_DIR=$cand
+        break
+      fi
+      [[ $dir == "$limit" ]] && break
+      parent=${dir%/*}
+      [[ -z $parent ]] && parent=/
+      [[ $parent == "$dir" ]] && break
+      dir=$parent
+    done
+    if [[ -z $STATE_DIR ]]; then
+      # No run directory of the walk holds one: create the state directory
+      # of the run directory of the call (CB-DB-7), for every verb.
+      create_state_dir
+      STATE_DIR=$own
+    fi
+  fi
+  DB="$STATE_DIR/cbugs.db"
 fi
-DB="$STATE_DIR/cbugs.db"
 
 ERRFILE=$(mktemp "${TMPDIR:-/tmp}/cbugs.XXXXXX")
 trap 'rm -f "$ERRFILE"' EXIT
