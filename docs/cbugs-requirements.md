@@ -192,16 +192,54 @@ work that no person requested, and a worker then does it.
   its own run, and never the bugs of another run directory that it moved into.
   A directory that `converge` has run in must give the same state directory to
   both commands.
-- **CB-DB-3**: The command must stop with an error when the state directory does
-  not exist. The error must tell the operator to run `converge` first. This keeps
-  a bug database out of a directory that no converge run has worked from.
+- **CB-DB-3**: Retired. The command stopped with an error when the state
+  directory did not exist, and told the operator to run `converge` first.
+  **CB-DB-7** and **CB-DB-8** replace this behavior: the command now uses the
+  state directory of an ancestor when the run directory has none, and creates
+  the state directory when the whole chain has none. The change removes the
+  state directory from the failures of CB-ERR-3.
 - **CB-DB-4**: The command must create the database on first use, inside a state
   directory that exists.
 - **CB-DB-5**: The command must never write into the repository.
-- **CB-DB-6**: The command must not look for the state directory of a parent of
-  the run directory. A directory that no converge run has worked from has no
-  bug database, whatever its parent holds. The caller that wants the bugs of a
-  run directory changes its working directory to it.
+- **CB-DB-6**: Retired. The command looked for no state directory of a parent
+  of the run directory, and the caller that wanted the bugs of a run directory
+  changed its working directory to it. **CB-DB-8** replaces this behavior with
+  the walk over the parent chain.
+- **CB-DB-7**: When no state directory exists for the run directory of the
+  call, or for an ancestor that the walk of CB-DB-8 tests, the command must
+  create the state directory for the run directory before it answers the call.
+  The creation happens for every verb, and a read creates the state directory
+  in the same way as a write.
+  - **CB-DB-7.1**: The command must create no state directory with operations
+    of its own. It must run `converge --init-state` with the working directory
+    of the child set to the run directory of the call, and `converge` must be
+    the command that PATH names. One tool therefore makes the directories, and
+    not two.
+  - **CB-DB-7.2**: The command must discard the output of a creation that
+    succeeds. When the creation fails, the command must stop with an error
+    that names the cause, and must print no bug.
+- **CB-DB-8**: When the state directory does not exist for the run directory
+  of the call, the command must find the nearest ancestor that holds a state
+  directory, and must use that state directory in place of one for the run
+  directory.
+  - **CB-DB-8.1**: The command must derive the state directory of each
+    ancestor of the run directory, by the rule that CB-DB-2 gives, from the
+    parent of the run directory upward. The first ancestor whose state
+    directory exists gives the state directory of the call.
+  - **CB-DB-8.2**: When the run directory is in a repository, the walk must
+    end with the root of the repository, and the command must test no ancestor
+    above it. When the run directory is not in a repository, the walk must end
+    with the root of the file system. A state directory of another repository
+    must therefore never take the bugs of this one.
+  - **CB-DB-8.3**: A call in a run directory without a state directory of its
+    own writes its bugs into the database of the state directory that the walk
+    finds. This is the one case in which two run directories share a bug
+    database, and CB-DB-1 holds in every other case. A later run of `converge`
+    in the same run directory creates its own state directory, and reads no
+    bug from the state directory that the walk found.
+  - **CB-DB-8.4**: The command must resolve no state directory, and must
+    create none, for a call that asks for the help text. `cbugs --help` and
+    `cbugs <verb> --help` must therefore work in any directory.
 
 ## Migration
 
@@ -494,12 +532,12 @@ next, and the help text does not tell it which bugs are open.
 - **CB-ERR-1**: A command that succeeds must exit with the status 0.
 - **CB-ERR-2**: A command that fails must print a message to standard error that
   names the cause, and must exit with a non-zero status.
-- **CB-ERR-3**: These are failures: a first argument that is neither a verb nor a
-  whole number, an option that does not exist, a value that a field does not
+- **CB-ERR-3**: These are failures: a first argument that is neither a verb nor
+  a whole number, an option that does not exist, a value that a field does not
   accept, a missing required option, an id that names no bug, a citation whose
-  path names no file, a state directory that does not exist, and a value of
-  `CONVERGE_RUN_DIR` that names no directory. `add --kind
-  task` from an agent of the loop is also a failure.
+  path names no file, a value of `CONVERGE_RUN_DIR` that names no directory,
+  and a creation call that fails or that finds no `converge` command on PATH.
+  `add --kind task` from an agent of the loop is also a failure.
 - **CB-ERR-4**: The command specifies no further exit statuses. A caller reads
   the message.
 

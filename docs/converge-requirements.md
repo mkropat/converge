@@ -101,6 +101,27 @@ These principles explain the intent behind the requirements. Apply them when a r
 - **CV-INV-7**: The script must stop with an error when an argument before `--` starts with `-` and is not an option of **CV-INV-3**. The error must name the argument. A typo must not become a harness option.
 - **CV-INV-8**: The script must accept positional arguments before `--`. Each one names a requirements document file, or a directory that holds requirements documents. "Requirements scope" gives the behavior.
 - **CV-INV-9**: The run directory anchors the run. The state directory, the bug database, the resolution of every scope path, and the working directory of every agent derive from the run directory, as the sections that govern them give. Two run directories share no state and no bug database. A subdirectory of a repository is therefore a place to run the command in its own right, with the same behavior as the root. The repository that contains the run directory supplies the git state of the run: the commits, and the history that a review pass reads.
+- **CV-INV-10**: The script must accept `--init-state`. A call that holds it
+  must start no loop and must attach to none. It must instead perform the init
+  operation and exit:
+  - **CV-INV-10.1**: The init operation must work on the run directory: the
+    current working directory of the call, as CV-INV-2 gives. It must accept no
+    argument that names a run directory. The current directory is the one
+    anchor of the system, as CV-OOS-26 gives.
+  - **CV-INV-10.2**: The init operation must create the state directory, the
+    subdirectories of the state directory, and the runtime directory when they
+    do not exist, under the same rule as CV-ID-5. It must leave a directory
+    that exists as it is. Two init calls that run at the same time must both
+    succeed.
+  - **CV-INV-10.3**: The init operation must print one line that names the path
+    of the state directory. It must exit with the status 0. It must write no
+    session output, no session status, no harness record, and no log.
+  - **CV-INV-10.4**: The script must stop with an error when the call gives
+    `--init-state` a positional argument or another option of CV-INV-3. Such a
+    call carries settings that the init operation cannot use.
+  - **CV-INV-10.5**: A run tests the harness command, as CV-HARN-4 gives. The
+    init operation must test none, because it makes directories and runs no
+    agent.
 
 ## Requirements scope
 
