@@ -958,7 +958,11 @@ PANEL_ROWS=(
   "scope|$SCOPE_SUMMARY"
   "run log|$(home_relative "$RUN_LOG")"
 )
-[[ -n ${CONVERGE_DAEMON:-} ]] && PANEL_ROWS+=("output|$(home_relative "$SESSION_OUT")")
+# A daemon session shows its output through the client, from the file named
+# here. A --foreground run shows it live and also writes the same file beside
+# its status (CV-STATE-9); the operator must see where that copy lands, so
+# both kinds of session name it.
+[[ -n ${CONVERGE_DAEMON:-} || $FOREGROUND == 1 ]] && PANEL_ROWS+=("output|$(home_relative "$SESSION_OUT")")
 # Guidance from an earlier run carries over. It shapes every worker in this
 # run, so the operator must see that it is there, and where to read it.
 [[ -s $GUIDANCE ]] && PANEL_ROWS+=("guidance|$(home_relative "$GUIDANCE")")
