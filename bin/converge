@@ -1960,7 +1960,11 @@ exit "$EXIT_STATUS"
 }
 
 if ((FOREGROUND)); then
-  ( main_body ) 2>&1 | tee "$SESSION_OUT"
+  # tee must outlive a Ctrl-C that reaches the terminal's foreground group:
+  # the transcript and the closing report must reach both the terminal and
+  # the session file while the loop lets the invocation finish (CV-FAIL-1).
+  # The same choice keeps tail alive in attach.
+  ( main_body ) 2>&1 | ( trap '' INT TERM; exec tee "$SESSION_OUT" )
   exit $?
 fi
 main_body
