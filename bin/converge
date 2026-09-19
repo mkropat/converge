@@ -25,6 +25,7 @@ TIMEOUT=3600
 MAX_ITERATIONS=""
 FOREGROUND=0
 INIT_STATE=0
+HELP_REQUESTED=0
 PASSTHROUGH=()
 ORIGINAL_ARGS="$*"
 # The client starts the loop again, in the background, with the same options.
@@ -111,7 +112,10 @@ while (($#)); do
     --max-iterations=*) MAX_ITERATIONS=${1#*=}; shift ;;
     --foreground) FOREGROUND=1; shift ;;
     --init-state) INIT_STATE=1; shift ;;
-    -h|--help) usage; exit 0 ;;
+    # Help does not act here: a call may combine it with --init-state and a
+    # forbidden argument, and CV-INV-10.4 must judge that call in full. The
+    # help action waits until the argument loop and the init check have run.
+    -h|--help) HELP_REQUESTED=1; shift ;;
     # An option before -- that this script does not know is a typo, not a
     # harness option. Only the arguments after -- reach the harness.
     -*)
@@ -139,6 +143,13 @@ if ((INIT_STATE)); then
     echo "converge: --init-state cannot be combined with '$arg'" >&2
     exit 2
   done
+fi
+
+# Help acts now: the argument loop has judged every other argument, so a
+# forbidden combination with --init-state has already stopped with an error.
+if ((HELP_REQUESTED)); then
+  usage
+  exit 0
 fi
 
 # Each scope path must exist, resolved against the run directory: the working
