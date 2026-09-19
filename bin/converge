@@ -1804,6 +1804,16 @@ while true; do
       fi
       if ((REVIEW_ENABLED)) && ((! STOP_REQUESTED)); then
         run_review_pass
+        # A done vote that a failed pass precedes cannot carry the loop to
+        # convergence: "the loop cannot converge on code that no reviewer has
+        # seen" (CV-CONV-5), and a failed pass saw nothing (CV-FAIL-4). The
+        # vote that preceded the pass does not count; the next vote starts a
+        # fresh count, and the pass that follows it examines the same range.
+        if ((RUN_STATUS != 0)); then
+          CONVERGED_VOTES=0
+          info "the review pass failed; the converged vote does not carry over"
+          note "review pass failed; consecutive count reset to 0"
+        fi
       fi
     else
       CONVERGED_VOTES=0
