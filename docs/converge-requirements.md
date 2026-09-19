@@ -340,7 +340,7 @@ The loop keeps its files in two directories. The state directory is durable. The
 - **CV-FAIL-4**: A review pass that fails or that exceeds the timeout must not stop the loop, and must not count as a pass. The next pass examines the same range, and the commit of the last pass does not move.
 - **CV-FAIL-5**: If an invocation exits with an error, the loop must log the event and continue with the next iteration.
 - **CV-FAIL-6**: The loop must never stop because of failures.
-- **CV-FAIL-7**: If an invocation fails before it produces output, the loop must wait before it starts the next iteration. The wait must double with each consecutive fast failure, from 10 seconds up to a maximum of 15 minutes. A success resets the wait to zero. This keeps the loop alive when the token quota is exhausted, and lets it resume when the quota period resets.
+- **CV-FAIL-7**: If an invocation fails before it produces output, the loop must wait before it starts the next iteration. The wait must double with each consecutive fast failure, from 10 seconds up to a maximum of 15 minutes. An invocation that produces output resets the wait to zero, whether it succeeds or fails. This keeps the loop alive when the token quota is exhausted, and lets it resume when the quota period resets.
 
 ## Out of scope
 
