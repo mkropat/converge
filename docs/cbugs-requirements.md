@@ -33,6 +33,7 @@ These are the section codes.
 | `INV` | Invocation |
 | `PLAT` | Platform |
 | `DB` | The database |
+| `MIG` | Migration |
 | `BUG` | Bugs |
 | `REV` | Revisions |
 | `CITE` | Citations |
@@ -55,7 +56,8 @@ These are the section codes.
 | `OOS` | Out of scope |
 
 The identifiers `CB-USER-1` through `CB-USER-3` are unused. `CB-TASK-1` through
-`CB-TASK-3` replace them.
+`CB-TASK-3` replace them. The identifier `CB-OOS-21` is unused. `CB-MIG-1`
+through `CB-MIG-6` replace it.
 
 ## Terms
 
@@ -200,6 +202,32 @@ work that no person requested, and a worker then does it.
   the run directory. A directory that no converge run has worked from has no
   bug database, whatever its parent holds. The caller that wants the bugs of a
   run directory changes its working directory to it.
+
+## Migration
+
+A database of an earlier version is a record, not a dead file. The command
+migrates it, and the history carries over.
+
+- **CB-MIG-1**: The database records the version of its model in `PRAGMA
+  user_version`. The current version is 3.
+- **CB-MIG-2**: The command knows how to migrate version 2. When a call finds a
+  database of version 2, the command must migrate the database to the current
+  version before it answers the call, whatever the verb. A read migrates the
+  database in the same way as a write.
+- **CB-MIG-3**: The migration from version 2 to version 3 renames the kind
+  `user` to `task`, and nothing else. Every bug id, every revision, and every
+  citation must be the same after the migration as before it. After it, the
+  database answers as if the kind had always been `task`.
+- **CB-MIG-4**: The migration must be one transaction. A migration that fails
+  must leave the database as it was. The command prints the error, changes
+  nothing, and the next call tries again.
+- **CB-MIG-5**: Two callers that find the same old database at the same time
+  must end with one migrated database. The rules of "Concurrency" govern the
+  migration: the second caller waits, finds the current version, and goes on.
+- **CB-MIG-6**: When a call finds a database of a version that the command does
+  not know, the command must stop with an error that names the version of the
+  database and the current version. The error must not tell the operator to
+  delete the file.
 
 ## Bugs
 
@@ -554,9 +582,12 @@ These are recorded decisions, not oversights.
   work of a worker.
 - **CB-OOS-20** — **Assignment of a bug to a role**: rejected. The kind decides
   who acts.
-- **CB-OOS-21** — **A migration of the database from an earlier version**:
-  rejected for v1. The database records the version of its model. A command that
-  meets another version stops with an error that tells the operator to delete the
-  file.
 - **CB-OOS-22** — **An interactive mode**: rejected. Every caller is a script or
   an agent.
+- **CB-OOS-23** — **A backup of the database before a migration**: rejected. The
+  migration is one transaction, and a failure leaves the file as it was. A copy
+  would only guard against a defect in the migration itself.
+- **CB-OOS-24** — **A migration from version 1**: rejected. Version 1 is a
+  different model: it holds reports and stored state, not revisions. It gets
+  the same error as any version that the command does not know. See
+  "Migration".

@@ -121,5 +121,7 @@ JOIN revision AS r
 -- the defect.
 --
 -- `PRAGMA user_version` records the version of this model. A command that
--- meets a database of another version must stop with an error that tells the
--- operator to delete the file. There is no migration.
+-- meets a database of version 2 migrates it to this version on first use: it
+-- renames every kind `user` to `task`, in one transaction, and changes nothing
+-- else. A command that meets a database of any other version stops with an
+-- error that names the version of the database and the current version.
