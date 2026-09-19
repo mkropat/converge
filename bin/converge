@@ -178,8 +178,19 @@ for pair in jq:jq timeout:coreutils tail:coreutils flock:util-linux \
 done
 
 # The BSD tools of the same names accept none of the options that the loop
-# uses, so a name on the PATH is not enough. `tail --pid` stands for the set:
-# it fails first, and it fails where the operator sees no output at all.
+# uses, so a name on the PATH is not enough (CV-PLAT-5). The GNU tools of
+# coreutils and util-linux all accept --version, and the BSD versions of
+# these tools do not, so each tool proves itself. A tail that answers
+# --version can still lack --pid, which the attach replay needs, so tail
+# also proves the one option that the loop depends on.
+for pair in timeout:coreutils flock:util-linux setsid:util-linux; do
+  tool=${pair%%:*} formula=${pair##*:}
+  if ! "$tool" --version >/dev/null 2>&1; then
+    echo "converge: this '$tool' is not GNU $tool" >&2
+    echo "converge: on macOS, run 'brew install $formula'" >&2
+    exit 2
+  fi
+done
 if [[ $(tail --help 2>/dev/null) != *--pid* ]]; then
   echo "converge: this 'tail' is not GNU tail; it does not accept --pid" >&2
   echo "converge: on macOS, run 'brew install coreutils'" >&2
