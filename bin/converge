@@ -273,12 +273,33 @@ duration() {
 }
 
 # panel <title> <label|value> ...   Draws the startup panel.
+# A row whose label names something an operator reads — the run directory,
+# a path, or the scope — prints its value whole. When such a row is wider
+# than the box, the row runs past the right border instead: a path cut in
+# the middle no longer names its file, and a scope cut in the middle hides
+# the documents the run works on (CV-OUT-1.1, CV-SCOPE-8, CV-ID-2,
+# CV-OUT-11). Every other row shortens to fit the box.
 panel() {
   local title=$1; shift
-  local inner=0 row label value line pad dashes
+  local inner=0 row label value line pad dashes raw
   for row in "$@"; do
-    printf -v line '%-10s %s' "${row%%|*}" "$(fit $((COLS - 17)) "${row#*|}")"
-    ((${#line} > inner)) && inner=${#line}
+    label=${row%%|*}
+    value=${row#*|}
+    case $label in
+      # A path row or the scope is operator-read text: it is never
+      # shortened, and it sets the width of the box when it fits in the
+      # terminal (CV-OUT-1.1, CV-SCOPE-8, CV-ID-2, CV-OUT-11).
+      "run dir"|"run log"|output|guidance|scope)
+        if ((11 + ${#value} <= COLS - 17)); then
+          printf -v line '%-10s %s' "$label" "$value"
+          ((${#line} > inner)) && inner=${#line}
+        fi
+        ;;
+      *)
+        printf -v line '%-10s %s' "$label" "$(fit $((COLS - 17)) "$value")"
+        ((${#line} > inner)) && inner=${#line}
+        ;;
+    esac
   done
   ((inner < ${#title} + 4)) && inner=$((${#title} + 4))
 
@@ -289,8 +310,23 @@ panel() {
     "$DIM" "$(repeat "$G_H" "$dashes")" "$G_TR" "$OFF"
   for row in "$@"; do
     label=${row%%|*}
-    value=$(fit $((COLS - 17)) "${row#*|}")
-    printf -v line '%-10s %s' "$label" "$value"
+    value=${row#*|}
+    raw=0
+    case $label in "run dir"|"run log"|output|guidance|scope) raw=1 ;; esac
+    if ((raw)) && ((11 + ${#value} > inner)); then
+      # The value does not fit the box and may not be shortened: leave the
+      # right border out, so the text runs on past it, whole.
+      printf '%s%s%s %s%-10s%s %s\n' \
+        "$DIM" "$G_V" "$OFF" \
+        "$DIM" "$label" "$OFF" "$value"
+      continue
+    fi
+    if ((raw)); then
+      printf -v line '%-10s %s' "$label" "$value"
+    else
+      value=$(fit $((COLS - 17)) "$value")
+      printf -v line '%-10s %s' "$label" "$value"
+    fi
     pad=$((inner - ${#line}))
     printf '%s%s%s %s%-10s%s %s%s %s%s%s\n' \
       "$DIM" "$G_V" "$OFF" \
