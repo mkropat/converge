@@ -455,7 +455,7 @@ LOOP_LOCK="$RUNTIME_DIR/loop.lock"
 # gate. A directory is a lock, because mkdir either makes it or fails.
 SPAWN_LOCK="$RUNTIME_DIR/spawn.lock"
 if ! mkdir -p "$LOG_DIR" "$SESSION_DIR" "$RUNTIME_DIR"; then
-  echo "converge: cannot make $STATE_DIR or $RUNTIME_DIR" >&2
+  echo "converge: cannot make the state directory or the runtime directory; check XDG_STATE_HOME, HOME, and TMPDIR" >&2
   exit 2
 fi
 # The temporary directory can be shared with other users. Keep the loop private.
@@ -795,7 +795,7 @@ need_tool "$HARNESS"
 fifo_probe="$RUNTIME_DIR/fifo_probe.$$"
 rm -f "$fifo_probe"
 if ! mkfifo "$fifo_probe" 2>/dev/null; then
-  echo "converge: cannot create a named pipe in $RUNTIME_DIR" >&2
+  echo "converge: cannot create a named pipe in the runtime directory" >&2
   echo "converge: the runtime directory must support named pipes" >&2
   exit 2
 fi
@@ -1004,7 +1004,7 @@ run_agent() {
     fifo_failed=1
     RUN_STATUS=1
     touch "$LOG_FILE"
-    bad "cannot create $fifo; the runtime directory does not support named pipes"
+    bad "cannot create the stream pipe; the runtime directory does not support named pipes"
   fi
   RUN_SECONDS=$((SECONDS - started))
 
