@@ -464,8 +464,13 @@ fi
 chmod 700 "$RUNTIME_DIR" 2>/dev/null || true
 
 # The client names the session. The loop takes the name, so that its logs and
-# its output file share one id.
-RUN_ID="${CONVERGE_SESSION:-$(date -u +%Y%m%dT%H%M%SZ)}"
+# its output file share one id. The timestamp leads, so a directory listing
+# sorts by age, and the client's process id and a value of $RANDOM follow it,
+# so that two sessions started in the same second cannot share one id: a
+# second run must not truncate the first session's output, and its log files
+# must not collide (CV-STATE-8, CV-STATE-10). A reader of the date still
+# slices the first sixteen characters; the suffix hangs behind the Z.
+RUN_ID="${CONVERGE_SESSION:-$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM}"
 SESSION_OUT="$SESSION_DIR/$RUN_ID.out"
 SESSION_STATUS="$SESSION_DIR/$RUN_ID.status"
 SESSION_PID="$RUNTIME_DIR/$RUN_ID.pid"
