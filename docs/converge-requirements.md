@@ -58,8 +58,8 @@ These are the section codes.
 - **Coach**: an agent that the loop starts on a fixed cadence to review recent worker logs and to write guidance.
 - **Bug tracker**: `bin/cbugs`, which keeps the bugs of the run directory in its state directory. See `docs/cbugs-requirements.md`.
 - **Code bug**: a defect in the code. A worker fixes it.
-- **Spec bug**: an ambiguity, a gap, or a contradiction in the requirements documents. An engineer resolves it. No agent works on a spec bug, and no agent waits for one.
-- **User bug**: a punchlist item that a human user asked for. A worker does it. Only a human user directs the record of one.
+- **Spec bug**: an ambiguity, a gap, or a contradiction in the requirements documents. The human user resolves it. No agent works on a spec bug, and no agent waits for one.
+- **Task**: a punchlist item that a human user asked for. A worker does it. Only a human user directs the record of one.
 - **Scope**: the set of requirements documents that the operator names on the command line. An empty scope means that the agent finds the requirements documents itself.
 - **Citation**: a reference from a bug revision to a documented requirement. `cbugs` writes it from a `--cite` option.
 - **Guidance file**: the file that the coach writes and that the loop injects into each worker prompt.
@@ -192,16 +192,16 @@ The operator starts a run over a connection that can break, and the run survives
 - **CV-ITER-3**: The worker prompt must instruct the worker to:
   - **CV-ITER-3.1**: Survey the current repository state with fresh eyes.
   - **CV-ITER-3.2**: Read the requirements documents of the scope, as "Requirements scope" gives. With an empty scope, find and read the requirements documents under the run directory.
-  - **CV-ITER-3.3**: Run `cbugs list --kind code --kind user --status open` and read the open code bugs and the open user bugs.
-  - **CV-ITER-3.4**: Fix these bugs before it starts work that the requirements name but no bug names. A defect in the code that exists is worth more than a feature that does not, and a user bug is work that a human user asked for.
+  - **CV-ITER-3.3**: Run `cbugs list --kind code --kind task --status open` and read the open code bugs and the open tasks.
+  - **CV-ITER-3.4**: Fix these bugs before it starts work that the requirements name but no bug names. A defect in the code that exists is worth more than a feature that does not, and a task is work that a human user asked for.
   - **CV-ITER-3.5**: Read the citations of a bug with `cbugs show`, and read the requirement that a citation names. The citation says which requirement the fix must meet.
   - **CV-ITER-3.6**: Close each bug that it fixes, with `cbugs close`, and say in the note what it changed.
-  - **CV-ITER-3.7**: Do a user bug in a way that no requirements document contradicts. A change that contradicts a document is a spec bug: log it, and do not make the change.
-  - **CV-ITER-3.8**: Select one chunk of work that moves the project toward the requirements, when no open code bug and no open user bug remain. The chunk must be small enough to complete in one iteration. The chunk must be large enough to be a meaningful step, not a myopic one.
+  - **CV-ITER-3.7**: Do a task in a way that no requirements document contradicts. A change that contradicts a document is a spec bug: log it, and do not make the change.
+  - **CV-ITER-3.8**: Select one chunk of work that moves the project toward the requirements, when no open code bug and no open task remain. The chunk must be small enough to complete in one iteration. The chunk must be large enough to be a meaningful step, not a myopic one.
   - **CV-ITER-3.9**: Implement the chunk.
   - **CV-ITER-3.10**: Commit logical changes with clear messages.
   - **CV-ITER-3.11**: Not create plan documents, roadmap documents, or task lists that persist between iterations.
-  - **CV-ITER-3.12**: Not work on a spec bug, and not wait for one. An engineer resolves a spec bug.
+  - **CV-ITER-3.12**: Not work on a spec bug, and not wait for one. The human user resolves a spec bug.
   - **CV-ITER-3.13**: When a commit fails because another process holds a lock of git, wait and try the commit again. A second loop can run in a second run directory of the same repository, as **CV-BG-11** gives.
 - **CV-ITER-4**: The worker prompt must tell the worker that it may log a bug with `cbugs add`, and must not urge it to. A worker that finds a defect it will not fix in this iteration has somewhere to put it. A worker that hunts for defects is not doing the work of a worker.
 - **CV-ITER-5**: The worker prompt must instruct the worker to cite the requirement that a bug it logs is about, with `cbugs add --cite <path>[:<id>]`.
@@ -245,13 +245,13 @@ The operator starts a run over a connection that can break, and the run survives
 
 ## Convergence and stopping
 
-- **CV-CONV-1**: The worker prompt must instruct the worker: do not vote while an open code bug or an open user bug exists. If you judge that the repository satisfies the requirements documents of the scope, no open code bug and no open user bug remain, and no work remains, write the exact token `CONVERGED` on a line of its own in your final message, and do no work.
+- **CV-CONV-1**: The worker prompt must instruct the worker: do not vote while an open code bug or an open task exists. If you judge that the repository satisfies the requirements documents of the scope, no open code bug and no open task remain, and no work remains, write the exact token `CONVERGED` on a line of its own in your final message, and do no work.
 - **CV-CONV-2**: The loop must read only the worker's final message to detect the token. This is a done vote.
 - **CV-CONV-3**: The loop must count the token only when it is alone on a line. Space before or after the token does not matter. The loop must ignore the token inside a line of text. This lets a worker name the token, or quote this document, without a vote.
 - **CV-CONV-4**: After a done vote, and before the next worker starts, the loop must run a review pass, unless the consensus is now complete or the reviewer is disabled. This is true whether or not a pass is due on the normal cadence.
 - **CV-CONV-5**: A worker that votes has done no work, so the pass examines the commits that no reviewer has examined yet. A pass that finds a defect logs a code bug, the next worker fixes it instead of voting, and the count of consecutive votes returns to zero. The loop therefore cannot converge on code that no reviewer has seen.
 - **CV-CONV-6**: With `--consensus 1`, a done vote completes the consensus at once, and no pass precedes it. An operator who wants every commit reviewed before convergence uses a consensus of `2` or more, which is the default.
-- **CV-CONV-7**: The loop must not query the bug database to decide anything. The done vote is the only signal it reads. The worker prompt holds the rule that an open code bug or an open user bug prevents a vote.
+- **CV-CONV-7**: The loop must not query the bug database to decide anything. The done vote is the only signal it reads. The worker prompt holds the rule that an open code bug or an open task prevents a vote.
 - **CV-CONV-8**: When the loop counts `N` consecutive done votes from different worker invocations, it must stop and report convergence.
 - **CV-CONV-9**: Any iteration that does not produce a done vote must reset the consecutive count to zero. This includes failures and timeouts.
 - **CV-CONV-10**: The loop must exit with status `0` on convergence and with a non-zero status in all other cases.
@@ -277,7 +277,7 @@ The worker builds. The reviewer reads what the worker built. One agent cannot do
 - **CV-REV-9**: The reviewer must log a defect that it finds, and must not fix it. A reviewer that edits code becomes a worker with no memory of the requirements it was reading.
 - **CV-REV-10**: The reviewer must not edit code, must not edit requirements documents, must not write the guidance file, and must not stop the loop. It writes bugs, and nothing else.
 - **CV-REV-11**: The reviewer must not close a bug. It did not do the work that a close records.
-- **CV-REV-12**: The reviewer must not log a user bug. Only a human user directs that record. The command refuses one from an agent of the loop, and the prompt must say so.
+- **CV-REV-12**: The reviewer must not log a task. Only a human user directs that record. The command refuses one from an agent of the loop, and the prompt must say so.
 - **CV-REV-13**: The loop must log reviewer output the same way it logs worker output.
 
 ## Coach
@@ -292,7 +292,7 @@ The worker builds. The reviewer reads what the worker built. One agent cannot do
   - **CV-COACH-4.4**: Rewrite the guidance file. Keep it short. Each entry must be a concrete, corrective instruction for future workers.
   - **CV-COACH-4.5**: Read the bug history with `cbugs list` and `cbugs search`, and look for a pattern in it: a defect that the workers keep making, or a bug that a worker closed and a later pass reopened. A pattern in the bugs is evidence about the process, which is what the coach writes about.
   - **CV-COACH-4.6**: Append one journal entry that records what it observed, what it changed, and what result it expects.
-- **CV-COACH-5**: The coach prompt must tell the coach that it may log a bug with `cbugs add`, and must not urge it to. The coach reads logs, not code, and the reviewer is the role that looks for defects. The coach must not log a user bug, for the reason that the reviewer must not.
+- **CV-COACH-5**: The coach prompt must tell the coach that it may log a bug with `cbugs add`, and must not urge it to. The coach reads logs, not code, and the reviewer is the role that looks for defects. The coach must not log a task, for the reason that the reviewer must not.
 - **CV-COACH-6**: The coach must write only the guidance file, the journal, and a bug. The coach must not edit code, must not edit requirements documents, and must not stop the loop.
 - **CV-COACH-7**: The loop must log coach output the same way it logs worker output.
 
@@ -346,7 +346,7 @@ The loop keeps its files in two directories. The state directory is durable. The
 
 These are recorded decisions, not oversights.
 
-- **CV-OOS-1** — **A user bug that an agent logs**: rejected. A user bug is a request from a human user. An agent that logs one invents work, and the next worker does it before the work that the requirements name. `cbugs` refuses `--kind user` when `CONVERGE_ROLE` is in the environment, so every agent of the loop is refused.
+- **CV-OOS-1** — **A task that an agent logs**: rejected. A task is a request from a human user. An agent that logs one invents work, and the next worker does it before the work that the requirements name. `cbugs` refuses `--kind task` when `CONVERGE_ROLE` is in the environment, so every agent of the loop is refused.
 - **CV-OOS-2** — **A loop that reports the citations of a bug**: rejected for v1. The report of a review pass gives the id, the kind, and the title. A reader who wants the citation runs `cbugs show`.
 - **CV-OOS-3** — **Loop-managed commits**: rejected. Workers commit as well as loop-enforced commits do, and the loop stays simpler.
 - **CV-OOS-4** — **Worker notes between iterations**: rejected for v1. The guidance file and the bug database are the channels between iterations. A note that is not a defect and not process guidance has no channel, and needs none yet.

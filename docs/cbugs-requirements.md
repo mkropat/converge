@@ -29,7 +29,7 @@ These are the section codes.
 | --- | --- |
 | `PRIN` | Design principles |
 | `KIND` | Kinds of bug |
-| `USER` | Who logs a user bug |
+| `TASK` | Who logs a task |
 | `INV` | Invocation |
 | `PLAT` | Platform |
 | `DB` | The database |
@@ -54,6 +54,9 @@ These are the section codes.
 | `CONC` | Concurrency |
 | `OOS` | Out of scope |
 
+The identifiers `CB-USER-1` through `CB-USER-3` are unused. `CB-TASK-1` through
+`CB-TASK-3` replace them.
+
 ## Terms
 
 - **Project**: the repository that the operator works on with `converge`. A
@@ -63,7 +66,7 @@ These are the section codes.
   database.
 - **Bug**: one defect. A bug has an identifier and a kind, and nothing else
   that cannot change.
-- **Kind**: `code`, `spec`, or `user`. See "Kinds of bug".
+- **Kind**: `code`, `spec`, or `task`. See "Kinds of bug".
 - **Revision**: one assertion about a bug, by one role, at one commit. A
   revision carries the full state of the bug and a note.
 - **Citation**: a reference from a revision to a documented requirement. It
@@ -113,34 +116,34 @@ There are three kinds, and the difference decides who acts.
 - **CB-KIND-1**: A **code bug** is a defect in the project code. A worker fixes
   it.
 - **CB-KIND-2**: A **spec bug** is an ambiguity, a gap, or a contradiction in
-  the requirements documents. An engineer resolves it. No agent works on a spec
-  bug, and no agent waits for one.
-- **CB-KIND-3**: A **user bug** is a punchlist item that a human user asked for.
+  the requirements documents. The human user resolves it. No agent works on a
+  spec bug, and no agent waits for one.
+- **CB-KIND-3**: A **task** is a punchlist item that a human user asked for.
   A worker does it. It is usually not a violation of a requirement, but a tweak
-  that the requirements permit. A user bug must not contradict a requirements
+  that the requirements permit. A task must not contradict a requirements
   document: a later worker that reads the document would undo the change.
 - **CB-KIND-4**: The command must treat the three kinds the same way in every
-  operation, with one exception: `add --kind user`. See "Who logs a user bug".
+  operation, with one exception: `add --kind task`. See "Who logs a task".
   Only the value of the field differs.
 - **CB-KIND-5**: The kind must not change. It is the one fact that decides who
   acts, so a bug whose kind was wrong is a different bug. The caller dismisses
   the bug, logs a new one of the right kind, and names the other bug in both
   notes.
 
-### Who logs a user bug
+### Who logs a task
 
-A user bug records what a human user asked for. An agent that logs one invents
+A task records what a human user asked for. An agent that logs one invents
 work that no person requested, and a worker then does it.
 
-- **CB-USER-1**: `add --kind user` must stop with an error when the environment
+- **CB-TASK-1**: `add --kind task` must stop with an error when the environment
   holds `CONVERGE_ROLE`. An agent that the loop starts therefore cannot log a
-  user bug, whatever a prompt tells it. The error must say that a user bug
-  records a request from a human user, and must name the role that it read.
-- **CB-USER-2**: The command must apply this test to `add` only. A worker must
-  be able to note, close, dismiss, and reopen a user bug, because a worker does
-  the work that the bug names.
-- **CB-USER-3**: The help text of `add` must say that an agent must never log a
-  user bug unless a human user directed it. The prompts must say the same. See
+  task, whatever a prompt tells it. The error must say that a task records a
+  request from a human user, and must name the role that it read.
+- **CB-TASK-2**: The command must apply this test to `add` only. A worker must
+  be able to note, close, dismiss, and reopen a task, because a worker does
+  the work that the task names.
+- **CB-TASK-3**: The help text of `add` must say that an agent must never log a
+  task unless a human user directed it. The prompts must say the same. See
   `docs/converge-requirements.md`.
 
 ## Invocation
@@ -205,7 +208,7 @@ A bug holds these values, and no more.
 - **CB-BUG-1**: **Id**: a small integer, unique in the bug database, that counts
   from 1. The operator and the agent name a bug by this integer. An agent can
   cite it in a commit message.
-- **CB-BUG-2**: **Kind**: `code`, `spec`, or `user`. It never changes.
+- **CB-BUG-2**: **Kind**: `code`, `spec`, or `task`. It never changes.
 
 ## Revisions
 
@@ -346,10 +349,10 @@ next, and the help text does not tell it which bugs are open.
 
 - **CB-ADD-1**: `cbugs add` must create one bug with the status `open`, must
   write its first revision, and must print the id of the bug.
-- **CB-ADD-2**: `--kind code|spec|user` is required. `--title <text>` is
+- **CB-ADD-2**: `--kind code|spec|task` is required. `--title <text>` is
   required.
-- **CB-ADD-3**: `add --kind user` must stop with an error when the environment
-  holds `CONVERGE_ROLE`. See "Who logs a user bug".
+- **CB-ADD-3**: `add --kind task` must stop with an error when the environment
+  holds `CONVERGE_ROLE`. See "Who logs a task".
 
 ### note
 
@@ -363,8 +366,8 @@ next, and the help text does not tell it which bugs are open.
 - **CB-CLOSE-1**: `cbugs close <id>` must write a revision with the status
   `closed`.
 - **CB-CLOSE-2**: `closed` means that the defect is gone. A worker closes a code
-  bug when it fixes the bug. An engineer closes a spec bug when the requirements
-  no longer hold the ambiguity.
+  bug when it fixes the bug. The human user closes a spec bug when the
+  requirements no longer hold the ambiguity.
 
 ### dismiss
 
@@ -386,9 +389,9 @@ next, and the help text does not tell it which bugs are open.
 
 - **CB-LIST-1**: `cbugs list` must print the bugs of the run directory.
 - **CB-LIST-2**: Options:
-  - **CB-LIST-2.1**: `--kind code|spec|user`: show only that kind. The option
+  - **CB-LIST-2.1**: `--kind code|spec|task`: show only that kind. The option
     must be repeatable, and several values mean the union, so that a worker can
-    ask for the code bugs and the user bugs in one call.
+    ask for the code bugs and the tasks in one call.
   - **CB-LIST-2.2**: `--status open|closed|wontfix`: show only that status. The
     option must be repeatable, so that a caller can ask for the closed bugs and
     the dismissed bugs together.
@@ -468,7 +471,7 @@ next, and the help text does not tell it which bugs are open.
   accept, a missing required option, an id that names no bug, a citation whose
   path names no file, a state directory that does not exist, and a value of
   `CONVERGE_RUN_DIR` that names no directory. `add --kind
-  user` from an agent of the loop is also a failure.
+  task` from an agent of the loop is also a failure.
 - **CB-ERR-4**: The command specifies no further exit statuses. A caller reads
   the message.
 

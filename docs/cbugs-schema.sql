@@ -10,22 +10,22 @@
 -- removed. The history is therefore true by construction, and no stored value
 -- can disagree with it.
 
-PRAGMA user_version = 2;
+PRAGMA user_version = 3;
 
 -- The identity of a defect.
 --
 -- The table holds only what cannot change. `kind` decides who acts: a worker
--- fixes a `code` bug and a `user` bug, and an engineer resolves a `spec` bug,
--- which is an ambiguity or a gap in the requirements documents. A `user` bug is
--- a punchlist item that a human user asked for. A defect whose kind was wrong
--- is a different defect. The caller dismisses the bug and logs a new one.
+-- fixes a `code` bug and does a `task`, and the human user resolves a `spec`
+-- bug, which is an ambiguity or a gap in the requirements documents. A `task`
+-- is a punchlist item that a human user asked for. A defect whose kind was
+-- wrong is a different defect. The caller dismisses the bug and logs a new one.
 --
 -- The one-column-and-a-kind table earns its place: it gives out an identifier
 -- atomically. A command that computed the next id from the revisions could
 -- give the same id to two callers that write at the same time.
 CREATE TABLE bug (
   id   INTEGER PRIMARY KEY,
-  kind TEXT NOT NULL CHECK (kind IN ('code', 'spec', 'user'))
+  kind TEXT NOT NULL CHECK (kind IN ('code', 'spec', 'task'))
 );
 
 -- One assertion about a bug, by one role, at one commit.
