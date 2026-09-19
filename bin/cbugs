@@ -448,7 +448,7 @@ row_line() {
     closed) color=$GREEN ;;
     wontfix) color=$DIM ;;
   esac
-  # A spec bug waits for an engineer, and no agent will act on it, so it
+  # A spec bug waits for the human user, and no agent will act on it, so it
   # earns a touch of color that a reader notices without it competing with
   # the status column. A code bug and a task stay subdued, and different
   # from each other, so a reader sees which rows are punchlist items.
