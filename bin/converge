@@ -838,9 +838,22 @@ if ((FOREGROUND == 0)) && [[ -z ${CONVERGE_DAEMON:-} ]]; then
 fi
 
 # --foreground starts a new loop directly, with no separate client process.
-# It must still report the last run before it starts, as any other start of a
-# new loop does.
-((FOREGROUND)) && report_last_run
+# It is a session like any other (CV-STATE-9): the loop must write its output
+# to one file per session, beside the exit status, and record the newest one
+# in the state directory. The session file is the transcript itself, so the
+# wrap below starts at the first line of the loop's own output. The client
+# branch above already reported the last run; the daemon branch must not
+# repeat it, so the report stays inside the wrapped body, guarded by the
+# flag that brought the call here.
+
+# main_body   The whole loop: harness selection, state stamping, panel, and
+# the iteration loop itself. In --foreground the caller runs this body
+# through tee, so the operator sees the output and the session file holds
+# the same text; as the daemon the body runs alone, with the client's own
+# redirection into the session file.
+main_body() {
+  ((FOREGROUND)) && report_last_run
+
 
 # ------------------------------------------------------------------- harness
 #
@@ -1944,3 +1957,10 @@ fi
 note "$CLOSING_TEXT"
 note "=== run end: exit $EXIT_STATUS ==="
 exit "$EXIT_STATUS"
+}
+
+if ((FOREGROUND)); then
+  ( main_body ) 2>&1 | tee "$SESSION_OUT"
+  exit $?
+fi
+main_body
