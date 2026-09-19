@@ -1484,12 +1484,12 @@ You are one iteration of an autonomous loop that converges this repository on
 its requirements documents. You have no memory of earlier iterations.
 
 1. Survey the repository with fresh eyes. __SCOPE_READ__
-2. Run `cbugs list --kind code --kind user --status open`. Fix open code and
-   user bugs before any other work: read each bug's citations with
-   `cbugs show <id>`, read the cited requirement, then close each bug you fix
-   with `cbugs close <id>`, saying in the note what you changed. If a user
-   bug would contradict a requirements document, do not make the change: log
-   a spec bug instead.
+2. Run `cbugs list --kind code --kind task --status open`. Fix open code
+   bugs and tasks before any other work: read each bug's citations with
+   `cbugs show <id>`, read the cited requirement, then close each bug you
+   fix with `cbugs close <id>`, saying in the note what you changed. If a
+   task would contradict a requirements document, do not make the change:
+   log a spec bug instead.
 3. __SCOPE_VOTE__
 4. Otherwise pick one chunk of work toward the requirements: small enough to
    finish this iteration, large enough to be a meaningful step. Implement it
@@ -1499,9 +1499,9 @@ You may log a defect you find but will not fix in this iteration with
 `cbugs add`. When you do, run `cbugs search` first so you do not log a
 duplicate, then `cbugs add --kind code` (defect in the code) or `--kind spec`
 (ambiguity, gap, or contradiction in the requirements), citing the
-requirement with `--cite <path>[:<id>]`. Never log `--kind user`; that kind
-records what a human user asked for, and the command refuses one from you
-anyway.
+requirement with `--cite <path>[:<id>]`. Never log `--kind task`; an agent
+must never log one unless a human user directed it, and the command refuses
+one from you anyway.
 
 Rules:
 
@@ -1517,10 +1517,10 @@ EOF
 
   if ((${#SCOPE[@]})); then
     read_line="Read the code and these requirements documents, and work on them only: $(scope_list). A path that is a directory names every requirements document under it. A change that contradicts a requirements document outside this scope is still a spec bug: log it, and do not make the change."
-    vote_line="Do not vote while an open code bug or an open user bug exists. If you judge that the repository satisfies the requirements documents of the scope, no code or user bug is open, and no work remains: do no work, write the exact token CONVERGED on a line of its own in your final message, and stop. The loop counts only that: the token alone on a line, in a final message where you did no work, with no code or user bug open. The token inside a sentence never votes."
+    vote_line="Do not vote while an open code bug or an open task exists. If you judge that the repository satisfies the requirements documents of the scope, no open code bug and no open task remain, and no work remains: do no work, write the exact token CONVERGED on a line of its own in your final message, and stop. The loop counts only that: the token alone on a line, in a final message where you did no work, with no open code bug and no open task remaining. The token inside a sentence never votes."
   else
     read_line="Read the code and the requirements documents; find them under the run directory. They describe behavior, not implementation steps."
-    vote_line="Do not vote while an open code bug or an open user bug exists. If every requirements document is satisfied, no code or user bug is open, and no work remains: do no work, write the exact token CONVERGED on a line of its own in your final message, and stop. The loop counts only that: the token alone on a line, in a final message where you did no work, with no code or user bug open. The token inside a sentence never votes."
+    vote_line="Do not vote while an open code bug or an open task exists. If every requirements document is satisfied, no open code bug and no open task remain, and no work remains: do no work, write the exact token CONVERGED on a line of its own in your final message, and stop. The loop counts only that: the token alone on a line, in a final message where you did no work, with no open code bug and no open task remaining. The token inside a sentence never votes."
   fi
   body=${body/__SCOPE_READ__/$read_line}
   body=${body/__SCOPE_VOTE__/$vote_line}
@@ -1566,7 +1566,7 @@ in force.
 Rules:
 
 - Write only $GUIDANCE, $JOURNAL, and, rarely, a bug with \`cbugs add\` (never
-  \`--kind user\`; the command refuses one from you anyway). Do not edit code
+  \`--kind task\`; the command refuses one from you anyway). Do not edit code
   or the requirements documents. Do not commit. You cannot stop the loop.
 - Correct process, not code. The reviewer looks for defects; do not report a
   code defect the requirements do not name.
@@ -1605,7 +1605,7 @@ Commit range to review: $range
 
 Rules: write bugs and nothing else. Do not fix a defect, edit code or the
 requirements documents, write the guidance file, close a bug, or stop the
-loop. Never log \`--kind user\`; only a human user directs that record, and
+loop. Never log \`--kind task\`; only a human user directs that record, and
 the command refuses one from you anyway.
 EOF
 }
