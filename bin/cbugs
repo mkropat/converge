@@ -579,7 +579,10 @@ add_citation() {
   fi
   test_path=$path
   [[ $path == /* ]] || test_path="$RUN_DIR/$path"
-  if [[ ! -e $test_path ]]; then
+  # The citation must name a requirements document, and a document is a
+  # file: a directory names no file, so it fails the same test as a path
+  # that no one invented a document under (CB-CITE-7).
+  if [[ ! -f $test_path ]]; then
     echo "cbugs: --cite path '$path' names no file" >&2
     exit 2
   fi
