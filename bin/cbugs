@@ -742,6 +742,15 @@ validate_kind() {
   }
 }
 
+# title_is_one_line <verb> <text>   Stops with an error when the text holds a
+# newline. CB-REV-1.2 gives the title one line that names the defect.
+title_is_one_line() {
+  [[ $2 != *$'\n'* ]] || {
+    echo "cbugs $1: --title must be one line; it holds a newline" >&2
+    exit 2
+  }
+}
+
 # validate_status <status>   Stops with an error unless the status is valid.
 validate_status() {
   [[ $1 == open || $1 == closed || $1 == wontfix ]] || {
@@ -838,6 +847,7 @@ verb_add() {
   [[ -n $kind ]] || { echo "cbugs add: --kind is required" >&2; exit 2; }
   ((title_set)) || { echo "cbugs add: --title is required" >&2; exit 2; }
   [[ -n $title ]] || { echo "cbugs add: --title must not be empty" >&2; exit 2; }
+  title_is_one_line add "$title"
   if [[ $kind == task && -n ${CONVERGE_ROLE:-} ]]; then
     echo "cbugs add: a task records a request from a human user; refused for role '$CONVERGE_ROLE'" >&2
     exit 1
@@ -913,6 +923,7 @@ verb_note() {
     esac
   done
   ((title_set)) && [[ -z $TITLE_OVERRIDE ]] && { echo "cbugs note: --title must not be empty" >&2; exit 2; }
+  ((title_set)) && title_is_one_line note "$TITLE_OVERRIDE"
   local id; id=$(parse_id "$id_arg") || exit $?
   require_bug "$id"
   note=$(resolve_note note "$note_set" "$note") || exit $?
@@ -945,6 +956,7 @@ verb_status_change() {
     esac
   done
   ((title_set)) && [[ -z $TITLE_OVERRIDE ]] && { echo "cbugs $verb: --title must not be empty" >&2; exit 2; }
+  ((title_set)) && title_is_one_line "$verb" "$TITLE_OVERRIDE"
   local id; id=$(parse_id "$id_arg") || exit $?
   require_bug "$id"
   note=$(resolve_note "$verb" "$note_set" "$note") || exit $?
