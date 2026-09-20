@@ -1980,6 +1980,7 @@ commits, newest first:
 blocking_count() {
   local raw n
   raw=$("$BIN_DIR/cbugs" list --kind code --kind task --status open --json 2>/dev/null) || return 1
+  [[ -n $raw ]] || raw='[]'
   n=$(jq 'length' <<<"$raw" 2>/dev/null) || return 1
   is_number "$n" || return 1
   printf '%s' "$n"
