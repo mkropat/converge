@@ -382,7 +382,10 @@ trap 'rm -f "$ERRFILE"' EXIT
 # sqlite3_run <raw|json> <sql>
 # Runs one script against the database, with a bounded wait when the database
 # is busy. Prints what the script writes to stdout. Stops with an error, on
-# stderr, when the script fails.
+# stderr, when the script fails. A caller that reads the answer in a command
+# substitution must propagate the failure with '|| exit 1': the exit status of
+# the substitution is otherwise lost, and the verb would continue on empty
+# data as if the call had answered (CB-ERR-2, CB-CONC-5).
 sqlite3_run() {
   local mode=$1 sql=$2 out status
   local -a flags=(-bail -cmd ".timeout 10000")
@@ -529,7 +532,7 @@ SQL
 # with an error when the version is one that this command does not know.
 init_db() {
   local ver
-  ver=$(sqlite3_run raw "PRAGMA user_version;")
+  ver=$(sqlite3_run raw "PRAGMA user_version;") || exit 1
   if [[ -z $ver || $ver == 0 ]]; then
     sqlite3_run raw "$SCHEMA_SQL" >/dev/null
     return
@@ -543,7 +546,7 @@ init_db() {
         exit 1
         ;;
     esac
-    ver=$(sqlite3_run raw "PRAGMA user_version;")
+    ver=$(sqlite3_run raw "PRAGMA user_version;") || exit 1
   done
 }
 ((HELP_REQUESTED)) || init_db
@@ -588,7 +591,9 @@ provenance() {
 # require_bug <id>   Stops with an error when no bug has this id.
 require_bug() {
   local found
-  found=$(sqlite3_run raw "SELECT 1 FROM bug WHERE id = $1;")
+  # A database error must not name itself "no bug with id": the failure of
+  # the query is a failure, and the empty answer of a success is the miss.
+  found=$(sqlite3_run raw "SELECT 1 FROM bug WHERE id = $1;") || exit 1
   [[ -n $found ]] || { echo "cbugs: no bug with id $1" >&2; exit 1; }
 }
 
@@ -666,7 +671,7 @@ print_listing() {
 # print_bug <id> <json flag>   Prints one bug's current state, after a write.
 print_bug() {
   local id=$1 json=$2 row
-  row=$(sqlite3_run json "SELECT id, kind, status, title FROM bug_current WHERE id = $id;")
+  row=$(sqlite3_run json "SELECT id, kind, status, title FROM bug_current WHERE id = $id;") || exit 1
   if ((json)); then
     jq -M '.[0]' <<<"$row"
     return
@@ -846,7 +851,7 @@ VALUES (last_insert_rowid(), 'open', '$(sql_quote "$title")', '$(sql_quote "$not
 $(citation_sql)
 SELECT bug_id FROM revision ORDER BY id DESC LIMIT 1;
 COMMIT;
-")
+") || exit 1
   if ((json)); then
     printf '{"id": %s}\n' "$id"
   else
@@ -964,7 +969,7 @@ verb_list() {
 SELECT id, kind, status, title FROM bug_current
 ${where:+WHERE $where}
 ORDER BY revision_id DESC;
-")
+") || exit 1
   print_listing "$rows" "$json"
 }
 
@@ -984,16 +989,16 @@ verb_show() {
   require_bug "$id"
 
   local bug revs cites
-  bug=$(sqlite3_run json "SELECT id, kind, status, title FROM bug_current WHERE id = $id;")
+  bug=$(sqlite3_run json "SELECT id, kind, status, title FROM bug_current WHERE id = $id;") || exit 1
   revs=$(sqlite3_run json "
 SELECT id, status, title, note, role, iteration, commit_id, created_at
 FROM revision WHERE bug_id = $id ORDER BY id ASC;
-")
+") || exit 1
   cites=$(sqlite3_run json "
 SELECT c.revision_id, c.path, c.req
 FROM citation c JOIN revision r ON r.id = c.revision_id
 WHERE r.bug_id = $id ORDER BY c.id ASC;
-")
+") || exit 1
   # sqlite3 -json prints nothing at all, not "[]", when a query matches no
   # row. A bug with no citation on any revision must still show its
   # revisions, so jq --argjson needs a valid empty array here.
@@ -1080,7 +1085,7 @@ WHERE ${where:+$where AND }EXISTS (
       ))
 )
 ORDER BY revision_id DESC;
-")
+") || exit 1
   print_listing "$rows" "$json"
 }
 
@@ -1276,10 +1281,10 @@ verb_summary() {
   rows=$(sqlite3_run json "
 SELECT id, kind, status, title FROM bug_current
 WHERE status = 'open' ORDER BY revision_id DESC LIMIT 10;
-")
+") || exit 1
   [[ -n $rows ]] || rows='[]'
   n=$(jq 'length' <<<"$rows")
-  total=$(sqlite3_run raw "SELECT COUNT(*) FROM bug_current WHERE status = 'open';")
+  total=$(sqlite3_run raw "SELECT COUNT(*) FROM bug_current WHERE status = 'open';") || exit 1
   is_number "$total" || total=0
 
   if ((n > 0)); then
