@@ -696,7 +696,12 @@ parse_profile_list() {
   local -n out=$arrname
   out=()
   local -a parts=()
-  IFS=',' read -ra parts <<<"$raw"
+  # A plain "IFS=',' read -ra" silently drops a trailing empty field, so
+  # "claude:sonnet," would parse as the single entry "claude:sonnet" instead
+  # of being rejected for its empty trailing entry, unlike a leading or
+  # embedded empty entry, which the regex below already catches (CV-HARN-9).
+  # Splitting on newlines with mapfile keeps that trailing empty entry.
+  mapfile -t parts <<<"${raw//,/$'\n'}"
   local -A seen=()
   local entry harness model effort e ok
   for entry in "${parts[@]}"; do
