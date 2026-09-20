@@ -1267,10 +1267,11 @@ run_agent() {
   # identify the full canonical profile, including explicit effort. Written
   # before the harness stream, so a reader of the .jsonl file alone (without
   # converge.log) can still tell which profile produced it.
-  local effort_json=null
-  [[ -n $effort ]] && effort_json="\"$effort\""
-  printf '{"type":"converge_event","event":"invocation","profile":"%s","harness":"%s","model":"%s","effort":%s}\n' \
-    "$RUN_PROFILE" "$INVOCATION_HARNESS" "$model" "$effort_json" >"$LOG_FILE"
+  jq -nc --arg profile "$RUN_PROFILE" --arg harness "$INVOCATION_HARNESS" \
+    --arg model "$model" --arg effort "$effort" \
+    '{type:"converge_event",event:"invocation",profile:$profile,harness:$harness,
+      model:$model,effort:(if $effort == "" then null else $effort end)}' \
+    >"$LOG_FILE"
 
   # The message stream does not hold the prompt. Keep it, so that a later
   # reader knows what this invocation was told, and which guidance was in
