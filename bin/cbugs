@@ -1450,10 +1450,13 @@ case $VERB in
     # names no verb on its own and must say which two exist. Both sub-verbs
     # read the repository (CB-RVW-8, CB-RVW-10), so a call that answers must
     # find git on PATH: without it, pending would print nothing under a
-    # silence that reads as an answer (CB-PLAT-2).
+    # silence that reads as an answer (CB-PLAT-2). But 'reviewed add --help'
+    # and 'reviewed pending --help' must work without git too (CB-INV-7), the
+    # same as every other verb's --help, so the check is skipped when the
+    # top-level scan already found -h/--help among the arguments.
     case ${1:-} in
-      add) shift; need_tool git git; verb_reviewed_add "$@" ;;
-      pending) shift; need_tool git git; verb_reviewed_pending "$@" ;;
+      add) shift; ((HELP_REQUESTED)) || need_tool git git; verb_reviewed_add "$@" ;;
+      pending) shift; ((HELP_REQUESTED)) || need_tool git git; verb_reviewed_pending "$@" ;;
       -h|--help) usage_reviewed; exit 0 ;;
       "")
         echo "cbugs reviewed: name a sub-verb: 'reviewed add' or 'reviewed pending'" >&2
