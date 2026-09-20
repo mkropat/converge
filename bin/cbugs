@@ -123,7 +123,8 @@ EOF
 
 usage_reviewed_add() {
   cat >&2 <<'EOF'
-Usage: cbugs reviewed add [--iteration <N>] [<commit>]... [--json]
+Usage: cbugs reviewed add [--iteration <N>] [--profile <profile>]
+                          [--completed-at <timestamp>] [<commit>]... [--json]
 
 Records the commits that one review pass of converge covered. The commits
 come as arguments, or on standard input, one commit per line. The record
@@ -132,15 +133,24 @@ of one call is one transaction: a call that fails records nothing.
 The command writes the full hash of the commit that git resolves from
 each value. A value that names no commit of the repository is an error.
 
-Prints one line with the number of commits that the call added and the
-number that a row already named.
+Every distinct resolved commit gets one new, immutable record, even when
+a row already names it.
+
+Prints one line with the number of records added, the number of input
+commits that a row already named before the call, the profile, and the
+completion timestamp.
 
 The call stops with an error when the environment holds CONVERGE_ROLE:
 the loop records the commits of a pass, and no agent of the loop records
 one. An operator who runs the command by hand may record commits.
 
---iteration <N>  The worker iteration that the pass followed. A call that
-                 gives none records none.
+--iteration <N>       The worker iteration that the pass followed. A call
+                      that gives none records none.
+--profile <profile>   The harness:model[:effort] of the pass. Omitted,
+                      the record holds an unknown profile.
+--completed-at <ts>   The completion time, as YYYY-MM-DDTHH:MM:SSZ.
+                      Omitted, the call uses the current UTC time, once
+                      for every record it writes.
 EOF
 }
 
@@ -290,7 +300,7 @@ for arg in "$@"; do
   fi
   case $arg in
     -h|--help) HELP_REQUESTED=1 ;;
-    --title|--kind|--note|--cite|--commit|--status|--iteration) skip_next=1 ;;
+    --title|--kind|--note|--cite|--commit|--status|--iteration|--profile|--completed-at) skip_next=1 ;;
   esac
 done
 
@@ -431,7 +441,7 @@ like_escape() {
 # The data model. This mirrors docs/cbugs-schema.sql. Nothing here is ever
 # changed or removed: the newest revision of a bug is its current state, and
 # a row of reviewed commits never changes.
-DB_VERSION=4
+DB_VERSION=5
 
 # The current-state view, which both the schema and the migration rebuild.
 BUG_CURRENT_VIEW_SQL=$(cat <<'SQL'
@@ -483,10 +493,13 @@ CREATE INDEX IF NOT EXISTS citation_revision ON citation (revision_id, id);
 
 CREATE TABLE IF NOT EXISTS reviewed (
   id         INTEGER PRIMARY KEY,
-  commit_id  TEXT NOT NULL UNIQUE,
+  commit_id  TEXT NOT NULL,
   iteration  INTEGER,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  profile    TEXT CHECK (profile <> '')
 );
+
+CREATE INDEX IF NOT EXISTS reviewed_commit ON reviewed (commit_id);
 
 $BUG_CURRENT_VIEW_SQL
 SQL
@@ -529,13 +542,38 @@ CREATE TABLE IF NOT EXISTS reviewed (
   iteration  INTEGER,
   created_at TEXT NOT NULL
 );
+PRAGMA user_version = 4;
+COMMIT;
+SQL
+)
+
+# The migration from version 4 to version 5. It drops the uniqueness of
+# commit_id, so more than one review record can name the same commit, and
+# adds the optional profile column. Every existing review id, full commit
+# hash, iteration, and created_at value is preserved unchanged; each old
+# record gets a NULL profile, which means unknown. It touches no bug,
+# revision, or citation. One transaction, like the previous steps.
+MIGRATE_V4_5_SQL=$(cat <<SQL
+BEGIN IMMEDIATE;
+CREATE TABLE reviewed_migrate (
+  id         INTEGER PRIMARY KEY,
+  commit_id  TEXT NOT NULL,
+  iteration  INTEGER,
+  created_at TEXT NOT NULL,
+  profile    TEXT CHECK (profile <> '')
+);
+INSERT INTO reviewed_migrate (id, commit_id, iteration, created_at, profile)
+  SELECT id, commit_id, iteration, created_at, NULL FROM reviewed;
+DROP TABLE reviewed;
+ALTER TABLE reviewed_migrate RENAME TO reviewed;
+CREATE INDEX IF NOT EXISTS reviewed_commit ON reviewed (commit_id);
 PRAGMA user_version = $DB_VERSION;
 COMMIT;
 SQL
 )
 
 # init_db   Prepares the database before the command answers the call. It
-# creates the database on first use, migrates a version 2 or version 3
+# creates the database on first use, migrates a version 2, 3, or 4
 # database one step at a time -- one transaction per step, re-reading the
 # version after each step, so that two callers that find the same old
 # database at the same time end with one migrated database -- and stops
@@ -551,8 +589,9 @@ init_db() {
     case $ver in
       2) sqlite3_run raw "$MIGRATE_V2_3_SQL" >/dev/null ;;
       3) sqlite3_run raw "$MIGRATE_V3_4_SQL" >/dev/null ;;
+      4) sqlite3_run raw "$MIGRATE_V4_5_SQL" >/dev/null ;;
       *)
-        echo "cbugs: $DB is database version $ver, but this command knows version $DB_VERSION and migrates only versions 2 and 3" >&2
+        echo "cbugs: $DB is database version $ver, but this command knows version $DB_VERSION and migrates only versions 2, 3, and 4" >&2
         exit 1
         ;;
     esac
@@ -1189,12 +1228,28 @@ verb_reviewed_pending() {
 }
 
 verb_reviewed_add() {
-  local iter="" json=0 value
+  local iter="" json=0 value profile="" profile_set=0 completed_at="" completed_at_set=0
   local -a commits=() named=() resolved=() absent=()
   while (($#)); do
     case $1 in
       --iteration) need_value "$1" $#; iter=$2; shift 2 ;;
       --iteration=*) iter=${1#*=}; shift ;;
+      --profile)
+        ((! profile_set)) || { echo "cbugs reviewed add: --profile given more than once" >&2; exit 2; }
+        need_value "$1" $#; profile=$2; profile_set=1; shift 2
+        ;;
+      --profile=*)
+        ((! profile_set)) || { echo "cbugs reviewed add: --profile given more than once" >&2; exit 2; }
+        profile=${1#*=}; profile_set=1; shift
+        ;;
+      --completed-at)
+        ((! completed_at_set)) || { echo "cbugs reviewed add: --completed-at given more than once" >&2; exit 2; }
+        need_value "$1" $#; completed_at=$2; completed_at_set=1; shift 2
+        ;;
+      --completed-at=*)
+        ((! completed_at_set)) || { echo "cbugs reviewed add: --completed-at given more than once" >&2; exit 2; }
+        completed_at=${1#*=}; completed_at_set=1; shift
+        ;;
       --json) json=1; shift ;;
       -h|--help) usage_reviewed_add; exit 0 ;;
       -*) echo "cbugs reviewed add: unexpected argument '$1'" >&2; exit 2 ;;
@@ -1205,6 +1260,31 @@ verb_reviewed_add() {
     echo "cbugs reviewed add: --iteration needs a whole number, got '$iter'" >&2
     exit 2
   }
+  # A supplied profile must be harness:model[:effort], where the harness is
+  # claude or opencode and every field is nonempty with no colon, comma, or
+  # whitespace; a slash is allowed. The command stores the caller's string
+  # unchanged (CB-RVW-14). This runs before any commit is resolved, so an
+  # invalid profile fails before any record is written.
+  if ((profile_set)); then
+    [[ $profile =~ ^(claude|opencode):[^:,[:space:]]+(:[^:,[:space:]]+)?$ ]] || {
+      echo "cbugs reviewed add: --profile '$profile' must be claude:model[:effort] or opencode:model[:effort], with nonempty fields and no colon, comma, or whitespace" >&2
+      exit 2
+    }
+  fi
+  # A supplied completion time must be a valid UTC date and time in
+  # YYYY-MM-DDTHH:MM:SSZ form (CB-RVW-15). Re-formatting the parsed value and
+  # comparing it back catches a calendar date that does not exist, which GNU
+  # date would otherwise silently normalize.
+  if ((completed_at_set)); then
+    local reformatted=""
+    if [[ $completed_at =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+      reformatted=$(date -u -d "$completed_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
+    fi
+    [[ -n $reformatted && $reformatted == "$completed_at" ]] || {
+      echo "cbugs reviewed add: --completed-at '$completed_at' must be a valid UTC timestamp in YYYY-MM-DDTHH:MM:SSZ form" >&2
+      exit 2
+    }
+  fi
   # The loop records the commits of a pass, and no agent of the loop records
   # one. The error names the role that the call read. reviewed pending
   # changes nothing, so every caller may run it (CB-RVW-7).
@@ -1250,16 +1330,18 @@ verb_reviewed_add() {
       resolved+=("$candidate")
     }
   done
-  CREATED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  CREATED_AT=$completed_at
+  ((completed_at_set)) || CREATED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-  # One transaction for the whole call (CB-RVW-6). The EXISTS probes run
+  # One transaction for the whole call (CB-RVW-13). The EXISTS probes run
   # inside it, so the printed counts describe the database under the write
-  # lock, and no concurrent call can slip between "already named" and the
-  # insert. A commit that a row already names stays one row and changes
-  # nothing, and the call still reports success (CB-RVW-3). A temp table
+  # lock, and no concurrent call can slip between "already covered" and the
+  # insert. Every distinct resolved commit gets one new, immutable record in
+  # this call, even when a row already names it (CB-RVW-12). A temp table
   # holds the candidates: SQLite gives a VALUES table no alias to name its
-  # column with, and the three statements below all read the same names.
-  local values_sql="" out hash
+  # column with, and both statements below read the same names.
+  local values_sql="" out hash profile_sql=NULL
+  ((! profile_set)) || profile_sql="'$(sql_quote "$profile")'"
   for hash in ${resolved[@]+"${resolved[@]}"}; do
     values_sql+="${values_sql:+,}('$(sql_quote "$hash")')"
   done
@@ -1268,29 +1350,30 @@ BEGIN IMMEDIATE;
 DROP TABLE IF EXISTS temp.reviewed_add;
 CREATE TEMP TABLE reviewed_add (c TEXT NOT NULL);
 INSERT INTO reviewed_add (c) VALUES $values_sql;
-SELECT c, EXISTS(SELECT 1 FROM reviewed WHERE commit_id = c) FROM reviewed_add;
-INSERT OR IGNORE INTO reviewed (commit_id, iteration, created_at)
-SELECT c, ${iter:-NULL}, '$CREATED_AT' FROM reviewed_add;
-SELECT COUNT(*) FROM reviewed WHERE commit_id IN (SELECT c FROM reviewed_add);
+SELECT EXISTS(SELECT 1 FROM reviewed WHERE commit_id = reviewed_add.c) FROM reviewed_add;
+INSERT INTO reviewed (commit_id, iteration, created_at, profile)
+SELECT c, ${iter:-NULL}, '$CREATED_AT', $profile_sql FROM reviewed_add;
 COMMIT;
 ") || exit 1
-  # Every commit answers one probe line; the last line names the rows the
-  # call now covers, which must be all of them.
-  local already=0 n=${#resolved[@]} i total
+  # Every commit answers one probe line: whether a row already named it
+  # before this call. added counts every new record this call wrote, which
+  # is one per distinct resolved commit; already counts input commits that
+  # had any record before the call (CB-RVW-17).
+  local already=0 n=${#resolved[@]} i
   local -a probe_rows=()
   mapfile -t probe_rows <<<"$out"
   for ((i = 0; i < n; i++)); do
-    [[ ${probe_rows[$i]} == "${resolved[$i]}|1" ]] && ((++already))
+    [[ ${probe_rows[$i]} == 1 ]] && ((++already))
   done
-  total=${probe_rows[$n]:-0}
-  if [[ $total != "$n" ]]; then
-    echo "cbugs reviewed add: database error: the call named $n commits, but the table now names $total" >&2
-    exit 1
-  fi
   if ((json)); then
-    printf '{"added": %s, "already": %s}\n' $((n - already)) "$already"
+    local -a profile_arg=(--arg profile "" --argjson has_profile false)
+    ((! profile_set)) || profile_arg=(--arg profile "$profile" --argjson has_profile true)
+    jq -cn --argjson added "$n" --argjson already "$already" --arg created_at "$CREATED_AT" \
+      "${profile_arg[@]}" \
+      '{added: $added, already: $already, profile: (if $has_profile then $profile else null end), created_at: $created_at}'
   else
-    printf 'added %s, %s that a row already named\n' "$(plural $((n - already)) commit)" "$(plural "$already" commit)"
+    printf 'added %s, %s that a row already named, profile %s, completed at %s\n' \
+      "$(plural "$n" commit)" "$(plural "$already" commit)" "${profile:-unknown}" "$CREATED_AT"
   fi
 }
 
