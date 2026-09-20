@@ -171,12 +171,18 @@ EOF
 #
 # The command runs under the same platform conditions as converge: bash 4 or
 # later, and the GNU/Homebrew discovery pattern for a tool that Homebrew keeps
-# off the normal PATH on macOS.
+# off the normal PATH on macOS. hash_path (below) and reviewed add's
+# --completed-at both need the GNU versions of md5sum and date that coreutils
+# supplies; without them on PATH, hash_path silently falls back to cksum and
+# derives a state directory that disagrees with converge's (CB-DB-2), and
+# date -u -d misparses under the BSD date that macOS supplies.
 
 for brew_prefix in "${HOMEBREW_PREFIX:-}" /opt/homebrew /usr/local; do
   [[ -n $brew_prefix ]] || continue
-  bin_dir="$brew_prefix/opt/sqlite/bin"
-  [[ -d $bin_dir ]] && PATH="$bin_dir:$PATH"
+  for bin_dir in "$brew_prefix/opt/sqlite/bin" \
+                 "$brew_prefix/opt/coreutils/libexec/gnubin"; do
+    [[ -d $bin_dir ]] && PATH="$bin_dir:$PATH"
+  done
 done
 
 need_tool() {
@@ -190,6 +196,16 @@ need_tool() {
 }
 need_tool sqlite3 sqlite
 need_tool jq jq
+need_tool date coreutils
+
+# The BSD date that macOS supplies shares the name "date" but rejects -d, the
+# GNU option that reviewed add's --completed-at validation depends on
+# (CV-PLAT-5's rule applies here too: a name on PATH is not enough).
+if ! date --version >/dev/null 2>&1; then
+  echo "cbugs: this 'date' is not GNU date" >&2
+  echo "cbugs: on macOS, run 'brew install coreutils'" >&2
+  exit 2
+fi
 
 # ------------------------------------------------------------------ appearance
 
