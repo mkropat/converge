@@ -2317,9 +2317,14 @@ while true; do
     run_agent coach "$(coach_prompt "$PENDING_LOGS_TEXT")"
     ((STOP_REQUESTED)) || handle_invocation_wait "$LOG_FILE" "$INVOCATION_HARNESS"
     show_guidance "$GUIDANCE_BEFORE"
+    # CV-COACH-8's cadence counts worker iterations, not a backlog: the coach
+    # was due and ran, so the cadence resets whether or not the run itself
+    # succeeded. PENDING_LOGS is different -- it is the backlog of logs the
+    # coach has not yet reviewed -- so it clears only on success, letting a
+    # retry still see the unprocessed logs.
+    SINCE_COACH=0
     if ((RUN_STATUS == 0)); then
       PENDING_LOGS=()
-      SINCE_COACH=0
     fi
   fi
   ((STOP_REQUESTED)) && break
