@@ -1014,10 +1014,16 @@ client_main() {
   local waited=0
   attach_if_running
 
-  # No loop runs, so this client starts one. Now the settings that the call
-  # names must hold, and the error is this client's own (CV-SCOPE-2). The
-  # call above attaches and never returns when a loop runs, so a client that
-  # reaches this point is a client that starts a loop.
+  # No loop runs, so this client starts one. Reject a retired harness
+  # variable here, in the terminal of the call (CV-HARN-12): the spawned
+  # loop would refuse later, and then the call reports "the loop did not
+  # start" and the reason stays hidden in the session file.
+  reject_retired_env
+
+  # The settings that the call names must hold, and the error is this
+  # client's own (CV-SCOPE-2). The call above attaches and never returns
+  # when a loop runs, so a client that reaches this point is a client that
+  # starts a loop.
   validate_start_options
 
   # Two clients must not start two loops. The one that makes the gate wins.
