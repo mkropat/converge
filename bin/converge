@@ -1931,8 +1931,9 @@ in force.
 Rules:
 
 - Write only $GUIDANCE, $JOURNAL, and, rarely, a bug with \`cbugs add\` (never
-  \`--kind task\`; the command refuses one from you anyway). Do not edit code
-  or the requirements documents. Do not commit. You cannot stop the loop.
+  \`--kind task\`; only a human user directs that record, and the command
+  refuses one from you anyway). Do not edit code or the requirements
+  documents. Do not commit. You cannot stop the loop.
 - Correct process, not code. The reviewer looks for defects; do not report a
   code defect the requirements do not name.
 EOF
