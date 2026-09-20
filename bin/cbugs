@@ -337,7 +337,7 @@ if ((! HELP_REQUESTED)) && ! RUN_DIR=$(cd "$RUN_DIR" && pwd -P); then
   echo "cbugs: cannot reach the run directory '$RUN_DIR'" >&2
   exit 2
 fi
-if [[ -z ${XDG_STATE_HOME:-} && -z ${HOME:-} ]]; then
+if ((! HELP_REQUESTED)) && [[ -z ${XDG_STATE_HOME:-} && -z ${HOME:-} ]]; then
   echo "cbugs: set HOME or XDG_STATE_HOME; cbugs keeps its state there" >&2
   exit 2
 fi
