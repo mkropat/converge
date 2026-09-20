@@ -488,7 +488,7 @@ SQL
 )
 
 SCHEMA_SQL=$(cat <<SQL
-PRAGMA user_version = $DB_VERSION;
+BEGIN IMMEDIATE;
 
 CREATE TABLE IF NOT EXISTS bug (
   id   INTEGER PRIMARY KEY,
@@ -529,6 +529,8 @@ CREATE TABLE IF NOT EXISTS reviewed (
 CREATE INDEX IF NOT EXISTS reviewed_commit ON reviewed (commit_id);
 
 $BUG_CURRENT_VIEW_SQL
+PRAGMA user_version = $DB_VERSION;
+COMMIT;
 SQL
 )
 
