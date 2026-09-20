@@ -2079,6 +2079,7 @@ record_reviewed() {
 run_review_pass() {
   local kind=$1 pending_list pending_count pending_failed=0 bugs_before bugs_after new_bugs count
   local recorded=0 head_before head_after record_failed=0 completed_at
+  local bugs_before_ok=1 bugs_after_ok=1
   if pending_list=$(unreviewed_list); then
     pending_count=$(awk 'NF { c++ } END { print c + 0 }' <<<"$pending_list")
   else
@@ -2115,7 +2116,7 @@ integration of the recent work with the old code matters most."
   fi
   prompt=$(reviewer_prompt "$focus")
 
-  bugs_before=$("$BIN_DIR/cbugs" list --json 2>/dev/null)
+  bugs_before=$("$BIN_DIR/cbugs" list --json 2>/dev/null) || bugs_before_ok=0
   [[ -n $bugs_before ]] || bugs_before='[]'
   head_before=$(git rev-parse HEAD 2>/dev/null) || head_before=
 
@@ -2151,13 +2152,25 @@ integration of the recent work with the old code matters most."
     CONVERGED_VOTES=0
   fi
 
-  bugs_after=$("$BIN_DIR/cbugs" list --json 2>/dev/null)
+  bugs_after=$("$BIN_DIR/cbugs" list --json 2>/dev/null) || bugs_after_ok=0
   [[ -n $bugs_after ]] || bugs_after='[]'
-  new_bugs=$(jq --argjson before "$bugs_before" \
-    '[.[] | select(.id as $i | ([$before[].id] | index($i)) == null)]' \
-    <<<"$bugs_after")
-  count=$(jq 'length' <<<"$new_bugs")
-  if ((count > 0)); then
+  if ((bugs_before_ok)) && ((bugs_after_ok)); then
+    new_bugs=$(jq --argjson before "$bugs_before" \
+      '[.[] | select(.id as $i | ([$before[].id] | index($i)) == null)]' \
+      <<<"$bugs_after" 2>/dev/null)
+    count=$(jq 'length' <<<"$new_bugs" 2>/dev/null)
+  else
+    new_bugs=
+    count=
+  fi
+  if ! is_number "$count"; then
+    # CV-OUT-13: a failed 'cbugs list --json' read, before or after the pass,
+    # leaves no honest comparison to report. Say so, rather than naming bugs
+    # the pass did not log (a failed "before" read) or denying the ones it
+    # did (a failed "after" read).
+    warn "cbugs list --json failed; cannot report the bugs this pass logged"
+    note "cbugs list --json failed; cannot report the bugs this pass logged"
+  elif ((count > 0)); then
     local id kind_ title
     while IFS=$'\t' read -r id kind_ title; do
       printf '  %s%s%s bug #%s %s%s%s %s\n' \
