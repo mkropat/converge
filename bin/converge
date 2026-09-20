@@ -212,6 +212,85 @@ if ((FOREGROUND != 0)) || [[ -n ${CONVERGE_DAEMON:-} ]]; then
   validate_start_options
 fi
 
+# The run directory is the current working directory of the operator: the
+# root of the repository, or any subdirectory of it. The script never changes
+# its own working directory, so every relative path that follows, and the
+# working directory of every agent the loop starts, stay anchored there. The
+# repository that contains it supplies the git state of the run: the commits,
+# and the history that a review pass reads.
+RUN_DIR="$(pwd -P)"
+REPO="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$RUN_DIR")"
+
+# State lives outside the repository, at a path that is stable per run
+# directory.
+hash_path() {
+  if command -v md5sum >/dev/null 2>&1; then
+    printf '%s' "$1" | md5sum | cut -c1-12
+  else
+    printf '%s' "$1" | cksum | tr -d ' ' | cut -c1-12
+  fi
+}
+# The name of the repository, the path of the run directory within it (when
+# the run directory is not the root), and a hash of the run directory's own
+# absolute path. The name lets an operator tell the run directories of one
+# repository apart in a listing; the hash keeps two run directories of one
+# name apart, and gives a run directory that moves or is renamed a fresh name,
+# with no guidance carried over.
+if [[ $RUN_DIR == "$REPO" ]]; then
+  RUN_SUBPATH=""
+else
+  RUN_SUBPATH="${RUN_DIR#"$REPO"/}"
+fi
+SLUG="${REPO##*/}${RUN_SUBPATH:+-${RUN_SUBPATH//\//-}}-$(hash_path "$RUN_DIR")"
+if [[ -z ${XDG_STATE_HOME:-} && -z ${HOME:-} ]]; then
+  echo "converge: set HOME or XDG_STATE_HOME; converge keeps its state there" >&2
+  exit 2
+fi
+# The durable directory. It holds everything that must survive a restart of the
+# machine: the guidance, the journal, the logs, and the output of each session.
+STATE_DIR="${XDG_STATE_HOME:-${HOME:-}/.local/state}/converge/$SLUG"
+LOG_DIR="$STATE_DIR/logs"
+SESSION_DIR="$STATE_DIR/sessions"
+GUIDANCE="$STATE_DIR/guidance.md"
+JOURNAL="$STATE_DIR/journal.md"
+RUN_LOG="$STATE_DIR/converge.log"
+# The commits that a review pass covered live in the bug database, in the
+# reviewed table (CV-REV-15), and not in a file of this directory: the
+# reviewed_commit file that an earlier version wrote stays unread and is
+# never written again.
+# The name of the session that the newest loop writes.
+CURRENT="$STATE_DIR/current"
+# The temporary directory. It holds only the files that show that a process is
+# alive now. The system removes them, so a dead loop leaves nothing that blocks
+# a new run. A pipe also stays here, because a home directory can be on a
+# network file system, which supports no pipe.
+RUNTIME_DIR="${TMPDIR:-/tmp}/converge/$SLUG"
+# The loop holds this lock while it runs. The kernel releases the lock when the
+# loop dies, so the lock, and not a file that a dead loop leaves behind, tells
+# a client whether a loop runs for this run directory.
+LOOP_LOCK="$RUNTIME_DIR/loop.lock"
+# One client at a time looks for a loop and starts one. This directory is the
+# gate. A directory is a lock, because mkdir either makes it or fails.
+SPAWN_LOCK="$RUNTIME_DIR/spawn.lock"
+# --init-state performs the init operation and exits (CV-INV-10). It makes
+# the state directory, the subdirectories of it, and the runtime directory
+# when they do not exist, and leaves a directory that exists as it is; two
+# init calls that run at the same time both succeed, because mkdir -p is
+# safe for both (CV-INV-10.2). It prints one line that names the path of the
+# state directory, and writes no session output, no session status, and no
+# log (CV-INV-10.3). It tests no harness command, because it makes
+# directories and runs no agent (CV-INV-10.5). It runs before the tool checks
+# below, because the init operation needs none of jq, timeout, tail, flock,
+# or setsid: it only makes directories and prints a path.
+if ((INIT_STATE)); then
+  if ! mkdir -p "$STATE_DIR" "$LOG_DIR" "$SESSION_DIR" "$RUNTIME_DIR"; then
+    echo "converge: cannot make the state directory or the runtime directory; check XDG_STATE_HOME, HOME, and TMPDIR" >&2
+    exit 2
+  fi
+  printf '%s\n' "$STATE_DIR"
+  exit 0
+fi
+
 # The loop needs the GNU versions of the tools below. macOS supplies the BSD
 # versions, and Homebrew keeps the GNU versions off the normal PATH. Put them
 # on the PATH of this script and of the agents that it starts.
@@ -538,82 +617,6 @@ gutter() {
   fi
 }
 
-# The run directory is the current working directory of the operator: the
-# root of the repository, or any subdirectory of it. The script never changes
-# its own working directory, so every relative path that follows, and the
-# working directory of every agent the loop starts, stay anchored there. The
-# repository that contains it supplies the git state of the run: the commits,
-# and the history that a review pass reads.
-RUN_DIR="$(pwd -P)"
-REPO="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$RUN_DIR")"
-
-# State lives outside the repository, at a path that is stable per run
-# directory.
-hash_path() {
-  if command -v md5sum >/dev/null 2>&1; then
-    printf '%s' "$1" | md5sum | cut -c1-12
-  else
-    printf '%s' "$1" | cksum | tr -d ' ' | cut -c1-12
-  fi
-}
-# The name of the repository, the path of the run directory within it (when
-# the run directory is not the root), and a hash of the run directory's own
-# absolute path. The name lets an operator tell the run directories of one
-# repository apart in a listing; the hash keeps two run directories of one
-# name apart, and gives a run directory that moves or is renamed a fresh name,
-# with no guidance carried over.
-if [[ $RUN_DIR == "$REPO" ]]; then
-  RUN_SUBPATH=""
-else
-  RUN_SUBPATH="${RUN_DIR#"$REPO"/}"
-fi
-SLUG="${REPO##*/}${RUN_SUBPATH:+-${RUN_SUBPATH//\//-}}-$(hash_path "$RUN_DIR")"
-if [[ -z ${XDG_STATE_HOME:-} && -z ${HOME:-} ]]; then
-  echo "converge: set HOME or XDG_STATE_HOME; converge keeps its state there" >&2
-  exit 2
-fi
-# The durable directory. It holds everything that must survive a restart of the
-# machine: the guidance, the journal, the logs, and the output of each session.
-STATE_DIR="${XDG_STATE_HOME:-${HOME:-}/.local/state}/converge/$SLUG"
-LOG_DIR="$STATE_DIR/logs"
-SESSION_DIR="$STATE_DIR/sessions"
-GUIDANCE="$STATE_DIR/guidance.md"
-JOURNAL="$STATE_DIR/journal.md"
-RUN_LOG="$STATE_DIR/converge.log"
-# The commits that a review pass covered live in the bug database, in the
-# reviewed table (CV-REV-15), and not in a file of this directory: the
-# reviewed_commit file that an earlier version wrote stays unread and is
-# never written again.
-# The name of the session that the newest loop writes.
-CURRENT="$STATE_DIR/current"
-# The temporary directory. It holds only the files that show that a process is
-# alive now. The system removes them, so a dead loop leaves nothing that blocks
-# a new run. A pipe also stays here, because a home directory can be on a
-# network file system, which supports no pipe.
-RUNTIME_DIR="${TMPDIR:-/tmp}/converge/$SLUG"
-# The loop holds this lock while it runs. The kernel releases the lock when the
-# loop dies, so the lock, and not a file that a dead loop leaves behind, tells
-# a client whether a loop runs for this run directory.
-LOOP_LOCK="$RUNTIME_DIR/loop.lock"
-# One client at a time looks for a loop and starts one. This directory is the
-# gate. A directory is a lock, because mkdir either makes it or fails.
-SPAWN_LOCK="$RUNTIME_DIR/spawn.lock"
-# --init-state performs the init operation and exits (CV-INV-10). It makes
-# the state directory, the subdirectories of it, and the runtime directory
-# when they do not exist, and leaves a directory that exists as it is; two
-# init calls that run at the same time both succeed, because mkdir -p is
-# safe for both (CV-INV-10.2). It prints one line that names the path of the
-# state directory, and writes no session output, no session status, and no
-# log (CV-INV-10.3). It tests no harness command, because it makes
-# directories and runs no agent (CV-INV-10.5).
-if ((INIT_STATE)); then
-  if ! mkdir -p "$STATE_DIR" "$LOG_DIR" "$SESSION_DIR" "$RUNTIME_DIR"; then
-    echo "converge: cannot make the state directory or the runtime directory; check XDG_STATE_HOME, HOME, and TMPDIR" >&2
-    exit 2
-  fi
-  printf '%s\n' "$STATE_DIR"
-  exit 0
-fi
 if ! mkdir -p "$LOG_DIR" "$SESSION_DIR" "$RUNTIME_DIR"; then
   echo "converge: cannot make the state directory or the runtime directory; check XDG_STATE_HOME, HOME, and TMPDIR" >&2
   exit 2
