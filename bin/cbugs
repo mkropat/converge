@@ -322,6 +322,16 @@ fi
 STATE_DIR=""
 DB=""
 if ((! HELP_REQUESTED)); then
+  # Every call that answers reads the repository: the derivation of CB-DB-2
+  # names the repository of the run directory, the walk of CB-DB-8 ends at
+  # its root, and the write verbs read its HEAD. Without git the command
+  # cannot tell a repository from a plain directory. It would then derive a
+  # state directory whose name converge does not derive (CB-DB-2), or test
+  # ancestors above the root of the repository (CB-DB-8.2), or record a
+  # revision with no commit where the repository holds one (CB-PROV-4).
+  # A necessary tool must name its absence, as CB-PLAT-2 gives: stop here,
+  # before any answer, with the named-tool error.
+  need_tool git git
   # The walk of CB-DB-8 ends with the root of the repository when the run
   # directory sits in one, and with the root of the file system when it
   # does not (CB-DB-8.2). When the run directory is itself the root of its
