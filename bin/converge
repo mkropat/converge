@@ -1263,6 +1263,15 @@ run_agent() {
   PROMPT_FILE="${LOG_FILE%.jsonl}.prompt.md"
   RESULT_TEXT=""
 
+  # CV-HARN-15: the invocation log, not only the invocation line, must
+  # identify the full canonical profile, including explicit effort. Written
+  # before the harness stream, so a reader of the .jsonl file alone (without
+  # converge.log) can still tell which profile produced it.
+  local effort_json=null
+  [[ -n $effort ]] && effort_json="\"$effort\""
+  printf '{"type":"converge_event","event":"invocation","profile":"%s","harness":"%s","model":"%s","effort":%s}\n' \
+    "$RUN_PROFILE" "$INVOCATION_HARNESS" "$model" "$effort_json" >"$LOG_FILE"
+
   # The message stream does not hold the prompt. Keep it, so that a later
   # reader knows what this invocation was told, and which guidance was in
   # force when it ran.
@@ -1309,7 +1318,7 @@ run_agent() {
     sleep 1
   done
   if ((fifo_ok)); then
-    ( trap '' INT; tee "$LOG_FILE" <"$fifo" | format_stream "$accent" ) &
+    ( trap '' INT; tee -a "$LOG_FILE" <"$fifo" | format_stream "$accent" ) &
     FORMATTER=$!
 
     harness_argv "$INVOCATION_HARNESS" "$model" "$effort" "$prompt"
@@ -1346,7 +1355,6 @@ run_agent() {
     # exiting mid-run with no closing report.
     fifo_failed=1
     RUN_STATUS=1
-    touch "$LOG_FILE"
     bad "cannot create the stream pipe; the runtime directory does not support named pipes"
   fi
   RUN_SECONDS=$((SECONDS - started))
