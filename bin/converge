@@ -429,7 +429,7 @@ plural() {
 # list: a read the loop could not perform does not mean the commits are
 # reviewed.
 unreviewed_list() {
-  "$BIN_DIR/cbugs" reviewed pending 2>/dev/null
+  CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" reviewed pending 2>/dev/null
 }
 
 # unreviewed_hashes   The commits of unreviewed_list as full hashes, so the
@@ -2012,7 +2012,7 @@ commits, newest first:
 # every caller must treat it as blocking rather than as a clear board.
 blocking_count() {
   local raw n
-  raw=$("$BIN_DIR/cbugs" list --kind code --kind task --status open --json 2>/dev/null) || return 1
+  raw=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" list --kind code --kind task --status open --json 2>/dev/null) || return 1
   [[ -n $raw ]] || raw='[]'
   n=$(jq 'length' <<<"$raw" 2>/dev/null) || return 1
   is_number "$n" || return 1
@@ -2067,7 +2067,8 @@ record_reviewed() {
   status=0
   out=$(
     printf '%s\n' "$last_pending" | awk '{print $1}' |
-      env -u CONVERGE_ROLE -u CONVERGE_ITERATION "$BIN_DIR/cbugs" reviewed add \
+      env -u CONVERGE_ROLE -u CONVERGE_ITERATION CONVERGE_RUN_DIR="$RUN_DIR" \
+        "$BIN_DIR/cbugs" reviewed add \
         --iteration "$ITERATION" --profile "$profile" --completed-at "$completed_at"
   ) || status=$?
   if ((status != 0)); then
@@ -2133,7 +2134,7 @@ integration of the recent work with the old code matters most."
   fi
   prompt=$(reviewer_prompt "$focus")
 
-  bugs_before=$("$BIN_DIR/cbugs" list --json 2>/dev/null) || bugs_before_ok=0
+  bugs_before=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" list --json 2>/dev/null) || bugs_before_ok=0
   [[ -n $bugs_before ]] || bugs_before='[]'
   head_before=$(git rev-parse HEAD 2>/dev/null) || head_before=
 
@@ -2169,7 +2170,7 @@ integration of the recent work with the old code matters most."
     CONVERGED_VOTES=0
   fi
 
-  bugs_after=$("$BIN_DIR/cbugs" list --json 2>/dev/null) || bugs_after_ok=0
+  bugs_after=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" list --json 2>/dev/null) || bugs_after_ok=0
   [[ -n $bugs_after ]] || bugs_after='[]'
   if ((bugs_before_ok)) && ((bugs_after_ok)); then
     new_bugs=$(jq --argjson before "$bugs_before" \
