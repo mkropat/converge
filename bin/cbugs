@@ -197,6 +197,7 @@ need_tool() {
 need_tool sqlite3 sqlite
 need_tool jq jq
 need_tool date coreutils
+need_tool flock util-linux
 
 # The BSD date that macOS supplies shares the name "date" but rejects -d, the
 # GNU option that reviewed add's --completed-at validation depends on
@@ -590,10 +591,18 @@ SQL
 
 # init_db   Prepares the database before the command answers the call. It
 # creates the database on first use, migrates a version 2, 3, or 4
-# database one step at a time -- one transaction per step, re-reading the
-# version after each step, so that two callers that find the same old
-# database at the same time end with one migrated database -- and stops
+# database one step at a time -- one transaction per step -- and stops
 # with an error when the version is one that this command does not know.
+#
+# The migration steps run under a lock of their own (CB-MIG-5), not only
+# under the BEGIN IMMEDIATE of each step's own transaction. The version 4
+# to 5 step rebuilds the reviewed table from whatever shape it finds; that
+# is safe to run once, but not safe to replay against a database that a
+# second caller already carried to version 5 in the meantime, because it
+# would overwrite a profile that a third caller wrote after the first
+# migration committed. Serializing the whole migration means a caller that
+# waited on the lock re-reads the version once it has the lock and, when
+# another caller already finished, finds nothing left to do.
 init_db() {
   local ver
   ver=$(sqlite3_run raw "PRAGMA user_version;") || exit 1
@@ -601,6 +610,10 @@ init_db() {
     sqlite3_run raw "$SCHEMA_SQL" >/dev/null
     return
   fi
+  [[ $ver == "$DB_VERSION" ]] && return
+  exec 9>"$STATE_DIR/cbugs.db.migrate.lock" || exit 1
+  flock 9
+  ver=$(sqlite3_run raw "PRAGMA user_version;") || exit 1
   while [[ $ver != "$DB_VERSION" ]]; do
     case $ver in
       2) sqlite3_run raw "$MIGRATE_V2_3_SQL" >/dev/null ;;
@@ -613,6 +626,8 @@ init_db() {
     esac
     ver=$(sqlite3_run raw "PRAGMA user_version;") || exit 1
   done
+  flock -u 9
+  exec 9>&-
 }
 ((HELP_REQUESTED)) || init_db
 
