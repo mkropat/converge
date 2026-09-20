@@ -84,10 +84,12 @@ while (($#)); do
     # is rejected by name, not sent to a harness.
     --)
       shift
-      for arg in ${@+"$@"}; do
-        echo "converge: unexpected argument '$arg' after --; converge accepts no passthrough" >&2
-      done
-      exit 2
+      if (($#)); then
+        for arg in "$@"; do
+          echo "converge: unexpected argument '$arg' after --; converge accepts no passthrough" >&2
+        done
+        exit 2
+      fi
       ;;
     # CV-INV-11: these options are retired. Selection comes from the role
     # profile variables alone (CV-HARN-8).
