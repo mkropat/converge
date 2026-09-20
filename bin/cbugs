@@ -1232,9 +1232,9 @@ verb_reviewed_pending() {
     for line in ${lines[@]+"${lines[@]}"}; do
       hash=${line%%$'\t'*}
       subject=${line#*$'\t'}
-      elems+=("$(jq -cn --arg c "$hash" --arg s "$subject" '{commit_id: $c, subject: $s}')")
+      elems+=("$(jq -Mcn --arg c "$hash" --arg s "$subject" '{commit_id: $c, subject: $s}')")
     done
-    printf '%s\n' "${elems[@]}" | jq -s .
+    printf '%s\n' "${elems[@]}" | jq -M -s .
     exit 0
   fi
   for line in ${lines[@]+"${lines[@]}"}; do
@@ -1384,7 +1384,7 @@ COMMIT;
   if ((json)); then
     local -a profile_arg=(--arg profile "" --argjson has_profile false)
     ((! profile_set)) || profile_arg=(--arg profile "$profile" --argjson has_profile true)
-    jq -cn --argjson added "$n" --argjson already "$already" --arg created_at "$CREATED_AT" \
+    jq -Mcn --argjson added "$n" --argjson already "$already" --arg created_at "$CREATED_AT" \
       "${profile_arg[@]}" \
       '{added: $added, already: $already, profile: (if $has_profile then $profile else null end), created_at: $created_at}'
   else
