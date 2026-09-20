@@ -954,18 +954,18 @@ COMMIT;
 }
 
 verb_note() {
-  local id_arg="" note="" note_set=0 commit="" json=0 title_set=0
+  local id_arg="" note="" note_set=0 pos_note_set=0 commit="" json=0 title_set=0
   TITLE_OVERRIDE=""
   [[ ${1:-} == -h || ${1:-} == --help ]] && { usage_note; exit 0; }
   [[ $# -ge 1 && $1 != -* ]] || { usage_note; exit 2; }
   id_arg=$1; shift
   if [[ $# -ge 1 && $1 != -* ]]; then
-    note=$1; note_set=1; shift
+    note=$1; note_set=1; pos_note_set=1; shift
   fi
   while (($#)); do
     case $1 in
-      --note) need_value "$1" $#; note=$2; note_set=1; shift 2 ;;
-      --note=*) note=${1#*=}; note_set=1; shift ;;
+      --note) need_value "$1" $#; ((pos_note_set)) || { note=$2; note_set=1; }; shift 2 ;;
+      --note=*) ((pos_note_set)) || { note=${1#*=}; note_set=1; }; shift ;;
       --title) need_value "$1" $#; TITLE_OVERRIDE=$2; title_set=1; shift 2 ;;
       --title=*) TITLE_OVERRIDE=${1#*=}; title_set=1; shift ;;
       --cite) need_value "$1" $#; add_citation "$2"; shift 2 ;;
