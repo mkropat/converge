@@ -1970,33 +1970,45 @@ commits, newest first:
 # read or moved.
 # blocking_count   Prints the number of open code bugs and tasks. Only these
 # kinds gate approval and convergence; a spec bug never blocks (CV-CONV-17).
-# A query failure counts as none, as CV-OUT-6 gives for other bug reads.
+# A query failure is not a count of zero (CV-CONV-17): it fails this call, so
+# every caller must treat it as blocking rather than as a clear board.
 blocking_count() {
-  local n
-  n=$("$BIN_DIR/cbugs" list --kind code --kind task --status open --json 2>/dev/null | jq 'length' 2>/dev/null)
-  is_number "$n" || n=0
+  local raw n
+  raw=$("$BIN_DIR/cbugs" list --kind code --kind task --status open --json 2>/dev/null) || return 1
+  n=$(jq 'length' <<<"$raw" 2>/dev/null) || return 1
+  is_number "$n" || return 1
   printf '%s' "$n"
 }
 
 # apply_blocking_reset   Any open code bug or task resets the consecutive
 # vote count, wherever it is found: after a worker's vote, and after a
-# review pass (CV-CONV-17).
+# review pass (CV-CONV-17). A failed read is treated the same way: it must
+# not be mistaken for a clear board.
 apply_blocking_reset() {
-  if ((0 < $(blocking_count))); then
-    if ((CONVERGED_VOTES > 0)); then
-      note "open code bug or task; consecutive vote count reset to 0"
-    fi
-    CONVERGED_VOTES=0
+  local n status=0
+  n=$(blocking_count) || status=$?
+  if ((status == 0)) && ((n == 0)); then
+    return 0
   fi
+  if ((CONVERGED_VOTES > 0)); then
+    if ((status == 0)); then
+      note "open code bug or task; consecutive vote count reset to 0"
+    else
+      note "cbugs read failed; consecutive vote count reset to 0"
+    fi
+  fi
+  CONVERGED_VOTES=0
 }
 
 # convergence_holds   True exactly when CV-CONV-14 holds right now: enough
 # consecutive done votes, no open code bug or task, and, with review
 # enabled, final approval of the exact current HEAD. Approval never applies
-# to a disabled reviewer.
+# to a disabled reviewer. A failed blocking-bug read prevents convergence.
 convergence_holds() {
   ((CONVERGED_VOTES >= CONSENSUS)) || return 1
-  ((0 == $(blocking_count))) || return 1
+  local n
+  n=$(blocking_count) || return 1
+  ((0 == n)) || return 1
   if ((REVIEW_ENABLED)); then
     local head
     head=$(git rev-parse HEAD 2>/dev/null) || head=
@@ -2128,13 +2140,14 @@ integration of the recent work with the old code matters most."
   if [[ $kind == final ]]; then
     if ((RUN_STATUS == 0)) && ((! record_failed)); then
       head_after=$(git rev-parse HEAD 2>/dev/null) || head_after=
-      if [[ -n $head_after && $head_after == "$head_before" ]] && ((0 == $(blocking_count))); then
+      local blocking
+      if [[ -n $head_after && $head_after == "$head_before" ]] && blocking=$(blocking_count) && ((0 == blocking)); then
         APPROVED_HEAD=$head_after
         info "final approval granted for $head_after"
         note "final approval granted for $head_after"
       else
         info "final approval withheld"
-        note "final approval withheld (HEAD moved during the pass, or an open code bug or task remains)"
+        note "final approval withheld (HEAD moved during the pass, an open code bug or task remains, or the bug tracker could not be read)"
       fi
     else
       info "final approval withheld; the pass failed"
