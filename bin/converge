@@ -411,23 +411,32 @@ plural() {
 # The commits that no review pass has recorded. The bug tracker holds them
 # (CV-REV-15), so this list, and not a file of the state directory, decides
 # what every pass must still read. The list comes from cbugs reviewed
-# pending: one line per commit, "<hash> <subject>", newest first.
+# pending: one line per commit, "<hash> <subject>", newest first. A cbugs
+# database error (CB-ERR-2) fails this call rather than reporting an empty
+# list: a read the loop could not perform does not mean the commits are
+# reviewed.
 unreviewed_list() {
-  "$BIN_DIR/cbugs" reviewed pending 2>/dev/null || true
+  "$BIN_DIR/cbugs" reviewed pending 2>/dev/null
 }
 
 # unreviewed_hashes   The commits of unreviewed_list as full hashes, so the
-# loop can record them with cbugs reviewed add after a pass.
+# loop can record them with cbugs reviewed add after a pass. Fails when
+# unreviewed_list fails.
 unreviewed_hashes() {
-  unreviewed_list | awk '{print $1}'
+  local out
+  out=$(unreviewed_list) || return 1
+  [[ -z $out ]] || printf '%s\n' "$out" | awk '{print $1}'
 }
 
 # unreviewed_count   Prints the number of the unreviewed commits.
 # CV-CONV-13 gives the loop leave to read this count, which is not a bug,
-# to schedule its review passes. A cbugs failure counts as none, as the
-# bug list of CV-OUT-6 does.
+# to schedule its review passes. A cbugs failure fails this call (a
+# non-zero status, no output): the caller must treat that as a failed read,
+# not as a count of zero, the same distinction blocking_count draws.
 unreviewed_count() {
-  awk 'NF { c++ } END { print c + 0 }' <<<"$(unreviewed_hashes)"
+  local hashes
+  hashes=$(unreviewed_hashes) || return 1
+  awk 'NF { c++ } END { print c + 0 }' <<<"$hashes"
 }
 
 # reachable_count   Prints the number of commits that git reaches from HEAD.
@@ -1129,8 +1138,13 @@ else
 fi
 # CV-OUT-1.6: the count of the unreviewed commits at startup, so the
 # operator sees whether a cadence pass runs before the first worker. The
-# count carries over from earlier runs: the bug database holds it.
-UNREVIEWED_START=$(unreviewed_count)
+# count carries over from earlier runs: the bug database holds it. A failed
+# read is reported as such, not as zero unreviewed commits.
+if UNREVIEWED_START=$(unreviewed_count); then
+  UNREVIEWED_SUMMARY=$(plural "$UNREVIEWED_START" "unreviewed commit")
+else
+  UNREVIEWED_SUMMARY="unknown (cbugs reviewed pending failed)"
+fi
 PANEL_ROWS=(
   "run dir|$(home_relative "$RUN_DIR")"
   "scope|$SCOPE_SUMMARY"
@@ -1147,7 +1161,7 @@ PANEL_ROWS=(
 PANEL_ROWS+=(
   "worker|$WORKER_SUMMARY"
   "review|$REVIEW_SUMMARY"
-  "pending review|$(plural "$UNREVIEWED_START" "unreviewed commit")"
+  "pending review|$UNREVIEWED_SUMMARY"
   "coach|$COACH_SUMMARY"
   "stop|$(plural "$CONSENSUS" "converged vote") in a row"
   "timeout|${TIMEOUT}s for one invocation"
@@ -2061,13 +2075,29 @@ record_reviewed() {
 # below did not fail, and no open code bug or task remains (CV-CONV-15). The
 # caller (run_due_review) still owns whether a final pass is due at all.
 run_review_pass() {
-  local kind=$1 pending_list pending_count bugs_before bugs_after new_bugs count
+  local kind=$1 pending_list pending_count pending_failed=0 bugs_before bugs_after new_bugs count
   local recorded=0 head_before head_after record_failed=0 completed_at
-  pending_list=$(unreviewed_list)
-  pending_count=$(awk 'NF { c++ } END { print c + 0 }' <<<"$pending_list")
-  if [[ $kind != final ]] && ((pending_count == 0)); then
-    note "review: no commit is unreviewed; no pass to run"
-    return 0
+  if pending_list=$(unreviewed_list); then
+    pending_count=$(awk 'NF { c++ } END { print c + 0 }' <<<"$pending_list")
+  else
+    pending_failed=1
+    pending_list=""
+    pending_count=0
+  fi
+  if [[ $kind != final ]]; then
+    if ((pending_failed)); then
+      # CV-REV-19: a failed read is not an empty backlog. A cadence pass
+      # needs the exact list of unreviewed commits (CV-REV-16); without it,
+      # running one would give the reviewer a false "nothing is unreviewed"
+      # range, so the pass is skipped rather than run on bad data.
+      warn "cbugs reviewed pending failed; no cadence pass to run"
+      CONVERGED_VOTES=0
+      return 0
+    fi
+    if ((pending_count == 0)); then
+      note "review: no commit is unreviewed; no pass to run"
+      return 0
+    fi
   fi
 
   heading "$BLUE" "review" "$(date '+%H:%M:%S')"
@@ -2094,7 +2124,16 @@ integration of the recent work with the old code matters most."
     # CV-REV-20: one completion timestamp for the whole pass, from the
     # moment it succeeded, not from a later retry of the record call.
     completed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    if ((pending_count > 0)); then
+    if ((pending_failed)); then
+      # Only a final pass reaches here with pending_failed: a cadence pass
+      # already returned above. The pass read the whole code (CV-REV-18),
+      # but a failed 'cbugs reviewed pending' means the commits it should
+      # mark reviewed are unknown, so nothing is recorded and approval is
+      # withheld below, the same as a failed record call (CV-FAIL-11).
+      warn "cbugs reviewed pending failed; the pass recorded no commit"
+      record_failed=1
+      CONVERGED_VOTES=0
+    elif ((pending_count > 0)); then
       if record_reviewed "$pending_list" "$RUN_PROFILE" "$completed_at"; then
         recorded=$pending_count
       else
@@ -2175,8 +2214,18 @@ run_due_review() {
     head=$(git rev-parse HEAD 2>/dev/null) || head=
     if ((final_was_due)) && [[ -n $head && $head != "$APPROVED_HEAD" ]]; then
       run_review_pass final
-    elif ((REVIEW_AFTER <= $(unreviewed_count))); then
-      run_review_pass cadence
+    else
+      local pending
+      if pending=$(unreviewed_count); then
+        ((REVIEW_AFTER <= pending)) && run_review_pass cadence
+      else
+        # CV-REV-19: a failed read does not mean no commit is pending; it
+        # means the count cannot be known this iteration. Warn instead of
+        # silently treating it as zero and skipping a pass that may be due;
+        # the next iteration retries the read (CV-FAIL-6: never stop for a
+        # failure).
+        warn "cbugs reviewed pending failed; cannot tell whether a cadence pass is due"
+      fi
     fi
   fi
   apply_blocking_reset
