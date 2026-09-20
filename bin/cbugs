@@ -1137,7 +1137,14 @@ verb_reviewed_pending() {
     esac
   done
   local -a lines=() elems=()
-  mapfile -t lines < <(count_pending)
+  local pending_out
+  # The call substitution carries the status of count_pending, so a database
+  # error stops the verb with a non-zero status (CB-ERR-2), and does not
+  # leave an empty listing that holds the status 0 against CB-RVW-8.
+  pending_out=$(count_pending) || exit 1
+  if [[ -n $pending_out ]]; then
+    mapfile -t lines <<<"$pending_out"
+  fi
   ((${#lines[@]} > 0)) || exit 0
   if ((json)); then
     for line in ${lines[@]+"${lines[@]}"}; do
