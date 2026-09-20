@@ -1326,10 +1326,13 @@ case $VERB in
   search) verb_search "$@" ;;
   reviewed)
     # The reviewed verb holds two sub-verbs (CB-RVW-5): a bare 'reviewed'
-    # names no verb on its own and must say which two exist.
+    # names no verb on its own and must say which two exist. Both sub-verbs
+    # read the repository (CB-RVW-8, CB-RVW-10), so a call that answers must
+    # find git on PATH: without it, pending would print nothing under a
+    # silence that reads as an answer (CB-PLAT-2).
     case ${1:-} in
-      add) shift; verb_reviewed_add "$@" ;;
-      pending) shift; verb_reviewed_pending "$@" ;;
+      add) shift; need_tool git git; verb_reviewed_add "$@" ;;
+      pending) shift; need_tool git git; verb_reviewed_pending "$@" ;;
       -h|--help) usage_reviewed; exit 0 ;;
       "")
         echo "cbugs reviewed: name a sub-verb: 'reviewed add' or 'reviewed pending'" >&2
