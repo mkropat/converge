@@ -258,8 +258,7 @@ work that no person requested, and a worker then does it.
 A database of an earlier version is a record, not a dead file. The command
 migrates it, and the history carries over.
 
-- **CB-MIG-1**: The database records the version of its model in `PRAGMA
-  user_version`. The current version is 4.
+- **CB-MIG-1**: Retired. CB-MIG-9 replaces the version 4 requirement.
 - **CB-MIG-2**: The command knows how to migrate version 2. When a call finds a
   database of version 2, the command must migrate the database to the current
   version before it answers the call, whatever the verb. A read migrates the
@@ -285,6 +284,18 @@ migrates it, and the history carries over.
 - **CB-MIG-8**: The migration from version 3 to version 4 creates the table of
   reviewed commits, and nothing else. Every bug, every revision, and every
   citation must be the same after the migration as before it.
+
+- **CB-MIG-9**: The database must record the version of its model in `PRAGMA
+  user_version`. The current version is 5.
+- **CB-MIG-10**: The command must migrate version 4 to the current version
+  before it answers any verb. The supported paths from versions 2 and 3 must
+  remain available, as CB-MIG-2 and CB-MIG-7 require.
+- **CB-MIG-11**: The migration from version 4 to version 5 must allow multiple
+  review records per commit and add the optional profile. It must preserve
+  every existing review id, full commit hash, iteration, and timestamp without
+  change. Each existing record must have a NULL profile, which means unknown.
+  Every bug, revision, and citation must remain unchanged. The transaction and
+  concurrency rules of CB-MIG-4 and CB-MIG-5 apply.
 
 ## Bugs
 
@@ -387,33 +398,24 @@ it means.
 
 ## Reviewed commits
 
-The database holds a second record beside the bugs: the commits that a review
-pass of `converge` covered. A commit is reviewed or it is not. There is no
-history to keep, and no note to write. The loop records the commits, and no
-agent records one.
+The database holds review history beside the bugs. Each record names one
+commit that a review pass covered. More than one record can name the same
+commit. The loop records the coverage, and no agent records it. See the review
+sections of `docs/converge-requirements.md` for the loop behavior.
 
 - **CB-RVW-1**: The database must hold one table of reviewed commits. One row
   names one commit of the repository. The command must write the full hash of
   the commit that git resolves from the value that the caller gave.
-- **CB-RVW-2**: A row must hold the commit, the worker iteration that the
-  review pass followed, and the created time, and nothing else. The iteration
-  comes from the `--iteration` option of `reviewed add`, and a call that gives
-  no iteration records none. The loop is not an agent, and the environment
-  names the provenance of an agent, so the iteration comes as an option.
-- **CB-RVW-3**: A commit that a row already names stays one row. A call that
-  names it again changes nothing, and the command must report success.
+- **CB-RVW-2**: Retired. CB-RVW-11 replaces the review fields requirement.
+- **CB-RVW-3**: Retired. CB-RVW-12 replaces the single-record requirement.
 - **CB-RVW-4**: The command must never change a row of reviewed commits, and
   must never remove one. A commit that the history drops can come back, and a
   row that waits does no harm.
 - **CB-RVW-5**: The command must offer the verbs `reviewed add` and `reviewed
   pending`. `cbugs reviewed`, with no second word, must stop with an error
   that names the two verbs.
-- **CB-RVW-6**: `cbugs reviewed add` must record the commits that the caller
-  names. The commits come as arguments, or on standard input, one commit per
-  line. The record of one call is one transaction: a call that fails records
-  nothing. A call that names no commit must stop with an error. The command
-  must print one line that gives the number of commits that the call added and
-  the number that a row already named.
+- **CB-RVW-6**: Retired. CB-RVW-13 and CB-RVW-17 replace the write and output
+  requirements.
 - **CB-RVW-7**: `reviewed add` must stop with an error when the environment
   holds `CONVERGE_ROLE`. The loop records the commits of a pass, and no agent
   of the loop records one. The error must name the role that the call read.
@@ -432,6 +434,56 @@ agent records one.
   `reviewed add` names does not name a commit of the repository. The command
   reads the repository for these verbs as it reads HEAD for the provenance of
   a revision, as CB-PROV-4 gives.
+
+- **CB-RVW-11**: Each review record must hold a full commit hash, the worker
+  iteration that the pass followed, a completion timestamp in `created_at`,
+  and an optional profile string. The iteration comes from `--iteration`, not
+  the environment. An omitted iteration records NULL. The record has an id
+  that is unique in the table. It holds no named profile ID.
+- **CB-RVW-12**: Each successful `reviewed add` call must append one immutable
+  record per distinct resolved commit in that call. Repeated arguments that
+  resolve to the same commit produce one record in that call. A later call
+  must append a new record even when all its values match an existing record.
+  The commit hash must not be unique in the table. CB-RVW-4 still applies.
+- **CB-RVW-13**: `cbugs reviewed add` must accept commits as arguments or on
+  standard input, one commit per line. One call must be one transaction. A
+  failed call must record nothing. A call with no commit must fail.
+- **CB-RVW-14**: `reviewed add` must accept optional `--profile <profile>`.
+  It must accept only one profile, not a list or repeated `--profile` options.
+  An omitted option must store SQL NULL, which means unknown. A supplied value
+  must use `harness:model[:effort]`. The harness must be `claude` or `opencode`.
+  Each supplied field must be nonempty and contain no colon, comma, or
+  whitespace. A slash is allowed in a field. The optional effort is a value
+  native to the selected harness, not a shared scale. The command must store
+  the supplied canonical string without substitution of a named profile ID.
+  An invalid profile must fail before any record is written.
+- **CB-RVW-15**: `reviewed add` must accept optional
+  `--completed-at <timestamp>`. The value must be a valid UTC date and time in
+  `YYYY-MM-DDTHH:MM:SSZ` form. An invalid value must fail before any record is
+  written. The command must store the supplied value unchanged in `created_at`.
+  Without the option, it must use the current UTC time, to the second, once
+  for the whole call. Every record of the call must use that same timestamp.
+- **CB-RVW-16**: After a successful review pass, the loop must supply its
+  profile through `--profile` and its completion time through `--completed-at`.
+  Every commit covered by that pass must receive the same completion timestamp,
+  even if the loop needs more than one call. A failed pass must record nothing.
+  These fields describe commit coverage. They must not create a separate pass
+  table or a finding record. See the review sections of
+  `docs/converge-requirements.md`.
+- **CB-RVW-17**: The human output of `reviewed add` must remain one summary
+  line. It must give the number of records added, the number of distinct input
+  commits that had any record before the call, the profile, and the completion
+  timestamp. It must show an absent profile as `unknown`. The JSON output must
+  remain one object with `added` and `already` counts and add `profile` and
+  `created_at` fields. `added` counts all new records, including repeated
+  reviews. `already` counts input commits with prior coverage, not skipped
+  writes. An unknown profile must be JSON null. `created_at` must be the stored
+  timestamp. `reviewed pending` keeps the output of CB-RVW-9; pending commits
+  have no review metadata.
+- **CB-RVW-18**: For CB-RVW-8, any review record is sufficient coverage.
+  Existing migrated records and manual records with an unknown profile count.
+  The command must not require a number of reviews or a particular profile
+  before it removes a commit from the pending result.
 
 ## The summary
 
@@ -630,10 +682,7 @@ next, and the help text does not tell it which bugs are open.
 
 These are recorded decisions, not oversights.
 
-- **CB-OOS-1** — **A record of a pass that found no defect**: rejected. Only a
-  defect makes a record. The logs of the loop show that a pass ran. The
-  reviewed commits are not that record: they name the coverage of a pass, and
-  they hold no finding.
+- **CB-OOS-1**: Retired. CB-OOS-26 replaces the pass-record exclusion.
 - **CB-OOS-2** — **A change of the kind of a bug**: rejected. The kind decides
   who acts. The caller dismisses the bug and logs a new one.
 - **CB-OOS-3** — **A revision that gives only what changed**: rejected. A full
@@ -704,3 +753,7 @@ These are recorded decisions, not oversights.
   the history drops can come back, as a cherry-pick brings one back, and the
   row does no harm while the commit is away. The count of the unreviewed
   commits reads the history that HEAD reaches, and no other.
+- **CB-OOS-26** — **A separate review pass table or finding record**: rejected.
+  Review history records commit coverage, including the profile and completion
+  time. It holds no findings. Coverage records may exist even when a pass finds
+  no defect. The logs of the loop record the pass itself.

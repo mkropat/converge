@@ -86,22 +86,24 @@ These principles explain the intent behind the requirements. Apply them when a r
 - **CV-INV-1**: The script must live at `bin/converge`.
 - **CV-INV-2**: The script must operate on the run directory: the current working directory when the operator starts the run. The run directory can be the root of the repository or any subdirectory of it.
 - **CV-INV-3**: The script must accept these options:
-  - **CV-INV-3.1**: `--harness <name>`: the harness. Default: see "Harness".
-  - **CV-INV-3.2**: `--model <model>`: the worker model. Default: the worker model of the harness.
-  - **CV-INV-3.3**: `--coach-model <model>`: the coach model. Default: the coach model of the harness.
-  - **CV-INV-3.4**: `--review-model <model>`: the reviewer model. Default: the reviewer model of the harness.
-  - **CV-INV-3.5**: `--consensus <N>`: the number of consecutive done votes that stop the loop. Default: `2`.
+  - **CV-INV-3.1**: Retired. Accepted `--harness`. See **CV-INV-11** and **CV-HARN-8**.
+  - **CV-INV-3.2**: Retired. Accepted `--model`. See **CV-INV-11** and **CV-HARN-8**.
+  - **CV-INV-3.3**: Retired. Accepted `--coach-model`. See **CV-INV-11** and **CV-HARN-8**.
+  - **CV-INV-3.4**: Retired. Accepted `--review-model`. See **CV-INV-11** and **CV-HARN-8**.
+  - **CV-INV-3.5**: Retired. Defined votes alone as the stop condition. **CV-INV-3.15** replaces this behavior.
   - **CV-INV-3.6**: `--coach-every <K>`: the number of worker iterations between coach runs. The script sets the default.
   - **CV-INV-3.7**: `--no-coach`: disable the coach.
-  - **CV-INV-3.8**: Retired. `--review-every <R>` gave the number of worker iterations between review passes. **CV-INV-3.13** replaces this behavior. The count lived in the memory of the loop, and a Ctrl-C that stopped the run threw it away. The count of unreviewed commits is durable, in the bug database.
+  - **CV-INV-3.8**: Retired. `--review-every <R>` gave the number of worker iterations between review passes. **CV-INV-3.14** replaces this behavior. The count lived in the memory of the loop, and a Ctrl-C that stopped the run threw it away. The count of unreviewed commits is durable, in the bug database.
   - **CV-INV-3.9**: `--no-review`: disable the reviewer.
   - **CV-INV-3.10**: `--timeout <seconds>`: the maximum duration of one worker, reviewer, or coach invocation. Default: `3600`.
   - **CV-INV-3.11**: `--max-iterations <N>`: the maximum number of worker iterations. Default: unbounded.
   - **CV-INV-3.12**: `--foreground`: run the loop in the terminal of the operator, and not in the background.
-  - **CV-INV-3.13**: `--review-after <N>`: the number of unreviewed commits that a cadence pass waits for. When more than `N` commits are unreviewed, the loop runs a cadence pass, as "Reviewer" gives. Default: `5`.
-- **CV-INV-4**: Retired. A run passed every option that it did not consume through to the harness. **CV-INV-6** replaces this behavior.
+  - **CV-INV-3.13**: Retired. Required more than `N` unreviewed commits. **CV-INV-3.14** replaces this threshold.
+  - **CV-INV-3.14**: `--review-after <N>`: run a cadence pass when at least `N` commits are unreviewed, subject to **CV-CONV-18**. `N` must be a positive integer. Default: `5`.
+  - **CV-INV-3.15**: `--consensus <N>`: the required number of consecutive done votes. Default: `2`. **CV-CONV-14** gives the other convergence conditions.
+- **CV-INV-4**: Retired. Passed unknown options to the harness. **CV-INV-11** rejects harness arguments.
 - **CV-INV-5**: Retired. A run took no positional argument. **CV-INV-8** replaces this behavior.
-- **CV-INV-6**: The script must pass every argument after the first `--` through to the harness, unchanged. It must consume none of them, and it must read none of them as an option of its own.
+- **CV-INV-6**: Retired. Passed arguments after `--` to the harness. **CV-INV-11** replaces this behavior.
 - **CV-INV-7**: The script must stop with an error when an argument before `--` starts with `-` and is not an option of **CV-INV-3**. The error must name the argument. A typo must not become a harness option.
 - **CV-INV-8**: The script must accept positional arguments before `--`. Each one names a requirements document file, or a directory that holds requirements documents. "Requirements scope" gives the behavior.
 - **CV-INV-9**: The run directory anchors the run. The state directory, the bug database, the resolution of every scope path, and the working directory of every agent derive from the run directory, as the sections that govern them give. Two run directories share no state and no bug database. A subdirectory of a repository is therefore a place to run the command in its own right, with the same behavior as the root. The repository that contains the run directory supplies the git state of the run: the commits, and the history that a review pass reads.
@@ -123,9 +125,8 @@ These principles explain the intent behind the requirements. Apply them when a r
   - **CV-INV-10.4**: The script must stop with an error when the call gives
     `--init-state` a positional argument or another option of CV-INV-3. Such a
     call carries settings that the init operation cannot use.
-  - **CV-INV-10.5**: A run tests the harness command, as CV-HARN-4 gives. The
-    init operation must test none, because it makes directories and runs no
-    agent.
+  - **CV-INV-10.5**: A run tests harness commands, as **CV-HARN-11** gives. The init operation must test none, because it makes directories and runs no agent.
+- **CV-INV-11**: The script must reject `--harness`, `--model`, `--review-model`, and `--coach-model`. It must reject all arguments after `--`. It must name each rejected argument. It must accept no profile option and read no profile configuration file.
 
 ## Requirements scope
 
@@ -162,32 +163,38 @@ requirements documents the agents work on.
 
 ## Harness
 
-The loop starts each worker, each reviewer, and each coach through a harness. The supported
-harnesses are `claude` and `opencode`. One run uses one harness.
+Each role selects a harness, a model, and optional effort through an agent profile.
 
-- **CV-HARN-1**: The script must select the harness from the first of these that it finds:
-  1. The `--harness` option.
-  2. The harness that the state directory records for the run directory.
-  3. The `CONVERGE_HARNESS` environment variable.
-  4. `claude`.
-- **CV-HARN-2**: A client that attaches to a loop that runs keeps the harness of
-  that loop, as it keeps every other option.
-- **CV-HARN-3**: Before the first iteration, the loop must record its harness in
-  the state directory.
-- **CV-HARN-4**: The script must stop with an error when the name is not a
-  supported harness, or when the command of the harness is not on PATH.
-- **CV-HARN-5**: The script must select each model from the first of these that it finds:
-  1. The option for the role: `--model`, `--coach-model`, or `--review-model`.
-  2. The environment variable for the selected harness and role. Its name is `CONVERGE_<HARNESS>_MODEL`, `CONVERGE_<HARNESS>_COACH_MODEL`, or `CONVERGE_<HARNESS>_REVIEW_MODEL`, where `<HARNESS>` is the uppercase harness name. For example, `CONVERGE_CLAUDE_MODEL` sets the worker model for `claude`, and `CONVERGE_OPENCODE_REVIEW_MODEL` sets the reviewer model for `opencode`.
-  3. The built-in default for the selected harness and role.
-  - **CV-HARN-5.1**: The built-in defaults for `claude` are `sonnet` for the worker, and `opus` for the reviewer and for the coach. A reviewer reads the code and judges it against the requirements, which is the work that a stronger model does better.
-  - **CV-HARN-5.2**: The built-in defaults for `opencode` are `opencode/gpt-5.6-luna` for the worker, and `opencode/gpt-5.6-sol` for the reviewer and for the coach.
-- **CV-HARN-6**: The loop must print its harness and all three models at startup.
+- **CV-HARN-1**: Retired. Selected one harness for the run. **CV-HARN-8** replaces this behavior.
+- **CV-HARN-2**: Retired. Kept one harness on attach. **CV-HARN-13** preserves the profile lists.
+- **CV-HARN-3**: Retired. Stored the selected harness. **CV-HARN-12** forbids new selection state.
+- **CV-HARN-4**: Retired. Tested one harness. **CV-HARN-11** validates enabled roles.
+- **CV-HARN-5**: Retired. Selected models through options, old environment variables, and harness defaults. **CV-HARN-8** replaces this behavior.
+  - **CV-HARN-5.1**: Retired. Defined Claude model defaults. See **CV-HARN-8**.
+  - **CV-HARN-5.2**: Retired. Defined OpenCode model defaults. See **CV-HARN-8**.
+- **CV-HARN-6**: Retired. Printed one harness and three models. **CV-HARN-15** replaces this output.
 - **CV-HARN-7**: Each harness reports its work in a different form. The loop must
   give the operator the same information from both:
   - **CV-HARN-7.1**: The final message of an agent. `claude` reports it in one result message. For `opencode`, the final message is the text of the last assistant message.
   - **CV-HARN-7.2**: The number of turns, the duration, and the cost. When the harness reports no totals, the loop must compute them from the message stream.
   - **CV-HARN-7.3**: A tool call that fails, when the harness reports the failure. `opencode` reports a shell command that exits with an error as a normal result, so the loop cannot show that command as a failure.
+
+- **CV-HARN-8**: The loop must select ordered, comma-separated profile lists only from `CONVERGE_WORKER_PROFILE`, `CONVERGE_REVIEWER_PROFILE`, and `CONVERGE_COACH_PROFILE`. An unset variable defaults to `claude:sonnet` for the worker and `claude:opus` for the reviewer and coach. An empty value is an error.
+- **CV-HARN-9**: Each profile must have the form `harness:model[:effort]`. The loop must trim spaces around each list entry. Each present field must be nonempty and contain no whitespace, colon, or comma. A model may contain `/`. The harness must be `claude` or `opencode`. The canonical profile is the trimmed entry, with all field values unchanged. The loop must reject duplicate canonical profiles within a role.
+- **CV-HARN-10**: Effort must use the selected harness's native setting. Omitted effort must use the harness default. The loop must reject an unsupported explicit effort. It must never omit or replace explicit effort as a fallback.
+- **CV-HARN-11**: Before the first agent invocation, the loop must validate profile syntax and settings for all enabled roles. It must check that every harness they need is available on PATH. It must report invalid settings before starting any agent. A disabled role must not require an installed harness.
+- **CV-HARN-12**: The loop must ignore old stored harness selection and write no new harness or profile selection state. On a new session, it must reject a set `CONVERGE_HARNESS` or `CONVERGE_<HARNESS>_MODEL`, `CONVERGE_<HARNESS>_REVIEW_MODEL`, or `CONVERGE_<HARNESS>_COACH_MODEL`, for `CLAUDE` or `OPENCODE`, including empty values. The error must name the old variable and direct the operator to the role profile variables.
+- **CV-HARN-13**: The loop must take a session snapshot of the profile lists. An attached client must leave these lists unchanged, even if its environment differs. A new session must read its own environment.
+- **CV-HARN-14**: Each role must use its list in independent round-robin order. Each session must start each role at its first entry. Cadence and final passes must share the reviewer sequence. Each started invocation consumes one turn, including a failure or timeout. A skipped or disabled invocation consumes no turn. Failure must not cause a fallback invocation. The next normally scheduled invocation must use the next entry.
+- **CV-HARN-15**: The startup panel must show each role's full canonical profile list and whether the role is disabled. Each invocation line and invocation log must identify the selected full canonical profile, including explicit effort.
+
+Example environment:
+
+```sh
+export CONVERGE_WORKER_PROFILE='claude:sonnet, opencode:provider/model'
+export CONVERGE_REVIEWER_PROFILE='claude:opus'
+export CONVERGE_COACH_PROFILE='claude:opus'
+```
 
 ## Background operation
 
@@ -262,7 +269,7 @@ The operator starts a run over a connection that can break, and the run survives
   - **CV-OUT-3.7**: The number of turns, the duration, and the cost that the agent reports.
 - **CV-OUT-4**: After each worker, the loop must report what the worker committed: the number of commits, the number of files and lines that changed, and the subject of each commit. The loop must also report files that the worker left uncommitted.
 - **CV-OUT-5**: After each review pass, the loop must report each bug that the pass logged, with its id, its kind, and its title. It must report a pass that logged no bug as such.
-- **CV-OUT-6**: The loop must find the bugs of a pass by reading the list of bugs before the pass and after it. The bug tracker gives no filter on the role or the iteration, and needs none for this. The loop reads the list. It makes no decision from what it reads.
+- **CV-OUT-6**: Retired. Limited bug-list reads to reporting. **CV-OUT-13** retains reporting; **CV-CONV-17** permits decision checks.
 - **CV-OUT-7**: After each coach run, the loop must report whether the coach changed the guidance. If the coach changed it, the loop must show the new guidance in full. In both cases the loop must give the path of the guidance file. The loop must not give the path of the coach log, which a person cannot read.
 - **CV-OUT-8**: If an invocation fails, the loop must show the last lines that it wrote to stderr. A failure with no messages puts its cause there.
 - **CV-OUT-9**: The loop must always use color, bold, and box characters. It writes to a file that a client shows in a terminal, so it cannot ask what reads it.
@@ -270,29 +277,41 @@ The operator starts a run over a connection that can break, and the run survives
 - **CV-OUT-11**: Style must not remove information. Each message that the loop prints must also go to the run log, as plain text.
 - **CV-OUT-12**: After each review pass, the loop must report the number of commits that the pass recorded. The report of a final pass must say that the pass read the whole code.
 
+- **CV-OUT-13**: The loop must find the bugs of a pass by comparing the bug lists before and after the pass. It must also check blocking-bug counts under **CV-CONV-17**.
+
 ## Convergence and stopping
 
 - **CV-CONV-1**: The worker prompt must instruct the worker: do not vote while an open code bug or an open task exists. If you judge that the repository satisfies the requirements documents of the scope, no open code bug and no open task remain, and no work remains, write the exact token `CONVERGED` on a line of its own in your final message, and do no work.
 - **CV-CONV-2**: The loop must read only the worker's final message to detect the token. This is a done vote.
 - **CV-CONV-3**: The loop must count the token only when it is alone on a line. Space before or after the token does not matter. The loop must ignore the token inside a line of text. This lets a worker name the token, or quote this document, without a vote.
-- **CV-CONV-4**: Retired. A pass followed every done vote, whether or not one was due on the cadence. **CV-CONV-11** replaces this behavior. A voting worker commits nothing, so a pass that has nothing new to read costs a full agent invocation.
-- **CV-CONV-5**: Retired. **CV-CONV-12** replaces this requirement, and widens it: the final pass reads the whole code, and not only the commits that no pass recorded.
-- **CV-CONV-6**: With `--consensus 1`, a done vote completes the consensus at once, and no pass precedes it. An operator who wants every commit reviewed before convergence uses a consensus of `2` or more, which is the default.
-- **CV-CONV-7**: Retired. The loop read no signal from the bug database. **CV-CONV-13** replaces this requirement: the loop still reads no bug, and it reads the count of the unreviewed commits, which is not a bug.
-- **CV-CONV-8**: When the loop counts `N` consecutive done votes from different worker invocations, it must stop and report convergence.
+- **CV-CONV-4**: Retired. Required a pass after every done vote. See **CV-CONV-16**.
+- **CV-CONV-5**: Retired. Reviewed only pending commits on a done vote. See **CV-REV-18** and **CV-CONV-16**.
+- **CV-CONV-6**: Retired. Allowed consensus of one to bypass final review. **CV-CONV-14** replaces this behavior.
+- **CV-CONV-7**: Retired. Read no signal from the bug database. See **CV-CONV-17**.
+- **CV-CONV-8**: Retired. Required only consecutive votes for convergence. **CV-CONV-14** replaces this behavior.
 - **CV-CONV-9**: Any iteration that does not produce a done vote must reset the consecutive count to zero. This includes failures and timeouts.
 - **CV-CONV-10**: The loop must exit with status `0` on convergence and with a non-zero status in all other cases.
-- **CV-CONV-11**: After a done vote, and before the next worker starts, the loop must run a final pass when any unreviewed commit exists, unless the consensus is now complete or the reviewer is disabled. When no unreviewed commit exists, the loop must run no final pass. The threshold of **CV-INV-3.13** does not bind a final pass: a vote is a claim that the work is done, and the pass reads everything that the claim covers.
-- **CV-CONV-12**: A final pass covers the whole code of the repository at HEAD, as "Reviewer" gives. A pass that finds a defect logs a code bug, the next worker fixes it instead of voting, and the count of consecutive votes returns to zero. The defect can sit in code that an earlier pass covered, because the vote claims the whole code and not the recent work. The loop therefore cannot converge on code that no final pass has read.
-- **CV-CONV-13**: The loop must not read the bugs of the bug database to decide anything. The done vote is the only signal of convergence that it reads. The count of the unreviewed commits is not a bug: the loop reads it to schedule review passes, as "Reviewer" gives. The worker prompt holds the rule that an open code bug or an open task prevents a vote.
+- **CV-CONV-11**: Retired. Required pending commits for final review and bypassed it at consensus. **CV-CONV-16** replaces this behavior.
+- **CV-CONV-12**: Retired. Relied on later workers to reset votes after review findings. **CV-CONV-15** and **CV-CONV-17** replace this behavior; **CV-REV-18** retains whole-code review.
+- **CV-CONV-13**: Retired. Forbade bug queries for decisions. **CV-CONV-17** permits blocking-bug checks.
+- **CV-CONV-14**: Convergence requires `N` consecutive done votes from different worker invocations and no open code bug or task. When review is enabled, it also requires final approval for the current HEAD. This applies even when `--consensus` is `1`. Disabled review requires no approval.
+- **CV-CONV-15**: A successful final pass must grant approval only for the exact HEAD it reviewed, only if HEAD has not changed during the pass, and only if no open code bug or task remains. Approval must exist only in session memory. Any HEAD change must invalidate it. A restart must require fresh approval. Cadence passes and reviewed-commit records must not grant approval.
+- **CV-CONV-16**: After a done vote, an enabled reviewer must run a final pass if the current HEAD lacks approval, subject to **CV-CONV-18**. This rule applies even with no pending commit or enough votes for consensus. It must not repeat a final pass at the same approved HEAD. One due final pass must replace a due cadence pass. No other rule may add a special final pass to bypass stop checks.
+- **CV-CONV-17**: The loop must read open code-bug and task counts to gate approval and convergence. Any open code bug or task must reset consecutive votes and prevent approval. Spec bugs must never block approval or convergence. A review failure or timeout must reset votes and grant no approval.
+- **CV-CONV-18**: The loop must use this order:
+  1. After each worker, count the iteration and its vote, or reset votes on a failure, timeout, or non-vote. Apply the blocking-bug and HEAD checks.
+  2. Stop on a signal under **CV-FAIL-1** or **CV-FAIL-9**. Otherwise stop with convergence if **CV-CONV-14** already holds. Otherwise stop without convergence if the iteration limit is reached.
+  3. If not stopped, run a due final pass or, if none is due, a due cadence pass. Apply the review result, blocking-bug checks, and HEAD checks. Apply the stop checks from step 2 again. Stop if convergence now holds, before any coach run.
+  4. If not stopped, run a due coach, then proceed to the next worker.
+  The loop must check signals and the iteration limit before every new agent invocation, including a startup review. SIGINT must forbid every new invocation. The iteration limit must never allow an extra final pass, even if the last worker completes the vote count. At the limit, only votes and approval already obtained can permit convergence. Review failure must not skip a due coach unless a stop condition holds.
 
 ## Reviewer
 
 The worker builds. The reviewer reads what the worker built. One agent cannot do both well, because a worker that judges its own work is the author of that work.
 
-- **CV-REV-1**: Retired. A pass ran after every `R` worker iterations. **CV-REV-14** replaces this behavior: the count of unreviewed commits starts a pass, and not a count of iterations.
-- **CV-REV-2**: Retired. The loop ran no pass when no commit had arrived since the previous one. **CV-REV-14** replaces this behavior: a commit that no pass recorded is unreviewed, and no unreviewed commit means no pass.
-- **CV-REV-3**: Retired. Every pass reset the count of iterations since the last pass. **CV-REV-14** replaces this behavior: no iteration count remains.
+- **CV-REV-1**: Retired. A pass ran after every `R` worker iterations. **CV-REV-19** replaces this behavior: the count of unreviewed commits starts a pass, and not a count of iterations.
+- **CV-REV-2**: Retired. The loop ran no pass when no commit had arrived since the previous one. **CV-REV-19** replaces this behavior: a commit that no pass recorded is unreviewed, and no unreviewed commit means no cadence pass. **CV-CONV-16** governs final passes.
+- **CV-REV-3**: Retired. Every pass reset the count of iterations since the last pass. **CV-REV-19** replaces this behavior: no iteration count remains.
 - **CV-REV-4**: The reviewer runs as a non-interactive harness invocation with permission prompts disabled, on the reviewer model.
 - **CV-REV-5**: Retired. The state directory held the commit of the last pass, and the next pass read the range from it. **CV-REV-15** replaces this behavior: the bug database holds every commit that a pass covered, and it survives the death of the loop.
 - **CV-REV-6**: Retired. The prompt gave the reviewer the range of the pass. **CV-REV-16** replaces this requirement, and **CV-REV-18** gives the range of a final pass.
@@ -309,19 +328,22 @@ The worker builds. The reviewer reads what the worker built. One agent cannot do
 - **CV-REV-11**: The reviewer must not close a bug. It did not do the work that a close records.
 - **CV-REV-12**: The reviewer must not log a task. Only a human user directs that record. The command refuses one from an agent of the loop, and the prompt must say so.
 - **CV-REV-13**: The loop must log reviewer output the same way it logs worker output.
-- **CV-REV-14**: The loop must run a cadence pass on the count of the unreviewed commits:
-  - **CV-REV-14.1**: The loop must count the unreviewed commits before the first worker of the run, and after each worker iteration. A pass that runs before the first worker follows iteration 0, as **CV-ENV-2** gives.
-  - **CV-REV-14.2**: When the count is greater than `N`, where `--review-after` gives `N`, the loop must run the reviewer synchronously before the next worker starts. When the count is `N` or less, the loop must run no pass.
-  - **CV-REV-14.3**: A commit counts whatever process wrote it: a worker of this loop, a worker of a second loop in a second run directory, or the operator by hand. A rebase or an amendment gives a commit a new hash, so work that a pass covered before the change counts again, and the loop reviews the new history.
-  - **CV-REV-14.4**: When a cadence pass and a coach run become due after the same iteration, the pass must run first.
+- **CV-REV-14**: Retired. Defined cadence scheduling with a strict greater-than threshold. **CV-REV-19** and **CV-CONV-18** replace this behavior.
+  - **CV-REV-14.1**: Retired. See **CV-REV-19** for count timing.
+  - **CV-REV-14.2**: Retired. See **CV-INV-3.14** for the threshold.
+  - **CV-REV-14.3**: Retired. See **CV-REV-19** for commit identity.
+  - **CV-REV-14.4**: Retired. See **CV-CONV-18** for agent order.
 - **CV-REV-15**: After a review pass ends with success, the loop must record, as reviewed commits, the commits that no pass had recorded when this pass started. The bug tracker holds the reviewed commits, as `docs/cbugs-requirements.md` gives. The loop must record no commit that arrived during the pass: a commit that a second loop wrote while the pass ran stays unreviewed. The loop records, and the reviewer records none. The loop must read no file of the state directory to learn what a pass covered, and must ignore the file of the last pass that an earlier version of the script wrote.
 - **CV-REV-16**: The prompt of a cadence pass must give the reviewer the range of the pass: the commits that no review pass has recorded. The range is every unreviewed commit, however many there are. The threshold decides when a pass runs, and not how much it reads. The reviewer needs no memory and no query to learn what it has already read.
 - **CV-REV-17**: When the bug database records no reviewed commit, the range of a cadence pass is the whole history of the repository. The reviewer must judge how far back to read, and the prompt must tell it that the recent commits matter most. The pass records every commit that it covered, whatever the reviewer judged, as **CV-REV-15** gives.
 - **CV-REV-18**: A final pass reads the whole code of the repository at HEAD, and not only the commits that no pass recorded. The prompt must tell the reviewer to judge how much of the code it reads, and that the integration of the recent work with the old code matters most. The pass records the commits that no pass had recorded, as **CV-REV-15** gives.
 
+- **CV-REV-19**: With review enabled, the loop must count pending commits before the first worker and after each worker. A cadence pass is due when the count is at least `--review-after`. It must run synchronously under **CV-CONV-18**. A startup pass follows iteration 0. Each reachable commit with no review record is pending, regardless of its author. A new hash after a rebase or amendment is a new commit. Any review record is sufficient coverage; no profile-specific or multiple-review count is required. No pending commits means no cadence pass, but does not prevent a final pass.
+- **CV-REV-20**: For each successful pass, the loop must supply its selected canonical reviewer profile and one successful completion timestamp to the bug tracker's review-record operation. It must use that same profile and timestamp for all commits covered by the pass. Both pass types must record only commits pending at pass start, as **CV-REV-15** gives. Final approval remains separate under **CV-CONV-15**. The record interface accepts profile and timestamp inputs as `docs/cbugs-requirements.md` defines. This adds no profile or timestamp provenance to bug revisions.
+
 ## Coach
 
-- **CV-COACH-1**: After every `K` worker iterations, the loop must run the coach synchronously before the next worker starts.
+- **CV-COACH-1**: Retired. Required a coach after every `K` iterations without stop checks. **CV-COACH-8** replaces this behavior.
 - **CV-COACH-2**: The coach runs as a non-interactive harness invocation with permission prompts disabled, on the coach model.
 - **CV-COACH-3**: The coach prompt must give the coach the paths to the log directory, the journal, and the guidance file.
 - **CV-COACH-4**: The coach prompt must instruct the coach to:
@@ -335,6 +357,8 @@ The worker builds. The reviewer reads what the worker built. One agent cannot do
 - **CV-COACH-6**: The coach must write only the guidance file, the journal, and a bug. The coach must not edit code, must not edit requirements documents, and must not stop the loop.
 - **CV-COACH-7**: The loop must log coach output the same way it logs worker output.
 
+- **CV-COACH-8**: The coach cadence must start at zero each session. Every started worker iteration must count toward the iteration limit and coach cadence, including failures and timeouts. After every `K` iterations, an enabled coach is due. It must run synchronously under **CV-CONV-18**, after any due review, even if the worker or reviewer failed or timed out. A stop condition takes priority.
+
 ## State and logs
 
 The loop keeps its files in two directories. The state directory is durable. The runtime directory is temporary.
@@ -343,18 +367,19 @@ The loop keeps its files in two directories. The state directory is durable. The
 
 ### The state directory
 
-- **CV-STATE-1**: Retired. The list named the commit of the last review pass, which lived in a file of the state directory. **CV-STATE-12** replaces this requirement: the bug database holds the reviewed commits.
+- **CV-STATE-1**: Retired. The list named the commit of the last review pass, which lived in a file of the state directory. **CV-STATE-13** replaces this requirement: the bug database holds the reviewed commits.
 - **CV-STATE-2**: The path must be `$XDG_STATE_HOME/converge/<name>`. When `XDG_STATE_HOME` is empty, the loop must use `$HOME/.local/state` in its place. This follows the XDG Base Directory Specification, which names logs and history as state.
 - **CV-STATE-3**: `<name>` must derive from the path of the run directory and must be stable. A new run in the same run directory must find the state of prior runs. This makes a restart seamless: the guidance file and the journal carry over.
 - **CV-STATE-4**: `<name>` must also contain the name of the repository and the path of the run directory within it, so that an operator can read the directory listing and tell the run directories of one repository apart.
 - **CV-STATE-5**: The guidance file is `guidance.md`. The journal is `journal.md`. `docs/cbugs-requirements.md` names the bug database, which lives beside them.
 - **CV-STATE-6**: The bugs carry over from one run to the next, as the guidance and the journal do. An open code bug that a run did not fix is the first work of the next run.
-- **CV-STATE-7**: The state directory must record the harness of the last run. A later run in the same run directory uses that harness when the operator gives no `--harness` option.
+- **CV-STATE-7**: Retired. Stored harness selection across runs. **CV-HARN-12** forbids new selection state.
 - **CV-STATE-8**: The loop must write the full output of each worker, reviewer, and coach invocation to one log file per invocation, in a format that includes every message, tool call, and tool result. Name the files so that the order of invocations is obvious, and so that files from different runs do not collide.
 - **CV-STATE-9**: The loop must write its output to one file per session. The client reads that file. Beside it, the loop must record, at the end of the session, the exit status. The loop must record which session is the newest.
 - **CV-STATE-10**: The loop must not delete the files of an earlier session. No component removes old files. The operator deletes the state directory when the disk space matters.
 - **CV-STATE-11**: The logs must be sufficient for another agent to diagnose problems with the loop after the fact.
-- **CV-STATE-12**: The state directory holds everything that must survive a restart of the machine: the guidance file, the journal, the bug database, the harness of the last run, the logs, and the output of each session. The bug database holds the reviewed commits, as "Reviewer" gives.
+- **CV-STATE-12**: Retired. Included stored harness selection in durable state. **CV-STATE-13** replaces this list.
+- **CV-STATE-13**: The state directory must hold the guidance file, the journal, the bug database, the logs, and each session's output and status. The bug database holds reviewed-commit records. Logs and review records may identify profiles, but must not select profiles for a later session. Final approval and profile sequence positions must not survive a session.
 
 ### The runtime directory
 
@@ -375,13 +400,16 @@ The loop keeps its files in two directories. The state directory is durable. The
 ## Signals, timeouts, and failures
 
 - **CV-FAIL-1**: On the first SIGINT, the loop must let the running invocation finish, and must then stop. It must start no further invocation: no worker, no review pass, and no coach run. It must print that it stops on the request of the operator, show the closing report, and exit with status 130.
-- **CV-FAIL-2**: On a second SIGINT, or on SIGTERM, the loop must terminate the running `claude` child process and exit promptly. The client sends the signal to the process group of the loop, so the signal reaches every agent below it.
-- **CV-FAIL-3**: If an invocation exceeds the timeout, the loop must kill it, print a notice, log the event, and continue with the next iteration.
-- **CV-FAIL-4**: Retired. The next pass examined the same range, and the commit of the last pass did not move. **CV-FAIL-8** replaces this requirement.
-- **CV-FAIL-5**: If an invocation exits with an error, the loop must log the event and continue with the next iteration.
+- **CV-FAIL-2**: Retired. Named only the Claude child for termination. **CV-FAIL-9** applies to every harness.
+- **CV-FAIL-3**: Retired. Continued directly to the next iteration after a timeout. **CV-FAIL-10** preserves due scheduling.
+- **CV-FAIL-4**: Retired. The next pass examined the same range, and the commit of the last pass did not move. **CV-FAIL-11** replaces this requirement.
+- **CV-FAIL-5**: Retired. Continued directly to the next iteration after an error. **CV-FAIL-10** preserves due scheduling.
 - **CV-FAIL-6**: The loop must never stop because of failures.
 - **CV-FAIL-7**: If an invocation fails before it produces output, the loop must wait before it starts the next iteration. The wait must double with each consecutive fast failure, from 10 seconds up to a maximum of 15 minutes. An invocation that produces output resets the wait to zero, whether it succeeds or fails. This keeps the loop alive when the token quota is exhausted, and lets it resume when the quota period resets.
-- **CV-FAIL-8**: A review pass that fails or that exceeds the timeout must not stop the loop, and must not count as a pass. It records no reviewed commit. The next pass covers the same work: the commits stay unreviewed, and a failed final pass reads the whole code again.
+- **CV-FAIL-8**: Retired. Defined failed review coverage without approval or vote rules. **CV-FAIL-11** replaces this behavior.
+- **CV-FAIL-9**: On a second SIGINT or on SIGTERM, the loop must terminate the running invocation and all its child processes, for either harness, and exit promptly. The client must send the signal to the loop's process group.
+- **CV-FAIL-10**: On a timeout, the loop must kill the invocation, print a notice, and log the event. On an invocation error, it must log the event. It must then follow **CV-CONV-18**, including any due coach, rather than jump directly to the next worker. Stop checks and the wait of **CV-FAIL-7** still apply. Failure alone must not stop the loop or trigger profile fallback.
+- **CV-FAIL-11**: A failed or timed-out review must record no coverage and grant no approval. It must reset consecutive votes. Pending commits must remain pending. The next normally due pass must use its normal range and next reviewer profile. A failed final pass must not trigger an immediate retry.
 
 ## Out of scope
 
@@ -394,25 +422,27 @@ These are recorded decisions, not oversights.
 - **CV-OOS-5** — **Separate review agents**: rejected in v1, and adopted now. The earlier objection stands on its own terms: a review agent chases problems that the requirements do not name, and derails the project. The bug tracker answers it. A finding is now a durable record with a kind, not a message that pushes a worker off its work. A worker reads the open code bugs and decides; a finding that is wrong is dismissed and stays visible; and a finding that the requirements do not name has a place to go, as a spec bug that no agent acts on. What made a reviewer dangerous was that its output went straight into the next worker's head. It goes into a database instead.
 - **CV-OOS-6** — **A reviewer that fixes what it finds**: rejected. The reviewer reads the code against the requirements. A reviewer that starts editing stops reading, and it becomes a worker that skipped the survey.
 - **CV-OOS-7** — **A reviewer that closes a bug**: rejected. A close records that someone did the work. The reviewer did not.
-- **CV-OOS-8** — **A loop that queries the bug database to decide**: rejected for the bugs. The done vote stays the only signal of convergence that the loop reads (**CV-CONV-13**). The loop reads the count of the unreviewed commits, which is not a bug, to schedule review passes (**CV-REV-14**), and it reads the bug list only to report what a pass logged (**CV-OUT-6**).
+- **CV-OOS-8**: Retired. Rejected bug queries for decisions. **CV-CONV-17** requires open code-bug and task counts.
 - **CV-OOS-9** — **A record of a review pass that found no defect**: rejected. The reviewed commits name the coverage of the passes, and the bug database holds defects. A pass that logs no bug needs no record of its own, and the logs of the loop show that it ran.
 - **CV-OOS-10** — **Coach authority to halt the loop or edit the repository**: rejected for v1. A bad coach judgment must cost at most a few misguided iterations.
 - **CV-OOS-11** — **Cost or token budgets**: rejected for v1. `--max-iterations` and the operator bound the run.
-- **CV-OOS-12** — **Coach-selected cadence**: rejected for v1. A fixed `K` is simpler and easier to reason about. The same holds for the review threshold of **CV-INV-3.13**.
+- **CV-OOS-12** — **Coach-selected cadence**: rejected for v1. A fixed `K` is simpler and easier to reason about. The same holds for the review threshold of **CV-INV-3.14**.
 - **CV-OOS-13** — **A key that detaches the client but keeps the loop**: rejected for v1. Ctrl-C stops the run. The state directory makes a restart cheap.
 - **CV-OOS-14** — **`--status` and `--stop` commands**: rejected for v1. To see a loop, attach to it.
 - **CV-OOS-15** — **Two clients on one loop**: not a supported case. It does no harm, and either client can stop the loop.
 - **CV-OOS-16** — **Plain text output**: rejected. Every client is a terminal that accepts color.
-- **CV-OOS-17** — **Automatic fallback from one harness to another**: rejected for v1. A run that fails on one harness tells the operator something. A run that changes harness on its own hides it.
+- **CV-OOS-17**: Retired. Rejected automatic harness changes without distinguishing scheduled selection. **CV-OOS-30** defines the boundary.
 - **CV-OOS-18** — **Removal of old logs**: rejected for v1. The state directory grows by one log file for each invocation. The operator deletes the directory. An automatic rule that removes the wrong file costs more than the disk space.
 - **CV-OOS-19** — **`XDG_RUNTIME_DIR` for the locks and the pipes**: rejected. macOS supplies no such variable, so the script would need a second code path for the fallback. `TMPDIR` gives one code path on both platforms.
 - **CV-OOS-20** — **`~/Library/Application Support` on macOS**: rejected. The XDG paths are usual for a command line tool on macOS, and they keep one code path.
 - **CV-OOS-21** — **Migration of the state of an earlier version from the temporary directory**: rejected. The system removes that state on its own.
 - **CV-OOS-22** — **Identity of a repository from the git remote**: rejected. A repository can have no remote, and two clones of one remote hold different work.
-- **CV-OOS-23** — **A scope that the state directory records**: rejected. The harness is a property of a run directory, and carries over. A scope is the answer to "what do I work on now", which changes from one run to the next. A run with no positional argument therefore works on the whole run directory, and never on a scope that an earlier run left behind.
+- **CV-OOS-23** — **A scope that the state directory records**: rejected. A scope belongs to one session. A run with no positional argument works on the whole run directory, never on an earlier scope.
 - **CV-OOS-24** — **A scope that names a requirement identifier, as `docs/x.md:CV-INV-3`**: rejected for v1. A file or a directory is enough to point a run at part of the project. A citation names one requirement; a scope names a body of work.
 - **CV-OOS-25** — **A state directory shared by the run directories of one repository**: rejected. The guidance, the journal, and the bugs describe the work of one run directory. A run in a second directory that shared them would act on guidance for work that it cannot see, and the two runs would write one bug list that neither one owns.
 - **CV-OOS-26** — **An option or an environment variable of the client that points the run at another run directory**: rejected. The current directory names the run directory, and an operator who wants another one changes directory. A pointer that can disagree with the current directory is a second anchor, and a silent wrong anchor is the failure that the run-directory design removes. This rejects a pointer for the operator, not the variable that the loop exports for the bug tracker (**CV-ENV-6**): the loop sets that variable, and no option of the client sets it.
 - **CV-OOS-27** — **A cadence of review passes by a count of iterations**: rejected. The count lived in the memory of the loop, and a Ctrl-C that stopped the run threw it away. A resume then reviewed work that a pass had already covered, or skipped work that no pass had covered. The count of the unreviewed commits is durable, in the bug database, and it survives the death of the loop.
 - **CV-OOS-28** — **A reviewer that records the commits that it read**: rejected. The loop records the commits that it gave to the pass, after the pass ends with success (**CV-REV-15**). An agent that forgets to record leaves the work for the next pass to repeat, and an agent that records without reading hides code from every later pass. The bug tracker refuses the record from an agent of the loop, as it refuses a task.
-- **CV-OOS-29** — **A durable marker that a final pass read the code at HEAD**: rejected for v1. The marker costs a second record beside the reviewed commits. Without it, a done vote can arrive when no commit is unreviewed, and the code can converge without a read as a whole. The loop accepts that risk: a voting worker commits nothing, and the commits of the last working worker are usually unreviewed. A later version can add the marker without a change to the record of the commits.
+- **CV-OOS-29**: Retired. Accepted convergence without whole-code approval. **CV-CONV-15** requires session approval; **CV-OOS-31** rejects durable approval.
+- **CV-OOS-30** — **Failure fallback**: rejected. Failure must not select an extra invocation or another profile. Normal round-robin selection remains required under **CV-HARN-14**.
+- **CV-OOS-31** — **Durable final approval**: rejected. Reviewed-commit records survive a restart, but final approval does not. A new session requires fresh approval under **CV-CONV-15**.

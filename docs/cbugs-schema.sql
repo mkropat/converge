@@ -10,10 +10,10 @@
 -- removed. The history is therefore true by construction, and no stored value
 -- can disagree with it.
 --
--- The reviewed commits are a set, and not a history: a commit is reviewed or
--- it is not, and a row that names one never changes.
+-- The reviewed commits form a history of coverage. Multiple rows can name
+-- one commit, and each row is immutable.
 
-PRAGMA user_version = 4;
+PRAGMA user_version = 5;
 
 -- The identity of a defect.
 --
@@ -118,19 +118,22 @@ JOIN revision AS r
 -- that a pass covered before the change names no row after it, and the loop
 -- reviews the new history.
 --
--- `iteration` is the worker iteration that the pass followed. The loop is
--- not an agent, so the value comes from the `--iteration` option of the call,
--- and not from the environment. It is null when a person records a commit by
--- hand.
+-- `iteration` comes from `--iteration`, or is null when omitted. `profile`
+-- comes from `--profile` as harness:model[:effort], or is null for unknown.
+-- `created_at` is the completion time from `--completed-at`, or the call time.
+-- The loop supplies the profile and the same completion time for a whole pass.
 --
 -- Nothing changes a row, and nothing removes one. A commit that the history
 -- drops can come back, and a row that waits does no harm.
 CREATE TABLE reviewed (
   id         INTEGER PRIMARY KEY,
-  commit_id  TEXT NOT NULL UNIQUE,
+  commit_id  TEXT NOT NULL,
   iteration  INTEGER,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  profile    TEXT CHECK (profile <> '')
 );
+
+CREATE INDEX reviewed_commit ON reviewed (commit_id);
 
 -- Notes on the model
 --
@@ -153,9 +156,9 @@ CREATE TABLE reviewed (
 --
 -- `PRAGMA user_version` records the version of this model. A command that
 -- meets a database of an earlier version migrates it to this version on first
--- use, one step at a time, and each step is one transaction. The step from
--- version 2 to version 3 renames every kind `user` to `task`, and changes
--- nothing else. The step from version 3 to version 4 creates the reviewed
--- table, and changes nothing else. A command that meets a database of any
--- other version stops with an error that names the version of the database
--- and the current version.
+-- use in one transaction. The step from version 2 to version 3 renames kind
+-- `user` to `task`. Version 3 to version 4 adds the reviewed table. Version 4
+-- to version 5 removes commit uniqueness and adds profile, preserving every
+-- review id, hash, iteration, and timestamp, with null for each old profile.
+-- All steps preserve bugs, revisions, and citations except the kind rename.
+-- Unsupported versions cause an error that names both versions.
