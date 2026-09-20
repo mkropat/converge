@@ -1186,13 +1186,18 @@ verb_reviewed_add() {
     exit 1
   fi
   # The values come as arguments, or one per line on standard input (CB-RVW-6).
-  if ((0 == ${#commits[@]})) && [[ -t 0 ]]; then
-    echo "cbugs reviewed add: name the commits to record, as arguments or on standard input, one per line" >&2
-    exit 2
+  # A call that names the commits as arguments reads no standard input: an
+  # operator who runs the call on a terminal must not wait for EOF, in the
+  # way that CB-WRITE-3 gives for the note of the write verbs.
+  if ((0 == ${#commits[@]})); then
+    if [[ -t 0 ]]; then
+      echo "cbugs reviewed add: name the commits to record, as arguments or on standard input, one per line" >&2
+      exit 2
+    fi
+    while IFS=$' \t\r' read -r value || [[ -n $value ]]; do
+      [[ -n $value ]] && commits+=("$value")
+    done
   fi
-  while IFS=$' \t\r' read -r value || [[ -n $value ]]; do
-    [[ -n $value ]] && commits+=("$value")
-  done
   # One commit is one value: the same value twice, or two values that name
   # the same commit, add one row and count once.
   local -A seen=()
