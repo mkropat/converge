@@ -1417,7 +1417,6 @@ WHERE status = 'open' ORDER BY revision_id DESC LIMIT 10;
     printf '%sno bug is open%s\n' "$DIM" "$OFF"
   fi
 
-  printf '\n'
   if ((total > n)); then
     local rest=$((total - n)) word=bugs
     ((rest == 1)) && word=bug
