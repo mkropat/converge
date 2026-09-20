@@ -19,7 +19,7 @@ REVIEW_MODEL=""
 CONSENSUS=2
 COACH_EVERY=5
 COACH_ENABLED=1
-REVIEW_EVERY=5
+REVIEW_AFTER=5
 REVIEW_ENABLED=1
 TIMEOUT=3600
 MAX_ITERATIONS=""
@@ -53,7 +53,9 @@ Options:
   --consensus <N>         Consecutive converged votes that stop the loop. Default: 2.
   --coach-every <K>       Worker iterations between coach runs. Default: 5.
   --no-coach              Disable the coach.
-  --review-every <R>      Worker iterations between review passes. Default: 5.
+  --review-after <N>      Unreviewed commits that a cadence pass waits for:
+                          the loop runs the reviewer when more than N
+                          unreviewed commits exist. Default: 5.
   --no-review             Disable the reviewer.
   --timeout <seconds>     Maximum duration of one invocation. Default: 3600.
   --max-iterations <N>    Maximum worker iterations. Default: unbounded.
@@ -103,8 +105,8 @@ while (($#)); do
     --coach-every) need_value "$1" $#; COACH_EVERY=$2; shift 2 ;;
     --coach-every=*) COACH_EVERY=${1#*=}; shift ;;
     --no-coach) COACH_ENABLED=0; shift ;;
-    --review-every) need_value "$1" $#; REVIEW_EVERY=$2; shift 2 ;;
-    --review-every=*) REVIEW_EVERY=${1#*=}; shift ;;
+    --review-after) need_value "$1" $#; REVIEW_AFTER=$2; shift 2 ;;
+    --review-after=*) REVIEW_AFTER=${1#*=}; shift ;;
     --no-review) REVIEW_ENABLED=0; shift ;;
     --timeout) need_value "$1" $#; TIMEOUT=$2; shift 2 ;;
     --timeout=*) TIMEOUT=${1#*=}; shift ;;
@@ -178,7 +180,7 @@ validate_start_options() {
       exit 2
     fi
   done
-  for pair in "consensus:$CONSENSUS" "coach-every:$COACH_EVERY" "review-every:$REVIEW_EVERY" "timeout:$TIMEOUT"; do
+  for pair in "consensus:$CONSENSUS" "coach-every:$COACH_EVERY" "review-after:$REVIEW_AFTER" "timeout:$TIMEOUT"; do
     if ! is_number "${pair#*:}"; then
       echo "converge: --${pair%%:*} needs a whole number, got '${pair#*:}'" >&2
       exit 2
@@ -405,6 +407,33 @@ plural() {
   if (($1 == 1)); then printf '%s %s' "$1" "$2"; else printf '%s %ss' "$1" "$2"; fi
 }
 
+# The commits that no review pass has recorded. The bug tracker holds them
+# (CV-REV-15), so this list, and not a file of the state directory, decides
+# what every pass must still read. The list comes from cbugs reviewed
+# pending: one line per commit, "<hash> <subject>", newest first.
+unreviewed_list() {
+  "$BIN_DIR/cbugs" reviewed pending 2>/dev/null || true
+}
+
+# unreviewed_hashes   The commits of unreviewed_list as full hashes, so the
+# loop can record them with cbugs reviewed add after a pass.
+unreviewed_hashes() {
+  unreviewed_list | awk '{print $1}'
+}
+
+# unreviewed_count   Prints the number of the unreviewed commits.
+# CV-CONV-13 gives the loop leave to read this count, which is not a bug,
+# to schedule its review passes. A cbugs failure counts as none, as the
+# bug list of CV-OUT-6 does.
+unreviewed_count() {
+  awk 'NF { c++ } END { print c + 0 }' <<<"$(unreviewed_hashes)"
+}
+
+# reachable_count   Prints the number of commits that git reaches from HEAD.
+reachable_count() {
+  git rev-list --count HEAD 2>/dev/null || printf '0'
+}
+
 # scope_list   Renders the scope paths as the operator wrote them, for a
 # prompt or the startup panel.
 scope_list() {
@@ -518,9 +547,10 @@ SESSION_DIR="$STATE_DIR/sessions"
 GUIDANCE="$STATE_DIR/guidance.md"
 JOURNAL="$STATE_DIR/journal.md"
 RUN_LOG="$STATE_DIR/converge.log"
-# The commit at the end of the last review pass. The next pass reads from here
-# to HEAD. Absent before the first pass, when the range is the whole history.
-REVIEWED_COMMIT_FILE="$STATE_DIR/reviewed_commit"
+# The commits that a review pass covered live in the bug database, in the
+# reviewed table (CV-REV-15), and not in a file of this directory: the
+# reviewed_commit file that an earlier version wrote stays unread and is
+# never written again.
 # The name of the session that the newest loop writes.
 CURRENT="$STATE_DIR/current"
 # The harness of the last run in this repository. A later run keeps it.
@@ -959,7 +989,7 @@ trap 'printf "%s\n" "$?" >"$SESSION_STATUS"' EXIT
 
 note "=== run start ==="
 note "command: $0 $ORIGINAL_ARGS"
-note "options: harness=$HARNESS model=$MODEL coach-model=$COACH_MODEL review-model=$REVIEW_MODEL consensus=$CONSENSUS coach-every=$COACH_EVERY coach=$COACH_ENABLED review-every=$REVIEW_EVERY review=$REVIEW_ENABLED timeout=$TIMEOUT max-iterations=${MAX_ITERATIONS:-unbounded}"
+note "options: harness=$HARNESS model=$MODEL coach-model=$COACH_MODEL review-model=$REVIEW_MODEL consensus=$CONSENSUS coach-every=$COACH_EVERY coach=$COACH_ENABLED review-after=$REVIEW_AFTER review=$REVIEW_ENABLED timeout=$TIMEOUT max-iterations=${MAX_ITERATIONS:-unbounded}"
 note "passthrough: ${PASSTHROUGH[*]:-none}"
 if ((${#SCOPE[@]})); then
   SCOPE_SUMMARY=$(scope_list)
@@ -979,10 +1009,14 @@ else
   COACH_SUMMARY="disabled ($COACH_MODEL)"
 fi
 if ((REVIEW_ENABLED)); then
-  REVIEW_SUMMARY="$REVIEW_MODEL, every $(plural "$REVIEW_EVERY" iteration)"
+  REVIEW_SUMMARY="$REVIEW_MODEL, a cadence pass after more than $(plural "$REVIEW_AFTER" "unreviewed commit")"
 else
   REVIEW_SUMMARY="disabled ($REVIEW_MODEL)"
 fi
+# CV-OUT-1.6: the count of the unreviewed commits at startup, so the
+# operator sees whether a cadence pass runs before the first worker. The
+# count carries over from earlier runs: the bug database holds it.
+UNREVIEWED_START=$(unreviewed_count)
 PANEL_ROWS=(
   "run dir|$(home_relative "$RUN_DIR")"
   "scope|$SCOPE_SUMMARY"
@@ -1000,6 +1034,7 @@ PANEL_ROWS+=(
   "harness|$HARNESS"
   "worker|$MODEL, $LIMIT_SUMMARY"
   "review|$REVIEW_SUMMARY"
+  "pending review|$(plural "$UNREVIEWED_START" "unreviewed commit")"
   "coach|$COACH_SUMMARY"
   "stop|$(plural "$CONSENSUS" "converged vote") in a row"
   "timeout|${TIMEOUT}s for one invocation"
@@ -1748,7 +1783,8 @@ EOF
 }
 
 reviewer_prompt() {
-  local range=$1 scope_line=""
+  # $1: the text that names what this pass reads: the range of the pass.
+  local focus=$1 scope_line=""
   if ((${#SCOPE[@]})); then
     scope_line=" Judge them against these requirements documents only, and no other: $(scope_list). A path that is a directory names every requirements document under it. A change that contradicts a requirements document outside this scope is still a spec bug, not a code bug."
   else
@@ -1759,9 +1795,10 @@ You are the reviewer for an autonomous loop that converges a repository on
 its requirements documents. A worker builds; you read what it built. A
 worker that judges its own work is the author of that work.
 
-Commit range to review: $range
+This pass reads: $focus
 
-1. Read the changes in that range and the requirements documents they touch.${scope_line}
+1. Read the code that this pass covers, and the requirements documents that
+   it touches.${scope_line}
 2. Run \`cbugs search <text>\` before you log anything. Log nothing that an
    open bug already names.
 3. For each defect in the code (behavior that contradicts a requirement, an
@@ -1770,11 +1807,11 @@ Commit range to review: $range
    naming the requirement the code violates. If you cannot name the
    requirement, you have found no code defect; consider whether you have
    found a spec bug instead.
-4. When the changes reveal a requirement that is ambiguous, absent, or in
+4. When the code reveals a requirement that is ambiguous, absent, or in
    conflict with another, log \`cbugs add --kind spec --title <text>\`, cite
    each document and requirement that raised the question with
    \`--cite <path>[:<id>]\`, and say in the note what you could
-   not decide and why the changes raised it.
+   not decide and why the code raised it.
 5. Log nothing when you find nothing. That is a normal result, and an
    invented defect costs a worker a whole iteration.
 
@@ -1785,52 +1822,92 @@ the command refuses one from you anyway.
 EOF
 }
 
-# review_range <from, or ""> <after>   Describes the commit range for the
-# reviewer prompt. An empty "from" means the whole history: the first pass of
-# this repository, which the reviewer must judge how far back to read.
-review_range() {
-  local from=$1 after=$2
-  if [[ -n $from ]]; then
-    printf '%s..%s' "$from" "$after"
-  else
-    printf 'the beginning of history through %s (first pass: judge how far back to read; the most recent commits matter most)' "$after"
+# unreviewed_list / unreviewed_hashes / unreviewed_count / reachable_count
+# sit with the other counting helpers, above; the cadence pass and the final
+# pass use them, and the startup panel uses the count.
+
+# cadence_focus <pending lines> <pending count>   Prints the text that names
+# what a cadence pass reads. When no commit that the current history reaches
+# has been recorded, the range is the whole history of the repository, and
+# the reviewer must judge how far back to read (CV-REV-17). Otherwise the
+# range is every unreviewed commit, however many there are (CV-REV-16): the
+# loop lists them, so the reviewer needs no query to learn what it has not
+# read yet.
+cadence_focus() {
+  if (($2 == $(reachable_count))); then
+    printf 'the whole history of the repository (first pass: judge how far back to read; the most recent commits matter most)'
+    return
+  fi
+  printf 'every commit that no review pass has recorded: %s unreviewed
+commits, newest first:
+
+%s' "$2" "$1"
+}
+
+# record_reviewed <pending lines>   Records with cbugs reviewed add the
+# commits that the pass covered: the commits that no pass had recorded when
+# this pass started (CV-REV-15). The loop records, and no agent records one,
+# so the call runs outside the role environment that agents get. The file of
+# the last pass that an earlier version wrote stays where it is and is never
+# read or moved.
+record_reviewed() {
+  local last_pending=$1 status out
+  case $1 in
+    "" | $'\n') return 0 ;;
+  esac
+  status=0
+  out=$(
+    printf '%s\n' "$last_pending" | awk '{print $1}' |
+      env -u CONVERGE_ROLE -u CONVERGE_ITERATION "$BIN_DIR/cbugs" reviewed add --iteration "$ITERATION"
+  ) || status=$?
+  if ((status != 0)); then
+    # The pass still ran and read the code; only its record failed. Say so,
+    # and let the next pass cover the same commits again.
+    warn "cbugs reviewed add failed; the commits of this pass stay unreviewed"
+    return 1
   fi
 }
 
-# run_review_pass   Runs the reviewer over the commits that no pass has
-# examined yet, unless none have arrived since the last pass. Reports each bug
-# the pass logged. A pass that succeeds moves the recorded commit forward, and
-# resets the count of iterations since the last pass. A pass that fails or
-# times out does neither: the next pass must cover the same range, and must
-# still be due on the same cadence, or "the loop cannot converge on code that
-# no reviewer has seen" would not hold. A range with nothing new to read, or a
-# repository with no commit yet, is fully caught up either way, so those
-# paths reset the count without running the reviewer.
+# run_review_pass <cadence|final>   Runs the reviewer, then records what the
+# pass covered. A cadence pass reads the range of the pass: the commits that
+# no pass recorded, and the whole history when a pass has recorded nothing
+# that the current history reaches (CV-REV-16, CV-REV-17). A final pass reads
+# the whole code of the repository at HEAD (CV-REV-18). The loop records the
+# commits that no pass had recorded when this pass started (CV-REV-15): a
+# commit that another loop writes while the pass runs stays unreviewed. A
+# pass that fails or times out records nothing, so the next pass covers the
+# same work; that is why a failed pass never counts as coverage.
 run_review_pass() {
-  local after from
-  if ! after=$(git rev-parse HEAD 2>/dev/null); then
-    SINCE_REVIEW=0
-    return 0
-  fi
-  from=$(first_line "$REVIEWED_COMMIT_FILE")
-  if [[ -n $from && $from == "$after" ]]; then
-    note "review: no new commits since the last pass; skipped"
-    SINCE_REVIEW=0
+  local kind=$1 pending_list pending_count bugs_before bugs_after new_bugs count
+  local recorded=0
+  pending_list=$(unreviewed_list)
+  pending_count=$(awk 'NF { c++ } END { print c + 0 }' <<<"$pending_list")
+  if ((pending_count == 0)); then
+    note "review: no commit is unreviewed; no pass to run"
     return 0
   fi
 
   heading "$BLUE" "review" "$(date '+%H:%M:%S')"
-  note "review pass: range $(review_range "$from" "$after")"
+  note "review pass ($kind): $(plural "$pending_count" "unreviewed commit")"
 
-  local bugs_before bugs_after new_bugs count
+  local focus prompt
+  if [[ $kind == final ]]; then
+    focus="the whole code of the repository at HEAD, not only the commits
+that no review pass has recorded. Judge how much of the code to read; the
+integration of the recent work with the old code matters most."
+  else
+    focus=$(cadence_focus "$pending_list" "$pending_count")
+  fi
+  prompt=$(reviewer_prompt "$focus")
+
   bugs_before=$("$BIN_DIR/cbugs" list --json 2>/dev/null)
   [[ -n $bugs_before ]] || bugs_before='[]'
 
-  run_agent reviewer "$REVIEW_MODEL" "$(reviewer_prompt "$(review_range "$from" "$after")")"
+  run_agent reviewer "$REVIEW_MODEL" "$prompt"
   ((STOP_REQUESTED)) || handle_invocation_wait "$LOG_FILE"
 
   if ((RUN_STATUS == 0)); then
-    printf '%s\n' "$after" >"$REVIEWED_COMMIT_FILE"
+    record_reviewed "$pending_list" && recorded=$pending_count
   fi
 
   bugs_after=$("$BIN_DIR/cbugs" list --json 2>/dev/null)
@@ -1840,17 +1917,31 @@ run_review_pass() {
     <<<"$bugs_after")
   count=$(jq 'length' <<<"$new_bugs")
   if ((count > 0)); then
-    local id kind title
-    while IFS=$'\t' read -r id kind title; do
+    local id kind_ title
+    while IFS=$'\t' read -r id kind_ title; do
       printf '  %s%s%s bug #%s %s%s%s %s\n' \
-        "$YELLOW" "$G_WARN" "$OFF" "$id" "$DIM" "$kind" "$OFF" "$title"
-      note "review logged bug #$id ($kind): $title"
+        "$YELLOW" "$G_WARN" "$OFF" "$id" "$DIM" "$kind_" "$OFF" "$title"
+      note "review logged bug #$id ($kind_): $title"
     done < <(jq -r '.[] | [.id, .kind, .title] | @tsv' <<<"$new_bugs")
   else
     info "the review pass logged no bug"
   fi
 
-  ((RUN_STATUS == 0)) && SINCE_REVIEW=0
+  # CV-OUT-12: the number of commits that the pass recorded, and, for a
+  # final pass, that it read the whole code.
+  if ((RUN_STATUS == 0)); then
+    if [[ $kind == final ]]; then
+      info "the final pass read the whole code; recorded $(plural "$recorded" commit)"
+    else
+      info "the pass recorded $(plural "$recorded" commit)"
+    fi
+  else
+    if [[ $kind == final ]]; then
+      info "the final pass failed and recorded no commit; it read nothing to cover"
+    else
+      info "the pass failed and recorded no commit"
+    fi
+  fi
 }
 
 ITERATION=0
@@ -1858,7 +1949,6 @@ CONVERGED_VOTES=0
 FAIL_WAIT=0
 PENDING_LOGS=()
 SINCE_COACH=0
-SINCE_REVIEW=0
 EXIT_STATUS=1
 
 while true; do
@@ -1875,8 +1965,16 @@ while true; do
     break
   fi
 
-  if ((REVIEW_ENABLED && SINCE_REVIEW >= REVIEW_EVERY)); then
-    run_review_pass
+  # The count of the unreviewed commits decides the cadence, not a count of
+  # iterations (CV-REV-14). The check sits at the top of the loop for two
+  # reasons: a pass that runs before the first worker follows iteration 0
+  # (CV-ENV-2), and a pass that runs after a worker runs before the next
+  # worker starts. The count reads the bug database, which is not a bug:
+  # the done vote stays the only signal of convergence (CV-CONV-13).
+  if ((REVIEW_ENABLED)) && ((! STOP_REQUESTED)); then
+    if ((REVIEW_AFTER < $(unreviewed_count))); then
+      run_review_pass cadence
+    fi
   fi
   ((STOP_REQUESTED)) && break
 
@@ -1915,7 +2013,6 @@ while true; do
   ((STOP_REQUESTED)) && break
   PENDING_LOGS+=("$LOG_FILE")
   ((++SINCE_COACH))
-  ((++SINCE_REVIEW))
   # A review pass below overwrites $LOG_FILE with its own; keep this
   # invocation's log so the wait at the end of this iteration judges it, and
   # not the reviewer's.
@@ -1949,16 +2046,22 @@ while true; do
         EXIT_STATUS=0
         break
       fi
-      if ((REVIEW_ENABLED)) && ((! STOP_REQUESTED)); then
-        run_review_pass
+      # A final pass runs only when an unreviewed commit exists (CV-CONV-11),
+      # and reads the whole code of the repository at HEAD, because a vote
+      # claims the whole code and not the recent work (CV-CONV-12):
+      # a voting worker commits nothing, so a pass with nothing new to
+      # read would cost a full agent invocation and read nothing new.
+      if ((REVIEW_ENABLED)) && ((! STOP_REQUESTED)) && ((0 < $(unreviewed_count))); then
+        run_review_pass final
         # A done vote that a failed pass precedes cannot carry the loop to
-        # convergence: "the loop cannot converge on code that no reviewer has
-        # seen" (CV-CONV-5), and a failed pass saw nothing (CV-FAIL-4). The
-        # vote that preceded the pass does not count; the next vote starts a
-        # fresh count, and the pass that follows it examines the same range.
+        # convergence: "the loop cannot converge on code that no final pass
+        # has read" (CV-CONV-12), and a failed pass saw nothing (CV-FAIL-4).
+        # The vote that preceded the pass does not count; the next vote
+        # starts a fresh count, and the pass that follows it examines the
+        # same commits again.
         if ((RUN_STATUS != 0)); then
           CONVERGED_VOTES=0
-          info "the review pass failed; the converged vote does not carry over"
+          info "the final pass failed; the converged vote does not carry over"
           note "review pass failed; consecutive count reset to 0"
         fi
       fi
