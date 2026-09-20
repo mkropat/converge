@@ -2338,10 +2338,11 @@ while true; do
   # arrived while it ran: the invocation still finished, and the report is
   # about what it did, not about scheduling more work.
   report_changes "$HEAD_BEFORE"
-  # A first SIGINT lets this invocation finish, but the timeout can be the
-  # event that lets it finish. Do not schedule any follow-up work after that
-  # requested stop.
-  ((STOP_REQUESTED)) && break
+  # A first SIGINT lets this invocation finish. CV-CONV-18 step 1 (count the
+  # vote, apply the blocking-bug check) must still run for this completed
+  # invocation before the stop check of step 2, so do not break here: the
+  # stop_due call at the top of the loop applies step 2 once step 1 below is
+  # done, before any further invocation is scheduled.
   PENDING_LOGS+=("$LOG_FILE")
   ((++SINCE_COACH))
   # A review pass below overwrites $LOG_FILE and $INVOCATION_HARNESS with
