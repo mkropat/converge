@@ -183,15 +183,26 @@ validate_start_options() {
       exit 2
     fi
   done
+  # A leading zero (e.g. "010") is a whole number, but bash arithmetic reads
+  # it as octal, and every later ((...)) check in this script uses these
+  # values without a base. Normalize here, the one place every start path
+  # runs through, so no leading zero ever reaches an arithmetic context.
+  CONSENSUS=$((10#$CONSENSUS))
+  COACH_EVERY=$((10#$COACH_EVERY))
+  REVIEW_AFTER=$((10#$REVIEW_AFTER))
+  TIMEOUT=$((10#$TIMEOUT))
   # CV-INV-3.14: a cadence pass runs at N or more unreviewed commits, so N
   # must be a positive integer; zero would fire a pass on an empty backlog.
   if ((REVIEW_AFTER == 0)); then
     echo "converge: --review-after needs a positive integer, got '$REVIEW_AFTER'" >&2
     exit 2
   fi
-  if [[ -n $MAX_ITERATIONS ]] && ! is_number "$MAX_ITERATIONS"; then
-    echo "converge: --max-iterations needs a whole number" >&2
-    exit 2
+  if [[ -n $MAX_ITERATIONS ]]; then
+    if ! is_number "$MAX_ITERATIONS"; then
+      echo "converge: --max-iterations needs a whole number" >&2
+      exit 2
+    fi
+    MAX_ITERATIONS=$((10#$MAX_ITERATIONS))
   fi
 }
 
