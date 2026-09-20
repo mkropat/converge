@@ -54,8 +54,9 @@ Options:
   --coach-every <K>       Worker iterations between coach runs. Default: 5.
   --no-coach              Disable the coach.
   --review-after <N>      Unreviewed commits that a cadence pass waits for:
-                          the loop runs the reviewer when more than N
-                          unreviewed commits exist. Default: 5.
+                          the loop runs the reviewer when at least N
+                          unreviewed commits exist. N must be a positive
+                          integer. Default: 5.
   --no-review             Disable the reviewer.
   --timeout <seconds>     Maximum duration of one invocation. Default: 3600.
   --max-iterations <N>    Maximum worker iterations. Default: unbounded.
@@ -186,6 +187,12 @@ validate_start_options() {
       exit 2
     fi
   done
+  # CV-INV-3.14: a cadence pass runs at N or more unreviewed commits, so N
+  # must be a positive integer; zero would fire a pass on an empty backlog.
+  if ((REVIEW_AFTER == 0)); then
+    echo "converge: --review-after needs a positive integer, got '$REVIEW_AFTER'" >&2
+    exit 2
+  fi
   if [[ -n $MAX_ITERATIONS ]] && ! is_number "$MAX_ITERATIONS"; then
     echo "converge: --max-iterations needs a whole number" >&2
     exit 2
@@ -1009,7 +1016,7 @@ else
   COACH_SUMMARY="disabled ($COACH_MODEL)"
 fi
 if ((REVIEW_ENABLED)); then
-  REVIEW_SUMMARY="$REVIEW_MODEL, a cadence pass after more than $(plural "$REVIEW_AFTER" "unreviewed commit")"
+  REVIEW_SUMMARY="$REVIEW_MODEL, a cadence pass at $(plural "$REVIEW_AFTER" "unreviewed commit") or more"
 else
   REVIEW_SUMMARY="disabled ($REVIEW_MODEL)"
 fi
@@ -1972,7 +1979,7 @@ while true; do
   # worker starts. The count reads the bug database, which is not a bug:
   # the done vote stays the only signal of convergence (CV-CONV-13).
   if ((REVIEW_ENABLED)) && ((! STOP_REQUESTED)); then
-    if ((REVIEW_AFTER < $(unreviewed_count))); then
+    if ((REVIEW_AFTER <= $(unreviewed_count))); then
       run_review_pass cadence
     fi
   fi
