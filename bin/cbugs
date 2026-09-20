@@ -26,6 +26,8 @@ Verbs:
   close    Mark a bug closed: the defect is gone.
   dismiss  Mark a bug wontfix: no one will act on it.
   reopen   Mark a bug open again.
+  reviewed Record the commits that a review pass covered (add), or print
+           the commits that no pass has recorded yet (pending).
 
 Run 'cbugs <verb> --help' for the options of one verb.
 Every verb accepts --json.
@@ -107,6 +109,54 @@ order and form.
 EOF
 }
 
+usage_reviewed() {
+  cat >&2 <<'EOF'
+Usage: cbugs reviewed add|pending [args]
+
+  reviewed add      Record the commits that one review pass covered.
+  reviewed pending  Print the commits that no pass has recorded yet.
+
+Run 'cbugs reviewed add --help' for the options of add, and
+'cbugs reviewed pending --help' for the options of pending.
+EOF
+}
+
+usage_reviewed_add() {
+  cat >&2 <<'EOF'
+Usage: cbugs reviewed add [--iteration <N>] [<commit>]... [--json]
+
+Records the commits that one review pass of converge covered. The commits
+come as arguments, or on standard input, one commit per line. The record
+of one call is one transaction: a call that fails records nothing.
+
+The command writes the full hash of the commit that git resolves from
+each value. A value that names no commit of the repository is an error.
+
+Prints one line with the number of commits that the call added and the
+number that a row already named.
+
+The call stops with an error when the environment holds CONVERGE_ROLE:
+the loop records the commits of a pass, and no agent of the loop records
+one. An operator who runs the command by hand may record commits.
+
+--iteration <N>  The worker iteration that the pass followed. A call that
+                 gives none records none.
+EOF
+}
+
+usage_reviewed_pending() {
+  cat >&2 <<'EOF'
+Usage: cbugs reviewed pending [--json]
+
+Prints the commits that no row of the reviewed table names and that git
+reaches from the HEAD of the repository, the newest first: one line for
+each commit, with the full hash and the subject.
+
+Prints nothing and exits with the status 0 when no commit is unreviewed,
+and when the repository holds no commit.
+EOF
+}
+
 # ------------------------------------------------------------------ platform
 #
 # The command runs under the same platform conditions as converge: bash 4 or
@@ -143,6 +193,11 @@ fi
 # is_number <text>   True when the text is a whole number.
 is_number() {
   [[ $1 =~ ^[0-9]+$ ]]
+}
+
+# plural <count> <word>   Adds an "s" to the word when the count is not one.
+plural() {
+  if (($1 == 1)); then printf '%s %s' "$1" "$2"; else printf '%s %ss' "$1" "$2"; fi
 }
 
 # need_value <flag> <remaining-args-count>
@@ -235,7 +290,7 @@ for arg in "$@"; do
   fi
   case $arg in
     -h|--help) HELP_REQUESTED=1 ;;
-    --title|--kind|--note|--cite|--commit|--status) skip_next=1 ;;
+    --title|--kind|--note|--cite|--commit|--status|--iteration) skip_next=1 ;;
   esac
 done
 
@@ -361,8 +416,9 @@ like_escape() {
 }
 
 # The data model. This mirrors docs/cbugs-schema.sql. Nothing here is ever
-# changed or removed: the newest revision of a bug is its current state.
-DB_VERSION=3
+# changed or removed: the newest revision of a bug is its current state, and
+# a row of reviewed commits never changes.
+DB_VERSION=4
 
 # The current-state view, which both the schema and the migration rebuild.
 BUG_CURRENT_VIEW_SQL=$(cat <<'SQL'
@@ -412,19 +468,26 @@ CREATE TABLE IF NOT EXISTS citation (
 
 CREATE INDEX IF NOT EXISTS citation_revision ON citation (revision_id, id);
 
+CREATE TABLE IF NOT EXISTS reviewed (
+  id         INTEGER PRIMARY KEY,
+  commit_id  TEXT NOT NULL UNIQUE,
+  iteration  INTEGER,
+  created_at TEXT NOT NULL
+);
+
 $BUG_CURRENT_VIEW_SQL
 SQL
 )
 
-# The migration from version 2. It renames the kind 'user' to 'task', and
-# nothing else. The CHECK of the bug table must accept the new value, so the
-# table is rebuilt around the copied rows; the copy carries every id across,
-# and the revisions and the citations are untouched. One transaction: a
-# failure leaves the database as it was, and the next call tries again.
-# BEGIN IMMEDIATE makes two callers that find the same old database
-# serialize: the second waits on the lock, then proceeds against the
-# database that the first one migrated.
-MIGRATE_SQL=$(cat <<SQL
+# The migration from version 2 to version 3. It renames the kind 'user' to
+# 'task', and nothing else. The CHECK of the bug table must accept the new
+# value, so the table is rebuilt around the copied rows; the copy carries
+# every id across, and the revisions and the citations are untouched. One
+# transaction: a failure leaves the database as it was, and the next call
+# tries again. BEGIN IMMEDIATE makes two callers that find the same old
+# database serialize: the second waits on the lock, then proceeds against
+# the database that the first one migrated.
+MIGRATE_V2_3_SQL=$(cat <<SQL
 BEGIN IMMEDIATE;
 DROP VIEW IF EXISTS bug_current;
 CREATE TABLE bug_migrate (
@@ -436,15 +499,34 @@ INSERT INTO bug_migrate (id, kind)
 DROP TABLE bug;
 ALTER TABLE bug_migrate RENAME TO bug;
 $BUG_CURRENT_VIEW_SQL
+PRAGMA user_version = 3;
+COMMIT;
+SQL
+)
+
+# The migration from version 3 to version 4. It creates the table of
+# reviewed commits, and nothing else: every bug, every revision, and every
+# citation is the same after it as before it (CB-MIG-8). One transaction,
+# like the previous step.
+MIGRATE_V3_4_SQL=$(cat <<SQL
+BEGIN IMMEDIATE;
+CREATE TABLE IF NOT EXISTS reviewed (
+  id         INTEGER PRIMARY KEY,
+  commit_id  TEXT NOT NULL UNIQUE,
+  iteration  INTEGER,
+  created_at TEXT NOT NULL
+);
 PRAGMA user_version = $DB_VERSION;
 COMMIT;
 SQL
 )
 
 # init_db   Prepares the database before the command answers the call. It
-# creates the database on first use, migrates a version 2 database in place,
-# and stops with an error when the version is one that this command does not
-# know.
+# creates the database on first use, migrates a version 2 or version 3
+# database one step at a time -- one transaction per step, re-reading the
+# version after each step, so that two callers that find the same old
+# database at the same time end with one migrated database -- and stops
+# with an error when the version is one that this command does not know.
 init_db() {
   local ver
   ver=$(sqlite3_run raw "PRAGMA user_version;")
@@ -452,15 +534,17 @@ init_db() {
     sqlite3_run raw "$SCHEMA_SQL" >/dev/null
     return
   fi
-  if [[ $ver == "$DB_VERSION" ]]; then
-    return
-  fi
-  if [[ $ver == 2 ]]; then
-    sqlite3_run raw "$MIGRATE_SQL" >/dev/null
-    return
-  fi
-  echo "cbugs: $DB is database version $ver, but this command knows version $DB_VERSION and migrates only version 2" >&2
-  exit 1
+  while [[ $ver != "$DB_VERSION" ]]; do
+    case $ver in
+      2) sqlite3_run raw "$MIGRATE_V2_3_SQL" >/dev/null ;;
+      3) sqlite3_run raw "$MIGRATE_V3_4_SQL" >/dev/null ;;
+      *)
+        echo "cbugs: $DB is database version $ver, but this command knows version $DB_VERSION and migrates only versions 2 and 3" >&2
+        exit 1
+        ;;
+    esac
+    ver=$(sqlite3_run raw "PRAGMA user_version;")
+  done
 }
 ((HELP_REQUESTED)) || init_db
 
@@ -1000,6 +1084,177 @@ ORDER BY revision_id DESC;
   print_listing "$rows" "$json"
 }
 
+# ------------------------------------------------------------- reviewed verbs
+#
+# The database holds the commits that a review pass of converge covered, as
+# CB-RVW-1 gives. The loop records them, and no agent records one: a call
+# of reviewed add from an agent of the loop stops with an error. reviewed
+# pending changes nothing, and every caller may run it.
+
+# count_pending <json>   One shared reader for both forms: prints one line
+# per unreviewed commit -- "<hash>\t<subject>" -- or nothing, and exits 0,
+# when no commit is unreviewed or the repository holds no commit (CB-RVW-8).
+# The command reads the repository at the time of the call: git rev-list
+# walks HEAD now, and the rows of the reviewed table are the names that no
+# pass recorded yet.
+count_pending() {
+  local -a pending=()
+  local reachable="" row hash subject
+  # No commit, or no reachable history: print nothing, exit 0.
+  reachable=$(git -C "$REPO" rev-list HEAD 2>/dev/null || true)
+  [[ -n $reachable ]] || return 0
+  while IFS= read -r row; do
+    [[ -n $row ]] && pending+=("$row")
+  done <<<"$reachable"
+  # A row names one commit, and nothing else can name the same one, so the
+  # names land in a set keyed by the full hash.
+  local -A named=()
+  local rows_out
+  rows_out=$(sqlite3_run raw "SELECT commit_id FROM reviewed;") || exit 1
+  while IFS= read -r row; do
+    [[ -n $row ]] && named[$row]=1
+  done <<<"$rows_out"
+  local -a unseen=()
+  for row in ${pending[@]+"${pending[@]}"}; do
+    [[ -n ${named[$row]:-} ]] || unseen+=("$row")
+  done
+  ((${#unseen[@]} > 0)) || return 0
+  for hash in ${unseen[@]+"${unseen[@]}"}; do
+    # Read the subject now, so the two columns describe the repository at
+    # the same moment for every one of the lines.
+    subject=$(git -C "$REPO" show -s --format=%s "$hash" 2>/dev/null || true)
+    printf '%s\t%s\n' "$hash" "$subject"
+  done
+}
+
+verb_reviewed_pending() {
+  local json=0 line
+  while (($#)); do
+    case $1 in
+      --json) json=1; shift ;;
+      -h|--help) usage_reviewed_pending; exit 0 ;;
+      *) echo "cbugs reviewed pending: unexpected argument '$1'" >&2; exit 2 ;;
+    esac
+  done
+  local -a lines=() elems=()
+  mapfile -t lines < <(count_pending)
+  ((${#lines[@]} > 0)) || exit 0
+  if ((json)); then
+    for line in ${lines[@]+"${lines[@]}"}; do
+      hash=${line%%$'\t'*}
+      subject=${line#*$'\t'}
+      elems+=("$(jq -cn --arg c "$hash" --arg s "$subject" '{commit_id: $c, subject: $s}')")
+    done
+    printf '%s\n' "${elems[@]}" | jq -s .
+    exit 0
+  fi
+  for line in ${lines[@]+"${lines[@]}"}; do
+    printf '%s %s\n' "${line%%$'\t'*}" "${line#*$'\t'}"
+  done
+  exit 0
+}
+
+verb_reviewed_add() {
+  local iter="" json=0 value
+  local -a commits=() named=() resolved=() absent=()
+  while (($#)); do
+    case $1 in
+      --iteration) need_value "$1" $#; iter=$2; shift 2 ;;
+      --iteration=*) iter=${1#*=}; shift ;;
+      --json) json=1; shift ;;
+      -h|--help) usage_reviewed_add; exit 0 ;;
+      -*) echo "cbugs reviewed add: unexpected argument '$1'" >&2; exit 2 ;;
+      *) commits+=("$1"); shift ;;
+    esac
+  done
+  [[ -z $iter ]] || is_number "$iter" || {
+    echo "cbugs reviewed add: --iteration needs a whole number, got '$iter'" >&2
+    exit 2
+  }
+  # The loop records the commits of a pass, and no agent of the loop records
+  # one. The error names the role that the call read. reviewed pending
+  # changes nothing, so every caller may run it (CB-RVW-7).
+  if [[ -n ${CONVERGE_ROLE:-} ]]; then
+    echo "cbugs reviewed add: the loop records the commits of a pass, and no agent of the loop records one; refused for role '$CONVERGE_ROLE'" >&2
+    exit 1
+  fi
+  # The values come as arguments, or one per line on standard input (CB-RVW-6).
+  if ((0 == ${#commits[@]})) && [[ -t 0 ]]; then
+    echo "cbugs reviewed add: name the commits to record, as arguments or on standard input, one per line" >&2
+    exit 2
+  fi
+  while IFS=$' \t\r' read -r value || [[ -n $value ]]; do
+    [[ -n $value ]] && commits+=("$value")
+  done
+  # One commit is one value: the same value twice, or two values that name
+  # the same commit, add one row and count once.
+  local -A seen=()
+  for value in ${commits[@]+"${commits[@]}"}; do
+    [[ -n ${seen[$value]:-} ]] || { seen[$value]=1; named+=("$value"); }
+  done
+  ((0 < ${#named[@]})) || {
+    echo "cbugs reviewed add: name the commits to record, as arguments or on standard input, one per line" >&2
+    exit 2
+  }
+  # Resolve every value before the transaction writes anything, so a call
+  # that names an unknown commit records nothing (CB-RVW-10). The messages
+  # name the value the caller gave, so resolution keeps each candidate in a
+  # second variable.
+  local -A resolved_seen=() candidate
+  for value in ${named[@]+"${named[@]}"}; do
+    candidate=$(git -C "$REPO" rev-parse --verify "${value}^{commit}" 2>/dev/null) || {
+      echo "cbugs reviewed add: '$value' names no commit of the repository" >&2
+      exit 2
+    }
+    [[ -n ${resolved_seen[$candidate]:-} ]] || {
+      resolved_seen[$candidate]=1
+      resolved+=("$candidate")
+    }
+  done
+  CREATED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+  # One transaction for the whole call (CB-RVW-6). The EXISTS probes run
+  # inside it, so the printed counts describe the database under the write
+  # lock, and no concurrent call can slip between "already named" and the
+  # insert. A commit that a row already names stays one row and changes
+  # nothing, and the call still reports success (CB-RVW-3). A temp table
+  # holds the candidates: SQLite gives a VALUES table no alias to name its
+  # column with, and the three statements below all read the same names.
+  local values_sql="" out hash
+  for hash in ${resolved[@]+"${resolved[@]}"}; do
+    values_sql+="${values_sql:+,}('$(sql_quote "$hash")')"
+  done
+  out=$(sqlite3_run raw "
+BEGIN IMMEDIATE;
+DROP TABLE IF EXISTS temp.reviewed_add;
+CREATE TEMP TABLE reviewed_add (c TEXT NOT NULL);
+INSERT INTO reviewed_add (c) VALUES $values_sql;
+SELECT c, EXISTS(SELECT 1 FROM reviewed WHERE commit_id = c) FROM reviewed_add;
+INSERT OR IGNORE INTO reviewed (commit_id, iteration, created_at)
+SELECT c, ${iter:-NULL}, '$CREATED_AT' FROM reviewed_add;
+SELECT COUNT(*) FROM reviewed WHERE commit_id IN (SELECT c FROM reviewed_add);
+COMMIT;
+") || exit 1
+  # Every commit answers one probe line; the last line names the rows the
+  # call now covers, which must be all of them.
+  local already=0 n=${#resolved[@]} i total
+  local -a probe_rows=()
+  mapfile -t probe_rows <<<"$out"
+  for ((i = 0; i < n; i++)); do
+    [[ ${probe_rows[$i]} == "${resolved[$i]}|1" ]] && ((++already))
+  done
+  total=${probe_rows[$n]:-0}
+  if [[ $total != "$n" ]]; then
+    echo "cbugs reviewed add: database error: the call named $n commits, but the table now names $total" >&2
+    exit 1
+  fi
+  if ((json)); then
+    printf '{"added": %s, "already": %s}\n' $((n - already)) "$already"
+  else
+    printf 'added %s, %s that a row already named\n' "$(plural $((n - already)) commit)" "$(plural "$already" commit)"
+  fi
+}
+
 # verb_summary   Prints what a caller most probably wants when it runs cbugs
 # with no argument: the ten open bugs with the newest revision, in every
 # kind, then a short footer naming the other verbs. Takes no option, has no
@@ -1031,7 +1286,7 @@ WHERE status = 'open' ORDER BY revision_id DESC LIMIT 10;
     printf '%s%s more open %s; see cbugs list --status open%s\n' \
       "$DIM" "$rest" "$word" "$OFF"
   fi
-  printf '%sVerbs: add, list, show, search, note, close, dismiss, reopen.%s\n' "$DIM" "$OFF"
+  printf '%sVerbs: add, list, show, search, note, close, dismiss, reopen, reviewed add, reviewed pending.%s\n' "$DIM" "$OFF"
   printf '%sRun %scbugs --help%s%s for the options of each.%s\n' "$DIM" "$BOLD" "$OFF" "$DIM" "$OFF"
 }
 
@@ -1052,6 +1307,23 @@ case $VERB in
   list) verb_list "$@" ;;
   show) verb_show "$@" ;;
   search) verb_search "$@" ;;
+  reviewed)
+    # The reviewed verb holds two sub-verbs (CB-RVW-5): a bare 'reviewed'
+    # names no verb on its own and must say which two exist.
+    case ${1:-} in
+      add) shift; verb_reviewed_add "$@" ;;
+      pending) shift; verb_reviewed_pending "$@" ;;
+      -h|--help) usage_reviewed; exit 0 ;;
+      "")
+        echo "cbugs reviewed: name a sub-verb: 'reviewed add' or 'reviewed pending'" >&2
+        exit 2
+        ;;
+      *)
+        echo "cbugs reviewed: no such sub-verb 'reviewed ${1:-}'; use 'reviewed add' or 'reviewed pending'" >&2
+        exit 2
+        ;;
+    esac
+    ;;
   *)
     # No verb is a whole number, so a bare id can never collide with one. A
     # reader who saw the id in a listing can type it alone.
