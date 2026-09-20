@@ -12,10 +12,6 @@ if ((BASH_VERSINFO[0] < 4)); then
   exit 2
 fi
 
-HARNESS=""
-MODEL=""
-COACH_MODEL=""
-REVIEW_MODEL=""
 CONSENSUS=2
 COACH_EVERY=5
 COACH_ENABLED=1
@@ -26,7 +22,6 @@ MAX_ITERATIONS=""
 FOREGROUND=0
 INIT_STATE=0
 HELP_REQUESTED=0
-PASSTHROUGH=()
 ORIGINAL_ARGS="$*"
 # The client starts the loop again, in the background, with the same options.
 ORIGINAL_ARGV=("$@")
@@ -38,18 +33,9 @@ BIN_DIR="$(dirname "$SELF")"
 
 usage() {
   cat >&2 <<'EOF'
-Usage: converge [options] [scope ...] [-- harness args]
+Usage: converge [options] [scope ...]
 
 Options:
-  --harness <name>        Agent command: claude or opencode. Default: the
-                          harness of the last run here, else $CONVERGE_HARNESS,
-                          else claude.
-  --model <model>         Worker model. Default: the harness environment
-                          variable, then the harness default.
-  --coach-model <model>   Coach model. Default: the harness environment
-                          variable, then the harness default.
-  --review-model <model>  Reviewer model. Default: the harness environment
-                          variable, then the harness default.
   --consensus <N>         Consecutive converged votes that stop the loop. Default: 2.
   --coach-every <K>       Worker iterations between coach runs. Default: 5.
   --no-coach              Disable the coach.
@@ -64,16 +50,20 @@ Options:
   --init-state            Make the state and runtime directories of this run
                           directory and exit. Starts no loop.
 
-A positional argument before -- names a requirements document file or a
-directory of them. This is the scope: the agents work on those documents
-only. With no positional argument, the scope is empty and the agents find
-the requirements documents under the run directory themselves.
+A positional argument names a requirements document file or a directory of
+them. This is the scope: the agents work on those documents only. With no
+positional argument, the scope is empty and the agents find the requirements
+documents under the run directory themselves.
 
-Everything after the first -- goes to the harness, unchanged.
-
-Model environment variables use the uppercase harness name:
-CONVERGE_<HARNESS>_MODEL, CONVERGE_<HARNESS>_COACH_MODEL, and
-CONVERGE_<HARNESS>_REVIEW_MODEL.
+Each role -- worker, reviewer, coach -- selects its agents through an
+environment variable: CONVERGE_WORKER_PROFILE, CONVERGE_REVIEWER_PROFILE,
+CONVERGE_COACH_PROFILE. Each holds a comma-separated list of profiles of the
+form harness:model[:effort], where harness is claude or opencode. The role
+steps through its list in round robin order, one entry per invocation.
+Unset, the worker defaults to claude:sonnet and the reviewer and coach
+default to claude:opus. converge accepts no --harness, --model,
+--coach-model, or --review-model option, and no arguments after --: it
+starts the harness command directly, with no passthrough.
 
 The loop runs in the background and survives a lost terminal. Run converge
 again in the same directory to attach to it. Press Ctrl-C to stop the loop.
@@ -90,17 +80,21 @@ need_value() {
 SCOPE=()
 while (($#)); do
   case $1 in
-    # Everything after the first -- belongs to the harness. The script must
-    # consume none of it, and must read none of it as an option of its own.
-    --) shift; PASSTHROUGH=("$@"); break ;;
-    --harness) need_value "$1" $#; HARNESS=$2; shift 2 ;;
-    --harness=*) HARNESS=${1#*=}; shift ;;
-    --model) need_value "$1" $#; MODEL=$2; shift 2 ;;
-    --model=*) MODEL=${1#*=}; shift ;;
-    --coach-model) need_value "$1" $#; COACH_MODEL=$2; shift 2 ;;
-    --coach-model=*) COACH_MODEL=${1#*=}; shift ;;
-    --review-model) need_value "$1" $#; REVIEW_MODEL=$2; shift 2 ;;
-    --review-model=*) REVIEW_MODEL=${1#*=}; shift ;;
+    # CV-INV-11: the script accepts no passthrough. Every argument after --
+    # is rejected by name, not sent to a harness.
+    --)
+      shift
+      for arg in ${@+"$@"}; do
+        echo "converge: unexpected argument '$arg' after --; converge accepts no passthrough" >&2
+      done
+      exit 2
+      ;;
+    # CV-INV-11: these options are retired. Selection comes from the role
+    # profile variables alone (CV-HARN-8).
+    --harness|--harness=*|--model|--model=*|--coach-model|--coach-model=*|--review-model|--review-model=*)
+      echo "converge: '${1%%=*}' is retired; set CONVERGE_WORKER_PROFILE, CONVERGE_REVIEWER_PROFILE, or CONVERGE_COACH_PROFILE instead" >&2
+      exit 2
+      ;;
     --consensus) need_value "$1" $#; CONSENSUS=$2; shift 2 ;;
     --consensus=*) CONSENSUS=${1#*=}; shift ;;
     --coach-every) need_value "$1" $#; COACH_EVERY=$2; shift 2 ;;
@@ -119,13 +113,13 @@ while (($#)); do
     # forbidden argument, and CV-INV-10.4 must judge that call in full. The
     # help action waits until the argument loop and the init check have run.
     -h|--help) HELP_REQUESTED=1; shift ;;
-    # An option before -- that this script does not know is a typo, not a
-    # harness option. Only the arguments after -- reach the harness.
+    # An option this script does not know is a typo: there is no passthrough
+    # left for it to reach (CV-INV-11).
     -*)
       echo "converge: unknown option '$1'" >&2
       exit 2
       ;;
-    # A positional argument before -- names part of the requirements scope.
+    # A positional argument names part of the requirements scope.
     *)
       SCOPE+=("$1")
       shift
@@ -453,6 +447,16 @@ scope_list() {
   printf '%s' "$out"
 }
 
+# join_list <item>...   Joins its arguments with ", ", for a profile list on
+# the startup panel or an invocation line.
+join_list() {
+  local out="" item
+  for item in ${@+"$@"}; do
+    if [[ -z $out ]]; then out=$item; else out="$out, $item"; fi
+  done
+  printf '%s' "$out"
+}
+
 # votes <count> <total>   Draws the converged votes as a meter.
 votes() {
   local have=$1 want=$2 i
@@ -560,8 +564,6 @@ RUN_LOG="$STATE_DIR/converge.log"
 # never written again.
 # The name of the session that the newest loop writes.
 CURRENT="$STATE_DIR/current"
-# The harness of the last run in this repository. A later run keeps it.
-HARNESS_FILE="$STATE_DIR/harness"
 # The temporary directory. It holds only the files that show that a process is
 # alive now. The system removes them, so a dead loop leaves nothing that blocks
 # a new run. A pipe also stays here, because a home directory can be on a
@@ -579,9 +581,9 @@ SPAWN_LOCK="$RUNTIME_DIR/spawn.lock"
 # when they do not exist, and leaves a directory that exists as it is; two
 # init calls that run at the same time both succeed, because mkdir -p is
 # safe for both (CV-INV-10.2). It prints one line that names the path of the
-# state directory, and writes no session output, no session status, no
-# harness record, and no log (CV-INV-10.3). It tests no harness command,
-# because it makes directories and runs no agent (CV-INV-10.5).
+# state directory, and writes no session output, no session status, and no
+# log (CV-INV-10.3). It tests no harness command, because it makes
+# directories and runs no agent (CV-INV-10.5).
 if ((INIT_STATE)); then
   if ! mkdir -p "$STATE_DIR" "$LOG_DIR" "$SESSION_DIR" "$RUNTIME_DIR"; then
     echo "converge: cannot make the state directory or the runtime directory; check XDG_STATE_HOME, HOME, and TMPDIR" >&2
@@ -637,24 +639,139 @@ wait_child() {
   return "$status"
 }
 
-# harness_argv <model> <prompt>
+# harness_argv <harness> <model> <effort> <prompt>
 # Sets ARGV to the command that runs one non-interactive invocation, with
-# permission prompts disabled, and with a message stream on stdout.
+# permission prompts disabled, and with a message stream on stdout. An empty
+# effort omits the flag, so the harness applies its own default (CV-HARN-10).
 #
-# The resolution of $HARNESS itself, and the validation that it is supported
-# and on PATH, happen later, only in the process that becomes the loop. A
-# client that only attaches never starts a harness, and must not fail because
-# of an option, such as --harness, that belongs to a loop that already runs.
+# The validation that the harness is on PATH happens earlier, once for the
+# session, in validate_profiles.
 harness_argv() {
-  case $HARNESS in
+  local harness=$1 model=$2 effort=$3 prompt=$4
+  case $harness in
     claude)
       ARGV=(claude --print --output-format stream-json --verbose
-        --model "$1" --dangerously-skip-permissions
-        "${PASSTHROUGH[@]+"${PASSTHROUGH[@]}"}" "$2")
+        --model "$model" --dangerously-skip-permissions)
+      [[ -z $effort ]] || ARGV+=(--effort "$effort")
+      ARGV+=("$prompt")
       ;;
     opencode)
-      ARGV=(opencode run --format json --model "$1" --auto
-        "${PASSTHROUGH[@]+"${PASSTHROUGH[@]}"}" "$2")
+      ARGV=(opencode run --format json --model "$model" --auto)
+      [[ -z $effort ]] || ARGV+=(--variant "$effort")
+      ARGV+=("$prompt")
+      ;;
+  esac
+}
+
+# trim <text>   Strips leading and trailing whitespace.
+trim() {
+  local s=$1
+  s=${s#"${s%%[![:space:]]*}"}
+  s=${s%"${s##*[![:space:]]}"}
+  printf '%s' "$s"
+}
+
+# The explicit efforts that the claude harness accepts (its --effort flag).
+# opencode's --variant is provider-specific, so any syntactically valid
+# field is accepted and passed through unvalidated (CV-HARN-10).
+CLAUDE_EFFORTS=(low medium high xhigh max)
+
+# split_profile <canonical profile>   Splits a validated profile into
+# SPLIT_HARNESS, SPLIT_MODEL, and SPLIT_EFFORT (empty when omitted).
+split_profile() {
+  local -a fields=()
+  IFS=':' read -ra fields <<<"$1"
+  SPLIT_HARNESS=${fields[0]}
+  SPLIT_MODEL=${fields[1]}
+  SPLIT_EFFORT=${fields[2]:-}
+}
+
+# parse_profile_list <role> <raw list> <array name>
+# Splits a comma-separated profile list, trims each entry, validates its
+# harness:model[:effort] form and its effort against the selected harness,
+# and rejects a duplicate canonical profile within the role (CV-HARN-9,
+# CV-HARN-10). Writes the trimmed, validated entries into the named array.
+parse_profile_list() {
+  local role=$1 raw=$2 arrname=$3
+  local -n out=$arrname
+  out=()
+  local -a parts=()
+  IFS=',' read -ra parts <<<"$raw"
+  local -A seen=()
+  local entry harness model effort e ok
+  for entry in "${parts[@]}"; do
+    entry=$(trim "$entry")
+    if [[ ! $entry =~ ^(claude|opencode):[^:,[:space:]]+(:[^:,[:space:]]+)?$ ]]; then
+      echo "converge: $role profile '$entry' must be claude:model[:effort] or opencode:model[:effort], with nonempty fields and no colon, comma, or whitespace" >&2
+      exit 2
+    fi
+    split_profile "$entry"
+    harness=$SPLIT_HARNESS model=$SPLIT_MODEL effort=$SPLIT_EFFORT
+    if [[ -n $effort && $harness == claude ]]; then
+      ok=0
+      for e in "${CLAUDE_EFFORTS[@]}"; do [[ $e == "$effort" ]] && { ok=1; break; }; done
+      ((ok)) || {
+        echo "converge: $role profile '$entry' has an effort claude does not support; use one of: ${CLAUDE_EFFORTS[*]}" >&2
+        exit 2
+      }
+    fi
+    if [[ -n ${seen[$entry]:-} ]]; then
+      echo "converge: $role profile list repeats '$entry'" >&2
+      exit 2
+    fi
+    seen[$entry]=1
+    out+=("$entry")
+  done
+}
+
+# resolve_profile_env <variable name> <default> <out variable>
+# CV-HARN-8: an unset variable takes the default; a variable set to an empty
+# value is an error, not a silent default.
+resolve_profile_env() {
+  local varname=$1 default=$2 outvar=$3
+  if [[ -z ${!varname+x} ]]; then
+    printf -v "$outvar" '%s' "$default"
+  elif [[ -z ${!varname} ]]; then
+    echo "converge: $varname is set but empty; give a comma-separated profile list" >&2
+    exit 2
+  else
+    printf -v "$outvar" '%s' "${!varname}"
+  fi
+}
+
+# reject_retired_env   CV-HARN-12: a new session must reject the retired
+# harness and model environment variables, including an empty value, and
+# name the one it read.
+reject_retired_env() {
+  local old
+  for old in CONVERGE_HARNESS \
+    CONVERGE_CLAUDE_MODEL CONVERGE_CLAUDE_REVIEW_MODEL CONVERGE_CLAUDE_COACH_MODEL \
+    CONVERGE_OPENCODE_MODEL CONVERGE_OPENCODE_REVIEW_MODEL CONVERGE_OPENCODE_COACH_MODEL; do
+    if [[ -n ${!old+x} ]]; then
+      echo "converge: $old is retired; set CONVERGE_WORKER_PROFILE, CONVERGE_REVIEWER_PROFILE, or CONVERGE_COACH_PROFILE instead" >&2
+      exit 2
+    fi
+  done
+}
+
+# pick_profile <role>   Advances that role's round-robin index and sets
+# PICKED_PROFILE to the profile it names (CV-HARN-14). Each session starts
+# every role at its first entry; cadence and final passes share the
+# reviewer's sequence because both call this with role=reviewer.
+pick_profile() {
+  local role=$1
+  case $role in
+    worker)
+      PICKED_PROFILE=${WORKER_PROFILES[$WORKER_PROFILE_IDX]}
+      WORKER_PROFILE_IDX=$(( (WORKER_PROFILE_IDX + 1) % ${#WORKER_PROFILES[@]} ))
+      ;;
+    reviewer)
+      PICKED_PROFILE=${REVIEWER_PROFILES[$REVIEWER_PROFILE_IDX]}
+      REVIEWER_PROFILE_IDX=$(( (REVIEWER_PROFILE_IDX + 1) % ${#REVIEWER_PROFILES[@]} ))
+      ;;
+    coach)
+      PICKED_PROFILE=${COACH_PROFILES[$COACH_PROFILE_IDX]}
+      COACH_PROFILE_IDX=$(( (COACH_PROFILE_IDX + 1) % ${#COACH_PROFILES[@]} ))
       ;;
   esac
 }
@@ -909,7 +1026,7 @@ fi
 # repeat it, so the report stays inside the wrapped body, guarded by the
 # flag that brought the call here.
 
-# main_body   The whole loop: harness selection, state stamping, panel, and
+# main_body   The whole loop: profile selection, state stamping, panel, and
 # the iteration loop itself. In --foreground the caller runs this body
 # through tee, so the operator sees the output and the session file holds
 # the same text; as the daemon the body runs alone, with the client's own
@@ -920,46 +1037,31 @@ main_body() {
 
 # ------------------------------------------------------------------- harness
 #
-# The loop starts every worker and every coach through a harness. The client
-# and the loop select the harness from the same inputs, in the same order, so
-# both reach the same answer. The loop, and not the client, writes the harness
-# file, after the selection. Only the process that reaches this point becomes
-# the loop, so only it needs a harness, and only it must fail when the harness
-# is unsupported or missing.
+# Each role selects its agents through a profile list, read once here as a
+# session snapshot (CV-HARN-13): only the process that reaches this point
+# becomes the loop, and an attached client never re-reads the environment.
+# The loop writes no harness or profile selection state (CV-HARN-12).
 
-[[ -n $HARNESS ]] || HARNESS=$(first_line "$HARNESS_FILE")
-[[ -n $HARNESS ]] || HARNESS="${CONVERGE_HARNESS:-}"
-[[ -n $HARNESS ]] || HARNESS="claude"
+reject_retired_env
 
-case $HARNESS in
-  claude)
-    DEFAULT_MODEL="sonnet"
-    DEFAULT_COACH_MODEL="opus"
-    DEFAULT_REVIEW_MODEL="opus"
-    ;;
-  opencode)
-    DEFAULT_MODEL="opencode/gpt-5.6-luna"
-    DEFAULT_COACH_MODEL="opencode/gpt-5.6-sol"
-    DEFAULT_REVIEW_MODEL="opencode/gpt-5.6-sol"
-    ;;
-  *)
-    echo "converge: '$HARNESS' is not a harness; use claude or opencode" >&2
-    exit 2
-    ;;
-esac
+resolve_profile_env CONVERGE_WORKER_PROFILE "claude:sonnet" WORKER_PROFILE_RAW
+resolve_profile_env CONVERGE_REVIEWER_PROFILE "claude:opus" REVIEWER_PROFILE_RAW
+resolve_profile_env CONVERGE_COACH_PROFILE "claude:opus" COACH_PROFILE_RAW
+parse_profile_list worker "$WORKER_PROFILE_RAW" WORKER_PROFILES
+parse_profile_list reviewer "$REVIEWER_PROFILE_RAW" REVIEWER_PROFILES
+parse_profile_list coach "$COACH_PROFILE_RAW" COACH_PROFILES
+WORKER_PROFILE_IDX=0
+REVIEWER_PROFILE_IDX=0
+COACH_PROFILE_IDX=0
 
-MODEL_ENV_PREFIX="CONVERGE_${HARNESS^^}"
-WORKER_MODEL_ENV="${MODEL_ENV_PREFIX}_MODEL"
-COACH_MODEL_ENV="${MODEL_ENV_PREFIX}_COACH_MODEL"
-REVIEW_MODEL_ENV="${MODEL_ENV_PREFIX}_REVIEW_MODEL"
-[[ -n $MODEL ]] || MODEL="${!WORKER_MODEL_ENV:-}"
-[[ -n $MODEL ]] || MODEL="$DEFAULT_MODEL"
-[[ -n $COACH_MODEL ]] || COACH_MODEL="${!COACH_MODEL_ENV:-}"
-[[ -n $COACH_MODEL ]] || COACH_MODEL="$DEFAULT_COACH_MODEL"
-[[ -n $REVIEW_MODEL ]] || REVIEW_MODEL="${!REVIEW_MODEL_ENV:-}"
-[[ -n $REVIEW_MODEL ]] || REVIEW_MODEL="$DEFAULT_REVIEW_MODEL"
-
-need_tool "$HARNESS"
+# CV-HARN-11: validate every enabled role before the first invocation, and
+# check on PATH only the harnesses that an enabled role actually needs. A
+# disabled role requires no installed harness.
+declare -A NEEDED_HARNESSES=()
+for p in "${WORKER_PROFILES[@]}"; do NEEDED_HARNESSES[${p%%:*}]=1; done
+((! REVIEW_ENABLED)) || for p in "${REVIEWER_PROFILES[@]}"; do NEEDED_HARNESSES[${p%%:*}]=1; done
+((! COACH_ENABLED)) || for p in "${COACH_PROFILES[@]}"; do NEEDED_HARNESSES[${p%%:*}]=1; done
+for h in "${!NEEDED_HARNESSES[@]}"; do need_tool "$h"; done
 
 # The message stream of every invocation travels through a named pipe in the
 # runtime directory, so that the transcript shows live while the log file
@@ -980,8 +1082,6 @@ if ! hold_lock; then
   bad "a converge loop already runs for this run directory"
   exit 2
 fi
-# A later run in this run directory keeps this harness.
-printf '%s\n' "$HARNESS" >"$HARNESS_FILE"
 # A --foreground run is a session too, with no separate client process. It
 # must still record its process id, become the current session, and report
 # its exit status, so that the next run's "last run" report is accurate. In
@@ -996,8 +1096,7 @@ trap 'printf "%s\n" "$?" >"$SESSION_STATUS"' EXIT
 
 note "=== run start ==="
 note "command: $0 $ORIGINAL_ARGS"
-note "options: harness=$HARNESS model=$MODEL coach-model=$COACH_MODEL review-model=$REVIEW_MODEL consensus=$CONSENSUS coach-every=$COACH_EVERY coach=$COACH_ENABLED review-after=$REVIEW_AFTER review=$REVIEW_ENABLED timeout=$TIMEOUT max-iterations=${MAX_ITERATIONS:-unbounded}"
-note "passthrough: ${PASSTHROUGH[*]:-none}"
+note "options: worker-profile=${WORKER_PROFILES[*]} reviewer-profile=${REVIEWER_PROFILES[*]} coach-profile=${COACH_PROFILES[*]} consensus=$CONSENSUS coach-every=$COACH_EVERY coach=$COACH_ENABLED review-after=$REVIEW_AFTER review=$REVIEW_ENABLED timeout=$TIMEOUT max-iterations=${MAX_ITERATIONS:-unbounded}"
 if ((${#SCOPE[@]})); then
   SCOPE_SUMMARY=$(scope_list)
 else
@@ -1010,15 +1109,18 @@ if [[ -n $MAX_ITERATIONS ]]; then
 else
   LIMIT_SUMMARY="unlimited iterations"
 fi
+# CV-HARN-15: the panel shows each role's full canonical profile list and
+# whether the role is disabled.
+WORKER_SUMMARY="$(join_list "${WORKER_PROFILES[@]}"), $LIMIT_SUMMARY"
 if ((COACH_ENABLED)); then
-  COACH_SUMMARY="$COACH_MODEL, every $(plural "$COACH_EVERY" iteration)"
+  COACH_SUMMARY="$(join_list "${COACH_PROFILES[@]}"), every $(plural "$COACH_EVERY" iteration)"
 else
-  COACH_SUMMARY="disabled ($COACH_MODEL)"
+  COACH_SUMMARY="disabled ($(join_list "${COACH_PROFILES[@]}"))"
 fi
 if ((REVIEW_ENABLED)); then
-  REVIEW_SUMMARY="$REVIEW_MODEL, a cadence pass at $(plural "$REVIEW_AFTER" "unreviewed commit") or more"
+  REVIEW_SUMMARY="$(join_list "${REVIEWER_PROFILES[@]}"), a cadence pass at $(plural "$REVIEW_AFTER" "unreviewed commit") or more"
 else
-  REVIEW_SUMMARY="disabled ($REVIEW_MODEL)"
+  REVIEW_SUMMARY="disabled ($(join_list "${REVIEWER_PROFILES[@]}"))"
 fi
 # CV-OUT-1.6: the count of the unreviewed commits at startup, so the
 # operator sees whether a cadence pass runs before the first worker. The
@@ -1038,8 +1140,7 @@ PANEL_ROWS=(
 # run, so the operator must see that it is there, and where to read it.
 [[ -s $GUIDANCE ]] && PANEL_ROWS+=("guidance|$(home_relative "$GUIDANCE")")
 PANEL_ROWS+=(
-  "harness|$HARNESS"
-  "worker|$MODEL, $LIMIT_SUMMARY"
+  "worker|$WORKER_SUMMARY"
   "review|$REVIEW_SUMMARY"
   "pending review|$(plural "$UNREVIEWED_START" "unreviewed commit")"
   "coach|$COACH_SUMMARY"
@@ -1099,16 +1200,26 @@ trap 'on_signal INT' INT
 trap 'on_signal TERM' TERM
 trap 'on_signal USR1' USR1
 
-# run_agent <role> <model> <prompt>
-# Runs one non-interactive harness invocation. Writes the full message stream
-# to a new log file. Sets LOG_FILE, RESULT_TEXT, and RUN_STATUS.
+# run_agent <role> <prompt>
+# Picks the role's next profile in round robin and runs one non-interactive
+# harness invocation with it. Writes the full message stream to a new log
+# file. Sets LOG_FILE, RESULT_TEXT, RUN_STATUS, RUN_PROFILE, and
+# INVOCATION_HARNESS.
 run_agent() {
-  local role=$1 model=$2 prompt=$3 glyph=$G_WORKER started=$SECONDS seq_text
+  local role=$1 prompt=$2 glyph=$G_WORKER started=$SECONDS seq_text
   local fifo_failed=0
   case $role in
     coach) glyph=$G_COACH ;;
     reviewer) glyph=$G_REVIEW ;;
   esac
+  # CV-HARN-14: each role steps through its own list in round-robin order,
+  # one entry per started invocation. CV-HARN-15: the invocation line and
+  # log both name the full canonical profile, including explicit effort.
+  pick_profile "$role"
+  RUN_PROFILE=$PICKED_PROFILE
+  split_profile "$RUN_PROFILE"
+  INVOCATION_HARNESS=$SPLIT_HARNESS
+  local model=$SPLIT_MODEL effort=$SPLIT_EFFORT
   printf -v seq_text '%04d' $((++SEQ))
   LOG_FILE="$LOG_DIR/$RUN_ID-$seq_text-$role.jsonl"
   PROMPT_FILE="${LOG_FILE%.jsonl}.prompt.md"
@@ -1118,18 +1229,18 @@ run_agent() {
   # reader knows what this invocation was told, and which guidance was in
   # force when it ran.
   printf '%s\n' "$prompt" >"$PROMPT_FILE"
-  note "$role start: model=$model log=$LOG_FILE prompt=$PROMPT_FILE"
+  note "$role start: profile=$RUN_PROFILE log=$LOG_FILE prompt=$PROMPT_FILE"
   # A gear glyph (the worker's) draws at double width in most terminals, so a
   # single space after it makes the role label look like it touches the
   # glyph. Two spaces after the glyph keep every role's label clear of it.
   if [[ $role == coach ]]; then
     printf '  %s%s%s  %s%s%s %s%s %s%s\n' \
       "$BLUE" "$glyph" "$OFF" "$BOLD" "$role" "$OFF" \
-      "$DIM" "$G_DOT" "$model" "$OFF"
+      "$DIM" "$G_DOT" "$RUN_PROFILE" "$OFF"
   else
     printf '  %s%s%s  %s%s%s %s%s %s %s %s%s\n' \
       "$BLUE" "$glyph" "$OFF" "$BOLD" "$role" "$OFF" \
-      "$DIM" "$G_DOT" "$model" "$G_ARROW" "${LOG_FILE##*/}" "$OFF"
+      "$DIM" "$G_DOT" "$RUN_PROFILE" "$G_ARROW" "${LOG_FILE##*/}" "$OFF"
   fi
 
   # The message stream goes through a pipe to two readers: the log file keeps
@@ -1163,7 +1274,7 @@ run_agent() {
     ( trap '' INT; tee "$LOG_FILE" <"$fifo" | format_stream "$accent" ) &
     FORMATTER=$!
 
-    harness_argv "$model" "$prompt"
+    harness_argv "$INVOCATION_HARNESS" "$model" "$effort" "$prompt"
     (
       # The bug tracker reads CONVERGE_ROLE and CONVERGE_ITERATION from the
       # environment, so an agent cannot record the wrong role, and a prompt
@@ -1202,7 +1313,7 @@ run_agent() {
   fi
   RUN_SECONDS=$((SECONDS - started))
 
-  RESULT_TEXT="$(final_message "$LOG_FILE")"
+  RESULT_TEXT="$(final_message "$LOG_FILE" "$INVOCATION_HARNESS")"
 
   if ((fifo_failed)); then
     : # already reported above
@@ -1233,12 +1344,12 @@ wait_seconds() {
   CHILD=""
 }
 
-# produced_output <log file>
+# produced_output <log file> <harness>
 # True when the invocation produced at least one model message. A quota
 # rejection writes a synthetic assistant message -- model "<synthetic>" --
 # instead of a real one, so that line does not count.
 produced_output() {
-  case $HARNESS in
+  case $2 in
     claude)
       local assistant_lines
       assistant_lines=$(grep '"type":"assistant"' "$1" 2>/dev/null)
@@ -1248,7 +1359,7 @@ produced_output() {
   esac
 }
 
-# handle_invocation_wait <log file>
+# handle_invocation_wait <log file> <harness>
 # The wait that "Signals, timeouts, and failures" requires: when an invocation
 # -- a worker, a review pass, or a coach run -- fails before it produces any
 # output, the loop waits before it moves on, doubling the wait with each
@@ -1257,7 +1368,7 @@ produced_output() {
 # alive until the quota period resets. An invocation that produced output,
 # whether it succeeded or failed, resets the wait to zero.
 handle_invocation_wait() {
-  if produced_output "$1"; then
+  if produced_output "$1" "$2"; then
     FAIL_WAIT=0
     return 0
   fi
@@ -1272,7 +1383,7 @@ handle_invocation_wait() {
   wait_seconds "$FAIL_WAIT"
 }
 
-# final_message <log file>
+# final_message <log file> <harness>
 # Reports the final message of the invocation. claude reports it in one result
 # message. opencode reports no result, so the final message is the text of the
 # last assistant message.
@@ -1281,7 +1392,7 @@ handle_invocation_wait() {
 # A plain jq -s slurp would stop at the first stray line and lose the result
 # that a later line carries, and a converged vote would be lost with it.
 final_message() {
-  case $HARNESS in
+  case $2 in
     claude)
       jq -Rsr 'split("\n") | map(fromjson? // empty)
               | map(select(.type == "result")) | last | (.result // "")' \
@@ -1422,9 +1533,9 @@ fromjson? // empty
   else empty end
 '
 
-# stream_filter   Reports the filter of the harness in use.
+# stream_filter   Reports the filter of the harness of the running invocation.
 stream_filter() {
-  case $HARNESS in
+  case $INVOCATION_HARNESS in
     claude) printf '%s' "$CLAUDE_FILTER" ;;
     opencode) printf '%s' "$OPENCODE_FILTER" ;;
   esac
@@ -1894,15 +2005,19 @@ convergence_holds() {
   return 0
 }
 
+# record_reviewed <pending list> <profile> <completed-at>
+# Supplies the loop's selected canonical reviewer profile and one shared
+# completion timestamp to the bug tracker (CV-REV-20, CB-RVW-16).
 record_reviewed() {
-  local last_pending=$1 status out
+  local last_pending=$1 profile=$2 completed_at=$3 status out
   case $1 in
     "" | $'\n') return 0 ;;
   esac
   status=0
   out=$(
     printf '%s\n' "$last_pending" | awk '{print $1}' |
-      env -u CONVERGE_ROLE -u CONVERGE_ITERATION "$BIN_DIR/cbugs" reviewed add --iteration "$ITERATION"
+      env -u CONVERGE_ROLE -u CONVERGE_ITERATION "$BIN_DIR/cbugs" reviewed add \
+        --iteration "$ITERATION" --profile "$profile" --completed-at "$completed_at"
   ) || status=$?
   if ((status != 0)); then
     # The pass still ran and read the code; only its record failed. Say so,
@@ -1924,12 +2039,12 @@ record_reviewed() {
 # consecutive vote count and grants no approval (CV-CONV-17).
 #
 # A successful final pass grants approval for the exact HEAD it reviewed,
-# only when HEAD did not move during the pass and no open code bug or task
-# remains (CV-CONV-15). The caller (run_due_review) still owns whether a
-# final pass is due at all.
+# only when HEAD did not move during the pass, the recording of coverage
+# below did not fail, and no open code bug or task remains (CV-CONV-15). The
+# caller (run_due_review) still owns whether a final pass is due at all.
 run_review_pass() {
   local kind=$1 pending_list pending_count bugs_before bugs_after new_bugs count
-  local recorded=0 head_before head_after
+  local recorded=0 head_before head_after record_failed=0 completed_at
   pending_list=$(unreviewed_list)
   pending_count=$(awk 'NF { c++ } END { print c + 0 }' <<<"$pending_list")
   if [[ $kind != final ]] && ((pending_count == 0)); then
@@ -1954,11 +2069,23 @@ integration of the recent work with the old code matters most."
   [[ -n $bugs_before ]] || bugs_before='[]'
   head_before=$(git rev-parse HEAD 2>/dev/null) || head_before=
 
-  run_agent reviewer "$REVIEW_MODEL" "$prompt"
-  ((STOP_REQUESTED)) || handle_invocation_wait "$LOG_FILE"
+  run_agent reviewer "$prompt"
+  ((STOP_REQUESTED)) || handle_invocation_wait "$LOG_FILE" "$INVOCATION_HARNESS"
 
   if ((RUN_STATUS == 0)); then
-    ((pending_count == 0)) || { record_reviewed "$pending_list" && recorded=$pending_count; }
+    # CV-REV-20: one completion timestamp for the whole pass, from the
+    # moment it succeeded, not from a later retry of the record call.
+    completed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    if ((pending_count > 0)); then
+      if record_reviewed "$pending_list" "$RUN_PROFILE" "$completed_at"; then
+        recorded=$pending_count
+      else
+        # CV-FAIL-11: a failed record call keeps the commits pending, and
+        # counts as a review failure for the vote count and for approval.
+        record_failed=1
+        CONVERGED_VOTES=0
+      fi
+    fi
   else
     # CV-CONV-17: a review failure or timeout resets the consecutive vote
     # count and grants no approval, whatever kind of pass it was.
@@ -1999,7 +2126,7 @@ integration of the recent work with the old code matters most."
   fi
 
   if [[ $kind == final ]]; then
-    if ((RUN_STATUS == 0)); then
+    if ((RUN_STATUS == 0)) && ((! record_failed)); then
       head_after=$(git rev-parse HEAD 2>/dev/null) || head_after=
       if [[ -n $head_after && $head_after == "$head_before" ]] && ((0 == $(blocking_count))); then
         APPROVED_HEAD=$head_after
@@ -2086,8 +2213,8 @@ while true; do
     # The guarded form, on its own line: inside a double-nested command
     # substitution, the single-quoted printf format derails the parser.
     PENDING_LOGS_TEXT=$(printf '%s\n' ${PENDING_LOGS[@]+"${PENDING_LOGS[@]}"})
-    run_agent coach "$COACH_MODEL" "$(coach_prompt "$PENDING_LOGS_TEXT")"
-    ((STOP_REQUESTED)) || handle_invocation_wait "$LOG_FILE"
+    run_agent coach "$(coach_prompt "$PENDING_LOGS_TEXT")"
+    ((STOP_REQUESTED)) || handle_invocation_wait "$LOG_FILE" "$INVOCATION_HARNESS"
     show_guidance "$GUIDANCE_BEFORE"
     if ((RUN_STATUS == 0)); then
       PENDING_LOGS=()
@@ -2106,7 +2233,7 @@ while true; do
   note "iteration $ITERATION at $(date '+%Y-%m-%d %H:%M:%S')"
 
   HEAD_BEFORE=$(git rev-parse HEAD 2>/dev/null) || HEAD_BEFORE=
-  run_agent worker "$MODEL" "$(worker_prompt)"
+  run_agent worker "$(worker_prompt)"
   # The loop must report what a worker committed even when a first SIGINT
   # arrived while it ran: the invocation still finished, and the report is
   # about what it did, not about scheduling more work.
@@ -2117,15 +2244,16 @@ while true; do
   ((STOP_REQUESTED)) && break
   PENDING_LOGS+=("$LOG_FILE")
   ((++SINCE_COACH))
-  # A review pass below overwrites $LOG_FILE with its own; keep this
-  # invocation's log so the wait at the end of this iteration judges it, and
-  # not the reviewer's.
+  # A review pass below overwrites $LOG_FILE and $INVOCATION_HARNESS with
+  # its own; keep this invocation's so the wait at the end of this iteration
+  # judges it, and not the reviewer's.
   WORKER_LOG=$LOG_FILE
+  WORKER_HARNESS=$INVOCATION_HARNESS
 
   # Step 1 (CV-CONV-18): count the vote, or reset on a failure, timeout, or
   # non-vote, then apply the blocking-bug check. A done vote marks a final
   # pass due; run_due_review consumes that at the top of the next cycle.
-  if ! produced_output "$LOG_FILE"; then
+  if ! produced_output "$LOG_FILE" "$WORKER_HARNESS"; then
     # A failure that produced no output at all is the signature of an
     # exhausted quota: the invocation could not even start. A failure that did
     # produce output is a different kind of problem, and does not grow the
@@ -2164,7 +2292,7 @@ while true; do
   if ((STOP_REQUESTED)) || { [[ -n $MAX_ITERATIONS ]] && ((ITERATION >= MAX_ITERATIONS)); }; then
     :
   else
-    handle_invocation_wait "$WORKER_LOG"
+    handle_invocation_wait "$WORKER_LOG" "$WORKER_HARNESS"
   fi
 done
 

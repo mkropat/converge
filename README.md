@@ -17,7 +17,7 @@ Tools that run autonomous agent iterations against a repository.
 - `jq`.
 - `sqlite3`, for `bin/cbugs`.
 - The GNU versions of `timeout`, `tail`, `flock`, and `setsid`.
-- One agent harness: `claude` or `opencode`.
+- An agent harness for each enabled role: `claude` or `opencode`.
 
 Linux supplies the GNU tools. On macOS, install them with Homebrew:
 
@@ -50,19 +50,17 @@ Run `converge --help` to see all options.
 
 ## Environment variables
 
-You set these variables to configure `converge`. Each model variable belongs to
-one harness. The options `--model`, `--coach-model`, and `--review-model`
-override the matching variable.
+You set these variables to configure `converge`. Each holds a comma-separated
+list of profiles of the form `harness:model[:effort]`, where harness is
+`claude` or `opencode`. The role steps through its list in round-robin order,
+one entry per invocation. `converge` accepts no `--harness`, `--model`,
+`--coach-model`, or `--review-model` option.
 
 | Variable | Meaning |
 | --- | --- |
-| `CONVERGE_HARNESS` | Default harness: `claude` or `opencode`. Used when the run has no `--harness` option and the state records no harness. |
-| `CONVERGE_CLAUDE_MODEL` | Worker model of the `claude` harness. Default: `sonnet`. |
-| `CONVERGE_CLAUDE_COACH_MODEL` | Coach model of the `claude` harness. Default: `opus`. |
-| `CONVERGE_CLAUDE_REVIEW_MODEL` | Reviewer model of the `claude` harness. Default: `opus`. |
-| `CONVERGE_OPENCODE_MODEL` | Worker model of the `opencode` harness. Default: `opencode/gpt-5.6-luna`. |
-| `CONVERGE_OPENCODE_COACH_MODEL` | Coach model of the `opencode` harness. Default: `opencode/gpt-5.6-sol`. |
-| `CONVERGE_OPENCODE_REVIEW_MODEL` | Reviewer model of the `opencode` harness. Default: `opencode/gpt-5.6-sol`. |
+| `CONVERGE_WORKER_PROFILE` | Worker profile list. Default: `claude:sonnet`. |
+| `CONVERGE_REVIEWER_PROFILE` | Reviewer profile list. Default: `claude:opus`. |
+| `CONVERGE_COACH_PROFILE` | Coach profile list. Default: `claude:opus`. |
 
 `converge` also reads the standard variables `XDG_STATE_HOME`, `TMPDIR`,
 `HOMEBREW_PREFIX`, and `HOME`:
