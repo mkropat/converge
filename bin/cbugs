@@ -612,7 +612,13 @@ init_db() {
   fi
   [[ $ver == "$DB_VERSION" ]] && return
   exec 9>"$STATE_DIR/cbugs.db.migrate.lock" || exit 1
-  flock 9
+  # CB-CONC-5: wait for the lock only up to a bounded time, the same bound
+  # as the sqlite busy timeout below, and then fail instead of blocking
+  # forever behind a caller that died holding it.
+  if ! flock -w 10 9; then
+    echo "cbugs: timed out waiting for the migration lock on $DB" >&2
+    exit 1
+  fi
   ver=$(sqlite3_run raw "PRAGMA user_version;") || exit 1
   while [[ $ver != "$DB_VERSION" ]]; do
     case $ver in
