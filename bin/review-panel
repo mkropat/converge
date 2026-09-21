@@ -685,7 +685,54 @@ EOF
 }
 
 merge_prompt() {
-  local findings=$1
+  local findings=$1 self_list=${2:-0}
+  if ((self_list)); then
+    cat <<EOF
+You are the merge agent of a review panel for this repository. The panel's
+reviewer agents have finished and filed their findings directly into the
+bug tracker. You combine the duplicates. You are not a reviewer: you do not
+read the code, and you file no finding.
+
+The panel run is $PANEL_ID. The controller could not read the bugs that
+this panel run created, so no list of them is given here, and the first
+step below collects it. A bug belongs to this panel run when the first
+revision of the bug records this run as its creator, and
+\`cbugs list --panel-run $PANEL_ID\` shows exactly those bugs, one line
+per bug in the form id, kind, status, title.
+
+1. Collect the bugs of this panel run now, with
+   \`cbugs list --panel-run $PANEL_ID\`. If the command answers with
+   nothing, this panel run created no bug, and your work is done.
+2. Read each bug of the list with \`cbugs show <id>\`. Then read the bugs
+   that could overlap with them, with \`cbugs list\` and
+   \`cbugs search <text>\`. The tracker holds bugs of other panel runs and
+   of converge runs too.
+3. Combine two bugs only when they describe the same defect. Preserve every
+   distinct finding.
+4. Keep exactly one retained bug for each duplicate set, and keep the
+   retained bug in the status it holds: a bug that is still open stays
+   open. For each duplicate, write
+   \`cbugs dismiss <id> --note <text>\`
+   where the note names the id of the retained bug and explains the
+   duplicate relationship. You may dismiss only bugs this panel run
+   created: never dismiss or close a bug that a different run created.
+5. When a duplicate held evidence, note text, or requirement citations
+   that the retained bug lacks, write
+   \`cbugs note <retained-id> <text> --cite <path>[:<id>]\`
+   on the retained bug, so that the unique part of the duplicate survives
+   where readers look.
+6. Before you change a bug, read it again with \`cbugs show <id>\`. Other
+   agents write the same database at the same time. Judge the bug as it is
+   now, and write your revision below whatever a concurrent writer wrote.
+
+Rules: change bug records and nothing else. Do not fix code, do not edit
+requirements or guidance files, do not file a new bug, do not run
+\`cbugs close\` (a closure records that the defect is gone, and you did no
+such work), and do not log a task (the command refuses it from an agent).
+A duplicate set must still hold one retained bug when you are done.
+EOF
+    return
+  fi
   cat <<EOF
 You are the merge agent of a review panel for this repository. The panel's
 reviewer agents have finished and filed their findings directly into the
@@ -1080,11 +1127,13 @@ record_reviewed() {
 # Each agent invocation gets one transcript file, one prompt file, and one
 # stderr complement, and runs under its own session and the given timeout,
 # like a converge invocation (RP-REL-4). The environment names the role of
-# the caller, the run directory, the panel run, and the canonical profile
-# of that agent, so the bug tracker can attribute every revision it writes
-# (RP-RUN-2, RP-RUN-5). The iteration variable of the converge loop is
-# removed: a panel agent records no worker iteration. The assignment form
-# of env keeps every value whole, however its path is spelled.
+# the caller, the run directory, the panel run, the canonical profile of
+# that agent, and the one invocation of the panel run it belongs to, so
+# the bug tracker can attribute every revision it writes down to the
+# invocation (RP-RUN-2, RP-RUN-5). The iteration variable of the converge
+# loop is removed: a panel agent records no worker iteration. The
+# assignment form of env keeps every value whole, however its path is
+# spelled.
 
 # print_start_line <glyph> <label> <profile> <log path>
 print_start_line() {
@@ -1108,6 +1157,11 @@ print_start_line() {
 # line attributable to its source (RP-OUT-2). The transcript opens with the
 # invocation event, so a reader of the file alone knows the role and the
 # full canonical profile (RP-OUT-2, RP-OUT-9).
+#
+# The environment names the one invocation of this panel run that the agent
+# belongs to, so the bug tracker can tell two invocations of one run apart
+# in the revisions they write, whatever the concurrent writers do
+# (RP-RUN-2).
 run_reviewer() {
   local index=$1 count=$2 profile=$3
   split_profile "$profile"
@@ -1121,7 +1175,7 @@ run_reviewer() {
   harness_argv "$harness" "$model" "$effort" "$PANEL_PROMPT"
   invocation_event reviewer "$profile" "$harness" "$model" "$effort" "$LOG"
   printf '%s\n' "$PANEL_PROMPT" >"$LOG_DIR/$stem.prompt.md"
-  note "reviewer $index/$count start: profile=$profile log=$LOG"
+  note "reviewer $index/$count start: profile=$profile stem=$stem log=$LOG"
   print_start_line "$G_REVIEW" "reviewer $index/$count" "$profile" "$LOG"
 
   (
@@ -1132,10 +1186,12 @@ run_reviewer() {
       -u CONVERGE_DAEMON \
       -u REVIEW_PANEL_RUN \
       -u REVIEW_PANEL_PROFILE \
+      -u REVIEW_PANEL_INVOCATION \
       CONVERGE_ROLE=reviewer \
       CONVERGE_RUN_DIR="$RUN_DIR" \
       REVIEW_PANEL_RUN="$PANEL_ID" \
       REVIEW_PANEL_PROFILE="$profile" \
+      REVIEW_PANEL_INVOCATION="$stem" \
       PATH="$AGENT_PATH" \
       timeout -k 10 "$TIMEOUT" "${ARGV[@]}"
   ) >>"$LOG" 2>>"$LOG_DIR/$stem.err" </dev/null &
@@ -1187,10 +1243,12 @@ run_merge_agent() {
         -u CONVERGE_DAEMON \
         -u REVIEW_PANEL_RUN \
         -u REVIEW_PANEL_PROFILE \
+        -u REVIEW_PANEL_INVOCATION \
         CONVERGE_ROLE=merge \
         CONVERGE_RUN_DIR="$RUN_DIR" \
         REVIEW_PANEL_RUN="$PANEL_ID" \
         REVIEW_PANEL_PROFILE="$profile" \
+        REVIEW_PANEL_INVOCATION="$MERGE_STEM" \
         PATH="$AGENT_PATH" \
         timeout -k 10 "$TIMEOUT" "${ARGV[@]}"
     ) >"$fifo" 2>>"$LOG_DIR/$MERGE_STEM.err" &
@@ -1205,10 +1263,12 @@ run_merge_agent() {
         -u CONVERGE_DAEMON \
         -u REVIEW_PANEL_RUN \
         -u REVIEW_PANEL_PROFILE \
+        -u REVIEW_PANEL_INVOCATION \
         CONVERGE_ROLE=merge \
         CONVERGE_RUN_DIR="$RUN_DIR" \
         REVIEW_PANEL_RUN="$PANEL_ID" \
         REVIEW_PANEL_PROFILE="$profile" \
+        REVIEW_PANEL_INVOCATION="$MERGE_STEM" \
         PATH="$AGENT_PATH" \
         timeout -k 10 "$TIMEOUT" "${ARGV[@]}"
     ) </dev/null >>"$LOG_FILE" 2>>"$LOG_DIR/$MERGE_STEM.err" &
@@ -1376,7 +1436,9 @@ done
 # bug tracker keeps, not by a database-wide count or a time interval. The
 # read is a read: an operator stop does not prevent it, and the closing
 # report of a stopped run stays able to show the available findings. A
-# failed read leaves the run without an honest report (CB-ERR-2).
+# failed read leaves the collected list behind: the controller holds
+# nothing, and the merge pass below decides what the failure means
+# (RP-MERGE-1, RP-MERGE-2).
 if ! findings_raw=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" list --panel-run "$PANEL_ID" --json 2>/dev/null); then
   FINDINGS_COLLECT_FAILED=1
   warn "cbugs list --panel-run failed; the panel cannot report its findings"
@@ -1398,11 +1460,25 @@ fi
 # The duplicate merge pass runs when the operator stop has not shut the
 # panel down (RP-OUT-8). It still runs on a panel that a reviewer failure
 # left incomplete (RP-MERGE-2).
+#
+# The required merge is one invocation whenever this panel created bugs
+# (RP-MERGE-1), and the skip condition is "created no bugs", not "read no
+# bugs". When the read of this run's findings failed, the controller cannot
+# prove that the panel created no bug, so the merge must still be
+# attempted, and it must run on the findings that are available
+# (RP-MERGE-2): the merge agent collects the bugs of the run itself.
 MERGE_FAILED=0
 MERGE_RAN=0
 if ((STOP_REQUESTED || HARD_STOP)); then
   warn "operator stop: the merge agent and the coverage recording step do not start"
   note "merge skipped: operator stop"
+elif ((FINDINGS_COLLECT_FAILED)); then
+  heading "$MAGENTA" "merge duplicates" "$(date '+%H:%M:%S')"
+  note "merge phase: the findings read failed before the merge, so the merge agent collects the bugs of this panel run itself"
+  run_merge_agent "$(merge_prompt "" 1)" "$MERGE_PROFILE"
+  MERGE_RAN=1
+  MERGE_FAILED=1
+  ((MERGE_STATUS == 0)) && MERGE_FAILED=0
 elif ((NEW_COUNT == 0)); then
   note "merge skipped: the panel created no bug"
 else
@@ -1419,15 +1495,20 @@ fi
 # them to a terminal status too; the current status decides.
 RETAINED_FAILED=0
 RETAINED_JSON="[]"
-if ((FINDINGS_COLLECT_FAILED)); then
+if ! retained_raw=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" list --panel-run "$PANEL_ID" --json 2>/dev/null); then
   RETAINED_FAILED=1
+  warn "cbugs list --panel-run failed after the merge; the retained findings are unknown"
 else
-  if ! retained_raw=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" list --panel-run "$PANEL_ID" --json 2>/dev/null); then
+  [[ -n $retained_raw ]] && RETAINED_JSON=$retained_raw
+  if [[ $(jq -r 'type' <<<"$RETAINED_JSON" 2>/dev/null) != array ]]; then
     RETAINED_FAILED=1
-    warn "cbugs list --panel-run failed after the merge; the retained findings are unknown"
-  else
-    [[ -n $retained_raw ]] && RETAINED_JSON=$retained_raw
-    [[ $(jq -r 'type' <<<"$RETAINED_JSON" 2>/dev/null) == array ]] || RETAINED_FAILED=1
+    warn "cbugs list --panel-run gave no array after the merge; the retained findings are unknown"
+  elif ((FINDINGS_COLLECT_FAILED)); then
+    # The read before the merge failed, so the read here is the only
+    # collected list of the bugs that this run created: the report reads
+    # the retained subset out of it. A bug of this run that the merge did
+    # not hold open is no retained new bug.
+    FINDINGS_JSON=$RETAINED_JSON
   fi
 fi
 RETAINED=$(jq -n --argjson prev "$FINDINGS_JSON" --argjson cur "$RETAINED_JSON" \
@@ -1498,9 +1579,10 @@ findings_block() {
   done < <(jq -r '.[] | [.id, .kind, .status, .title] | @tsv' <<<"$json")
 }
 
-# The findings the panel collected before the merge, for the close of a run
-# whose readback after the merge failed: they are available, and the report
-# must show them (RP-OUT-6). A read that never succeeded holds nothing.
+# The findings the panel gathered: FINDINGS_JSON holds the list that a read
+# collected, which is the read before the merge, or, when that read failed,
+# the read after the merge. A read that never succeeded holds nothing
+# (RP-OUT-6).
 AVAILABLE_COUNT=$(jq -r 'length' <<<"$FINDINGS_JSON" 2>/dev/null)
 is_number "$AVAILABLE_COUNT" || AVAILABLE_COUNT=0
 
@@ -1521,13 +1603,18 @@ if ((RETAINED_CODE + RETAINED_SPEC > 0)); then
   findings_block "$RETAINED_SPEC_JSON"
 elif ((COMPLETE == 0)); then
   info "the panel knows of no retained new bug to show; its findings may be incomplete"
-  # The readback after the merge failed, so the retained subset is unknown;
-  # the findings the panel collected before the merge are the available
-  # ones, and an incomplete run shows them (RP-OUT-6). None of them carries
-  # a claim of retention.
   if ((AVAILABLE_COUNT > 0)); then
-    heading "$YELLOW" "available findings" "the merge outcome for these is unknown"
-    findings_block "$FINDINGS_JSON" "available new"
+    if ((FINDINGS_COLLECT_FAILED)); then
+      # The find-read that failed is the pre-merge read, and what the
+      # report holds here is the read after the merge: the merge outcome
+      # of each bug below is what its status says, and no line of the
+      # panel claims an unknown fate.
+      heading "$YELLOW" "findings of this panel run" "read after the merge; the read before it failed"
+      findings_block "$FINDINGS_JSON" "known new"
+    else
+      heading "$YELLOW" "available findings" "the merge outcome for these is unknown"
+      findings_block "$FINDINGS_JSON" "available new"
+    fi
   fi
 fi
 
