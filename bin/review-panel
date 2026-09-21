@@ -1,0 +1,1547 @@
+#!/usr/bin/env bash
+# review-panel: run a panel of reviewer agents once over the live working
+# tree, merge the duplicate findings through a separate merge agent, and
+# report. The reviewers file code bugs and spec bugs into the shared bug
+# tracker of the run directory; the controller records the coverage the
+# panel read, reports the retained findings, and exits. It does not run a
+# converge loop.
+#
+# See docs/review-panel-requirements.md for the required behavior.
+set -uo pipefail
+
+# The script uses bash 4 syntax. macOS supplies bash 3.2. This test must stay
+# above the first use of that syntax, because bash parses a script as it runs.
+if ((BASH_VERSINFO[0] < 4)); then
+  echo "review-panel: bash ${BASH_VERSION} is too old; bash 4 or later is needed" >&2
+  echo "review-panel: on macOS, run 'brew install bash'" >&2
+  exit 2
+fi
+
+TIMEOUT=3600
+SELF="$(cd "$(dirname "$0")" && pwd)/${0##*/}"
+# bin/cbugs lives beside this script. Every agent needs it on its PATH, and
+# the controller calls it by path, so that no PATH change of the operator
+# moves the bug tracker away from the panel.
+BIN_DIR="$(dirname "$SELF")"
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: review-panel [options] [scope ...]
+
+Options:
+  --timeout <seconds>     Maximum duration of one reviewer or merge-agent
+                          invocation. Default: 3600.
+
+A positional argument names a requirements document file or a directory of
+them. This is the scope: the reviewers judge the requirements in those
+paths only. With no positional argument, each reviewer finds the
+requirements documents under the run directory itself.
+
+The panel reviews the live working tree, with every uncommitted change and
+every relevant untracked file in it. Each configured reviewer runs once,
+and the reviewers run at the same time. A separate merge agent combines
+the duplicate findings. The panel reports the result and exits; it does
+not run a converge loop.
+
+Profiles come from the environment only:
+
+  REVIEW_PANEL_PROFILES       Ordered, comma-separated list of reviewer
+                              profiles, of the form harness:model[:effort].
+                              Unset, the command uses CONVERGE_REVIEWER_PROFILE.
+                              Unset, that defaults to claude:opus.
+  REVIEW_PANEL_MERGE_PROFILE  The single merge profile. Unset, the command
+                              uses the first reviewer profile.
+
+An explicitly empty variable is an error, not a request for the default.
+Duplicate canonical reviewer profiles are rejected. Unknown options are
+rejected and never reach a harness.
+EOF
+}
+
+need_value() {
+  if (($2 < 2)); then
+    echo "review-panel: $1 needs a value" >&2
+    exit 2
+  fi
+}
+
+SCOPE=()
+while (($#)); do
+  case $1 in
+    # The command accepts no passthrough: every argument after -- is
+    # rejected by name, never sent to a harness (RP-INV-5).
+    --)
+      shift
+      if (($#)); then
+        for arg in "$@"; do
+          echo "review-panel: unexpected argument '$arg' after --; review-panel accepts no passthrough" >&2
+        done
+        exit 2
+      fi
+      ;;
+    --timeout) need_value "$1" $#; TIMEOUT=$2; shift 2 ;;
+    --timeout=*) TIMEOUT=${1#*=}; shift ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    # An option this script does not know is a typo: there is no passthrough
+    # left for it to reach (RP-INV-5).
+    -*)
+      echo "review-panel: unknown option '$1'" >&2
+      exit 2
+      ;;
+    # A positional argument names part of the requirements scope.
+    *)
+      SCOPE+=("$1")
+      shift
+      ;;
+  esac
+done
+
+# is_number <text>   True when the text is a whole number.
+is_number() {
+  [[ $1 =~ ^[0-9]+$ ]]
+}
+
+# The scope paths and the timeout must hold before any agent starts
+# (RP-INV-1, RP-PROF-5). A typo must not become a review that silently
+# ignores the scope. The timeout follows the same validation as converge.
+for scope_path in ${SCOPE[@]+"${SCOPE[@]}"}; do
+  if [[ ! -e $scope_path ]]; then
+    echo "review-panel: scope path '$scope_path' does not exist" >&2
+    exit 2
+  fi
+done
+if ! is_number "$TIMEOUT"; then
+  echo "review-panel: --timeout needs a whole number, got '$TIMEOUT'" >&2
+  exit 2
+fi
+# A leading zero reads as octal in bash arithmetic. Normalize here, before
+# any use of the value, so no leading zero ever reaches an arithmetic context.
+TIMEOUT=$((10#$TIMEOUT))
+
+# The run directory is the current working directory of the operator, as it
+# is for converge (CV-INV-9). The script never changes its own working
+# directory, so every relative path that follows, and the initial working
+# directory of every agent, stays anchored there (RP-INV-6).
+RUN_DIR="$(pwd -P)"
+REPO="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$RUN_DIR")"
+
+# The state directory follows the same rule that converge and cbugs use for
+# a run directory: the name of the repository, the path of the run directory
+# within it, and a hash of the absolute path (RP-REL-3). The panel therefore
+# reads and writes the same state, the same logs directory, and the same
+# bug database that converge uses.
+hash_path() {
+  if command -v md5sum >/dev/null 2>&1; then
+    printf '%s' "$1" | md5sum | cut -c1-12
+  else
+    printf '%s' "$1" | cksum | tr -d ' ' | cut -c1-12
+  fi
+}
+if [[ $RUN_DIR == "$REPO" ]]; then
+  RUN_SUBPATH=""
+else
+  RUN_SUBPATH="${RUN_DIR#"$REPO"/}"
+fi
+SLUG="${REPO##*/}${RUN_SUBPATH:+-${RUN_SUBPATH//\//-}}-$(hash_path "$RUN_DIR")"
+if [[ -z ${XDG_STATE_HOME:-} && -z ${HOME:-} ]]; then
+  echo "review-panel: set HOME or XDG_STATE_HOME; review-panel keeps its state there" >&2
+  exit 2
+fi
+STATE_DIR="${XDG_STATE_HOME:-${HOME:-}/.local/state}/converge/$SLUG"
+LOG_DIR="$STATE_DIR/logs"
+# The panel keeps its own event log, so that its lines and a running
+# converge loop's lines never overwrite one another (RP-RUN-4).
+RUN_LOG="$STATE_DIR/review-panel.log"
+# The temporary directory holds only what a running process needs now: the
+# stream pipe of the merge agent. The system removes the directory, so a
+# dead panel leaves nothing behind (CV-RUN-4).
+RUNTIME_DIR="${TMPDIR:-/tmp}/converge/$SLUG"
+
+if ! mkdir -p "$LOG_DIR" "$RUNTIME_DIR"; then
+  echo "review-panel: cannot make the state directory or the runtime directory; check XDG_STATE_HOME, HOME, and TMPDIR" >&2
+  exit 2
+fi
+chmod 700 "$RUNTIME_DIR" 2>/dev/null || true
+
+# The agents need the GNU timeout and the GNU setsid that converge uses,
+# and Homebrew keeps them off the normal PATH on macOS. Put them on the PATH
+# of this script and of the agents it starts, the same way converge does
+# (CV-PLAT-4).
+for brew_prefix in "${HOMEBREW_PREFIX:-}" /opt/homebrew /usr/local; do
+  [[ -n $brew_prefix ]] || continue
+  for bin_dir in "$brew_prefix/opt/coreutils/libexec/gnubin" \
+                 "$brew_prefix/opt/util-linux/bin"; do
+    [[ -d $bin_dir ]] && PATH="$bin_dir:$PATH"
+  done
+done
+
+# need_tool <command> [macOS Homebrew formula]
+need_tool() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "review-panel: '$1' is not on PATH" >&2
+    if [[ -n ${2:-} ]]; then
+      echo "review-panel: on macOS, run 'brew install $2'" >&2
+    fi
+    exit 2
+  fi
+}
+for pair in jq:jq timeout:coreutils setsid:util-linux; do
+  need_tool "${pair%%:*}" "${pair##*:}"
+done
+# The BSD tools of the same names accept none of the options the panel uses,
+# so a name on the PATH is not enough; each tool proves itself (CV-PLAT-5).
+if ! timeout --version >/dev/null 2>&1; then
+  echo "review-panel: this 'timeout' is not GNU timeout" >&2
+  echo "review-panel: on macOS, run 'brew install coreutils'" >&2
+  exit 2
+fi
+if ! setsid --version >/dev/null 2>&1; then
+  echo "review-panel: this 'setsid' is not GNU setsid" >&2
+  echo "review-panel: on macOS, run 'brew install util-linux'" >&2
+  exit 2
+fi
+
+# ----------------------------------------------------------------- appearance
+#
+# The panel always writes color and UTF-8 characters, the way converge does:
+# its output belongs in a terminal (CV-OUT-9).
+
+BOLD=$'\033[1m'; DIM=$'\033[2m'; OFF=$'\033[0m'
+RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'
+BLUE=$'\033[34m'; MAGENTA=$'\033[35m'; CYAN=$'\033[36m'; WHITE=$'\033[97m'
+
+G_TL="╭"; G_TR="╮"; G_BL="╰"; G_BR="╯"; G_H="─"; G_V="│"; G_RULE="━"
+G_BAR="▌"; G_DOT="·"; G_ARROW="›"; G_ELL="…"
+G_OK="✓"; G_ERR="✗"; G_WARN="▲"; G_CLOCK="◷"
+G_WORKER="⚙"; G_COACH="◎"; G_REVIEW="◐"
+G_GUT="┆"; G_READ="○"; G_EDIT="◆"; G_SHELL="❯"; G_SAY="▍"
+E_OK="🏁"; E_WARN="▲"; E_STOP="🛑"
+
+# width  Reports the usable width of the output, between 40 and 96 columns.
+width() {
+  local cols
+  cols=$(tput cols 2>/dev/null) || cols=80
+  is_number "$cols" || cols=80
+  ((cols < 40)) && cols=40
+  ((cols > 96)) && cols=96
+  printf '%s' "$cols"
+}
+COLS="${CONVERGE_COLS:-$(width)}"
+GUT_WIDTH=$((COLS - 6))
+
+# repeat <character> <count>
+repeat() {
+  local out
+  (($2 > 0)) || return 0
+  printf -v out '%*s' "$2" ''
+  printf '%s' "${out// /$1}"
+}
+
+# fit <width> <text>   Shortens text from the middle to the given width.
+fit() {
+  local max=$1 text=$2 head tail
+  ((max < 8)) && max=8
+  if ((${#text} <= max)); then
+    printf '%s' "$text"
+    return
+  fi
+  head=$(((max - 1) / 2))
+  tail=$((max - 1 - head))
+  printf '%s%s%s' "${text:0:head}" "$G_ELL" "${text: -tail}"
+}
+
+# home_relative <path>   Rewrites a path inside $HOME as a ~/ path.
+home_relative() {
+  local path=$1
+  if [[ -n ${HOME:-} ]]; then
+    if [[ $path == "$HOME" ]]; then
+      printf '~'
+      return
+    elif [[ $path == "$HOME"/* ]]; then
+      printf '%s/%s' '~' "${path#"$HOME"/}"
+      return
+    fi
+  fi
+  printf '%s' "$path"
+}
+
+# duration <seconds>   Formats a duration for a person: 4m 12s.
+duration() {
+  local total=$1 h m s
+  h=$((total / 3600)); m=$(((total % 3600) / 60)); s=$((total % 60))
+  if ((h > 0)); then printf '%dh %02dm %02ds' "$h" "$m" "$s"
+  elif ((m > 0)); then printf '%dm %02ds' "$m" "$s"
+  else printf '%ds' "$s"; fi
+}
+
+# panel <title> <label|value> ...   Draws the startup panel. A row whose
+# label names something an operator reads — the run directory, a path, or
+# the scope — prints its value whole, and runs past the border when it does
+# not fit, the way converge draws its panel. Style must not remove
+# information (CV-OUT-11).
+panel() {
+  local title=$1; shift
+  local inner=0 row label value line pad dashes raw=0
+  for row in "$@"; do
+    label=${row%%|*}
+    value=${row#*|}
+    case $label in
+      "run dir"|"run log"|logs|scope|source)
+        if ((11 + ${#value} <= COLS - 17)); then
+          printf -v line '%-10s %s' "$label" "$value"
+          ((${#line} > inner)) && inner=${#line}
+        fi
+        ;;
+      *)
+        printf -v line '%-10s %s' "$label" "$(fit $((COLS - 17)) "$value")"
+        ((${#line} > inner)) && inner=${#line}
+        ;;
+    esac
+  done
+  ((inner < ${#title} + 4)) && inner=$((${#title} + 4))
+
+  dashes=$((inner - ${#title} - 1))
+  printf '\n%s%s%s%s %s%s%s %s%s%s%s\n' \
+    "$DIM" "$G_TL" "$G_H" "$OFF" \
+    "$BOLD$CYAN" "$title" "$OFF" \
+    "$DIM" "$(repeat "$G_H" "$dashes")" "$G_TR" "$OFF"
+  for row in "$@"; do
+    label=${row%%|*}
+    value=${row#*|}
+    raw=0
+    case $label in "run dir"|"run log"|logs|scope|source) raw=1 ;; esac
+    if ((raw)) && ((11 + ${#value} > inner)); then
+      printf '%s%s%s %s%-10s%s %s\n' \
+        "$DIM" "$G_V" "$OFF" \
+        "$DIM" "$label" "$OFF" "$value"
+      continue
+    fi
+    if ((raw)); then
+      printf -v line '%-10s %s' "$label" "$value"
+    else
+      value=$(fit $((COLS - 17)) "$value")
+      printf -v line '%-10s %s' "$label" "$value"
+    fi
+    pad=$((inner - ${#line}))
+    printf '%s%s%s %s%-10s%s %s%s %s%s%s\n' \
+      "$DIM" "$G_V" "$OFF" \
+      "$DIM" "$label" "$OFF" "$value" "$(repeat ' ' "$pad")" \
+      "$DIM" "$G_V" "$OFF"
+  done
+  printf '%s%s%s%s%s\n' "$DIM" "$G_BL" "$(repeat "$G_H" $((inner + 2)))" "$G_BR" "$OFF"
+}
+
+# heading <color> <text> <right text>   Draws a section rule.
+heading() {
+  local color=$1 text=$2 right=$3 dashes
+  dashes=$((COLS - ${#text} - ${#right} - 6))
+  ((dashes < 1)) && dashes=1
+  printf '\n%s%s%s %s%s%s %s%s %s%s\n' \
+    "$color" "$G_BAR" "$OFF" \
+    "$BOLD" "$text" "$OFF" \
+    "$DIM" "$(repeat "$G_H" "$dashes")" "$right" "$OFF"
+}
+
+# banner <color> <glyph> <text>   Draws the closing report.
+banner() {
+  local color=$1 glyph=$2 text=$3
+  printf '\n%s%s%s\n' "$color$DIM" "$(repeat "$G_RULE" "$COLS")" "$OFF"
+  printf ' %s  %s%s%s\n' "$glyph" "$BOLD$color" "$text" "$OFF"
+  printf '%s%s%s\n\n' "$color$DIM" "$(repeat "$G_RULE" "$COLS")" "$OFF"
+}
+
+# plural <count> <word>   Adds an "s" to the word when the count is not one.
+plural() {
+  if (($1 == 1)); then printf '%s %s' "$1" "$2"; else printf '%s %ss' "$1" "$2"; fi
+}
+
+# scope_list   Renders the scope paths as the operator wrote them, for a
+# prompt or the startup panel.
+scope_list() {
+  local out="" path
+  for path in ${SCOPE[@]+"${SCOPE[@]}"}; do
+    if [[ -z $out ]]; then out=$path; else out="$out, $path"; fi
+  done
+  printf '%s' "$out"
+}
+
+# join_list <item>...   Joins its arguments with ", ", for a profile list.
+join_list() {
+  local out="" item
+  for item in ${@+"$@"}; do
+    if [[ -z $out ]]; then out=$item; else out="$out, $item"; fi
+  done
+  printf '%s' "$out"
+}
+
+# wrap <width> <text>   Breaks text on spaces into lines of at most <width>.
+wrap() {
+  local width=$1 line="" word
+  local -a words=()
+  read -ra words <<<"$2"
+  if ((${#words[@]} == 0)); then
+    printf '\n'
+    return
+  fi
+  for word in "${words[@]}"; do
+    if [[ -z $line ]]; then
+      line=$word
+    elif ((${#line} + 1 + ${#word} <= width)); then
+      line="$line $word"
+    else
+      printf '%s\n' "$line"
+      line=$word
+    fi
+  done
+  printf '%s\n' "$line"
+}
+
+# strip_style <text>   Removes the ANSI color codes that gutter embeds.
+strip_style() {
+  sed -E $'s/\x1b\\[[0-9;]*m//g' <<<"$1"
+}
+
+# gutter <color> <marker> <text> <tag>   Prints one transcript line, behind a
+# rule, and writes the same line to the event log as plain text (CV-OUT-11).
+gutter() {
+  local marker=$2 tag=${4:-}
+  if [[ -z $marker && -z $3 ]]; then
+    printf '  %s%s%s\n' "$DIM" "$G_GUT" "$OFF"
+    return
+  fi
+  [[ -z $marker ]] && marker=" "
+  printf '  %s%s%s %s%s%s %s%s\n' \
+    "$DIM" "$G_GUT" "$OFF" "$1" "$marker" "$OFF" "$3" "$OFF"
+  if [[ -n $tag ]]; then
+    note "[$tag] $(strip_style "$3")"
+  else
+    note "$(strip_style "$3")"
+  fi
+}
+
+# trim <text>   Strips leading and trailing whitespace.
+trim() {
+  local s=$1
+  s=${s#"${s%%[![:space:]]*}"}
+  s=${s%"${s##*[![:space:]]}"}
+  printf '%s' "$s"
+}
+
+# ------------------------------------------------------------------- harness
+#
+# A profile is harness:model[:effort]. The rules of CV-HARN-9 and CV-HARN-10
+# apply (RP-PROF-3). The explicit efforts that the claude harness accepts
+# come from converge. opencode's --variant is provider-specific, so any
+# syntactically valid field is accepted and passed through unvalidated.
+CLAUDE_EFFORTS=(low medium high xhigh max)
+
+# split_profile <canonical profile>   Splits a validated profile into
+# SPLIT_HARNESS, SPLIT_MODEL, and SPLIT_EFFORT (empty when omitted).
+split_profile() {
+  local -a fields=()
+  IFS=':' read -ra fields <<<"$1"
+  SPLIT_HARNESS=${fields[0]}
+  SPLIT_MODEL=${fields[1]}
+  SPLIT_EFFORT=${fields[2]:-}
+}
+
+# parse_profile_list <role> <raw value> <array name>
+# Splits a comma-separated profile list, trims each entry, validates its
+# harness:model[:effort] form and its effort against the selected harness,
+# and rejects a duplicate canonical profile within the role (RP-PROF-3).
+# Writes the trimmed, validated entries into the named array.
+parse_profile_list() {
+  local role=$1 raw=$2 arrname=$3
+  local -n out=$arrname
+  out=()
+  local -a parts=()
+  # A plain "IFS=','read -ra" silently drops a trailing empty entry, so
+  # "claude:opus," would parse as the single entry "claude:opus" instead of
+  # being rejected for its empty trailing entry. Splitting on newlines with
+  # mapfile keeps that trailing empty entry.
+  mapfile -t parts <<<"${raw//,/$'\n'}"
+  local -A seen=()
+  local entry harness model effort e ok
+  for entry in "${parts[@]}"; do
+    entry=$(trim "$entry")
+    if [[ ! $entry =~ ^(claude|opencode):[^:,[:space:]]+(:[^:,[:space:]]+)?$ ]]; then
+      echo "review-panel: $role profile '$entry' must be claude:model[:effort] or opencode:model[:effort], with nonempty fields and no colon, comma, or whitespace" >&2
+      exit 2
+    fi
+    split_profile "$entry"
+    harness=$SPLIT_HARNESS model=$SPLIT_MODEL effort=$SPLIT_EFFORT
+    if [[ -n $effort && $harness == claude ]]; then
+      ok=0
+      for e in "${CLAUDE_EFFORTS[@]}"; do [[ $e == "$effort" ]] && { ok=1; break; }; done
+      ((ok)) || {
+        echo "review-panel: $role profile '$entry' has an effort claude does not support; use one of: ${CLAUDE_EFFORTS[*]}" >&2
+        exit 2
+      }
+    fi
+    if [[ -n ${seen[$entry]:-} ]]; then
+      echo "review-panel: $role profile list repeats '$entry'" >&2
+      exit 2
+    fi
+    seen[$entry]=1
+    out+=("$entry")
+  done
+}
+
+# resolve_reviewer_env   RP-PROF-1 and RP-PROF-2: REVIEW_PANEL_PROFILES
+# selects the reviewer list; unset, the command uses CONVERGE_REVIEWER_PROFILE;
+# unset, that defaults to the converge reviewer default, claude:opus. An
+# explicitly empty selected variable is an error, not a request for a
+# fallback.
+resolve_reviewer_env() {
+  if [[ -n ${REVIEW_PANEL_PROFILES+x} ]]; then
+    if [[ -z $REVIEW_PANEL_PROFILES ]]; then
+      echo "review-panel: REVIEW_PANEL_PROFILES is set but empty; give a comma-separated profile list" >&2
+      exit 2
+    fi
+    REVIEWER_RAW=$REVIEW_PANEL_PROFILES
+  elif [[ -n ${CONVERGE_REVIEWER_PROFILE+x} ]]; then
+    if [[ -z $CONVERGE_REVIEWER_PROFILE ]]; then
+      echo "review-panel: CONVERGE_REVIEWER_PROFILE is set but empty; give a comma-separated profile list" >&2
+      exit 2
+    fi
+    REVIEWER_RAW=$CONVERGE_REVIEWER_PROFILE
+  else
+    REVIEWER_RAW="claude:opus"
+  fi
+}
+
+# resolve_merge_env <fallback>   RP-PROF-4: REVIEW_PANEL_MERGE_PROFILE must
+# name exactly one merge profile; unset, the command uses the value given
+# here, which is the first resolved reviewer profile. An empty value is an
+# error, and a value that holds a comma does not name one profile.
+resolve_merge_env() {
+  local fallback=$1
+  if [[ -z ${REVIEW_PANEL_MERGE_PROFILE+x} ]]; then
+    MERGE_PROFILE_RAW=$fallback
+  else
+    if [[ -z $REVIEW_PANEL_MERGE_PROFILE ]]; then
+      echo "review-panel: REVIEW_PANEL_MERGE_PROFILE is set but empty; give one profile" >&2
+      exit 2
+    fi
+    if [[ $REVIEW_PANEL_MERGE_PROFILE == *,* ]]; then
+      echo "review-panel: REVIEW_PANEL_MERGE_PROFILE must name exactly one merge profile, not a list" >&2
+      exit 2
+    fi
+    MERGE_PROFILE_RAW=$REVIEW_PANEL_MERGE_PROFILE
+  fi
+}
+
+# harness_argv <harness> <model> <effort> <prompt>
+# Sets ARGV to the command that runs one non-interactive invocation, with
+# permission prompts disabled, and with a message stream on stdout, the way
+# converge starts its agents (RP-REL-4). An empty effort omits the flag, so
+# the harness applies its own default (CV-HARN-10). No check tests that the
+# harness command is on PATH, so a missing harness fails its invocation
+# itself (CV-OOS-32).
+harness_argv() {
+  local harness=$1 model=$2 effort=$3 prompt=$4
+  case $harness in
+    claude)
+      ARGV=(claude --print --output-format stream-json --verbose
+        --model "$model" --dangerously-skip-permissions)
+      [[ -z $effort ]] || ARGV+=(--effort "$effort")
+      ARGV+=("$prompt")
+      ;;
+    opencode)
+      ARGV=(opencode run --format json --model "$model" --auto)
+      [[ -z $effort ]] || ARGV+=(--variant "$effort")
+      ARGV+=("$prompt")
+      ;;
+  esac
+}
+
+# ---------------------------------------------------------------------- logs
+#
+# The panel keeps one event log beside the bug database, one transcript per
+# invocation in the logs directory, and the prompt of each invocation beside
+# its transcript. The names carry the panel run id, so that two panel runs
+# and a converge loop never overwrite one another's files (RP-RUN-4).
+
+PANEL_ID="panel-$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
+RUN_START=$SECONDS
+SEQ=0
+
+# note <message>  Records in the panel event log only. Each line carries the
+# panel run id, so a reader of a shared state directory knows which run
+# wrote the line (RP-OUT-9).
+note() {
+  printf '%s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PANEL_ID" "$1" >>"$RUN_LOG"
+}
+info() {
+  printf '  %s%s%s %s\n' "$DIM" "$G_DOT" "$OFF" "$1"
+  note "$1"
+}
+good() {
+  printf '  %s%s%s %s\n' "$GREEN" "$G_OK" "$OFF" "$1"
+  note "$1"
+}
+warn() {
+  printf '  %s%s %s%s\n' "$YELLOW" "$G_WARN" "$1" "$OFF" >&2
+  note "$1"
+}
+bad() {
+  printf '  %s%s %s%s\n' "$RED" "$G_ERR" "$1" "$OFF" >&2
+  note "$1"
+}
+
+# invocation_event <role> <profile> <harness> <model> <effort> <file>
+# Writes the event record that opens a transcript, so a reader of the .jsonl
+# file alone can tell the panel run, the role, and the full canonical
+# profile that produced it (RP-OUT-2, RP-OUT-9).
+invocation_event() {
+  local role=$1 profile=$2 harness=$3 model=$4 effort=$5 file=$6
+  jq -nc --arg run "$PANEL_ID" --arg role "$role" --arg profile "$profile" \
+    --arg harness "$harness" --arg model "$model" --arg effort "$effort" \
+    '{type:"review_panel_event",event:"invocation",run:$run,role:$role,
+      profile:$profile,harness:$harness,model:$model,
+      effort:(if $effort == "" then null else $effort end)}' \
+    >"$file"
+}
+
+# wait_child <pid>   Waits for a background process to exit, and returns its
+# exit status. A trapped signal makes wait return early, so this retries
+# until the process is truly gone.
+wait_child() {
+  local pid=$1 status
+  wait "$pid" 2>/dev/null; status=$?
+  while ((status >= 128)) && kill -0 "$pid" 2>/dev/null; do
+    wait "$pid" 2>/dev/null; status=$?
+  done
+  return "$status"
+}
+
+# show_stderr <log-file stem>
+# Shows the last lines that an invocation wrote to stderr. A failure with
+# no messages puts its cause there (CV-OUT-8).
+show_stderr() {
+  local line
+  [[ -s "$1.err" ]] || return 0
+  while IFS= read -r line; do
+    [[ -z ${line// } ]] && continue
+    printf '  %s%s %s%s\n' "$RED" "$G_GUT" "$(fit "$GUT_WIDTH" "$line")" "$OFF" >&2
+    note "stderr: $line"
+  done < <(tail -n 3 "$1.err")
+}
+
+# --------------------------------------------------------------------- scope
+#
+# The scope follows the rules of the converge scope section (RP-REL-2, RP-INV-2):
+# a scoped reviewer judges the requirements in the given paths only, and a
+# path that is a directory names every requirements document under it. An
+# unscoped reviewer finds the requirements documents itself.
+
+reviewer_scope_line() {
+  if ((${#SCOPE[@]})); then
+    printf 'You judge them against these requirements documents only, and no other: %s. A path that is a directory names every requirements document under it. A change that contradicts a requirements document outside this scope is still a spec bug, not a code bug.' "$(scope_list)"
+  else
+    printf 'Find the requirements documents under the run directory.'
+  fi
+}
+
+reviewer_prompt() {
+  local scope_line
+  scope_line=$(reviewer_scope_line)
+  cat <<EOF
+You are a reviewer in a review panel for this repository. The panel starts
+every reviewer it has at the same time, and each reviewer runs once. You
+check the code against the requirements and file bugs. Another reviewer
+works beside you; what they find has no effect on what you report.
+
+This review judges the live working tree, not a commit range: judge the
+code as it stands now, including uncommitted changes and relevant untracked
+files. The tree can move while you work; judge what you read, and never
+assume another reviewer examined identical content.
+
+1. Read the code relevant to the requirements, and the requirements they
+   belong to. ${scope_line}
+2. Run \`cbugs search <text>\` before you log anything. Log nothing that a
+   bug already names.
+3. For each defect in the code (behavior that contradicts a requirement, an
+   unhandled case, or a regression), log
+   \`cbugs add --kind code --title <text>\` with \`--cite <path>[:<id>]\`
+   naming the requirement the code violates. If you cannot name the
+   requirement, you have found no code defect; consider whether you have
+   found a spec bug instead.
+4. When the code reveals a requirement that is ambiguous, absent, or in
+   conflict with another, log \`cbugs add --kind spec --title <text>\`,
+   cite each document and requirement that raised the question with
+   \`--cite <path>[:<id>]\`, and say in the note what you could not decide
+   and why the code raised it.
+5. Log nothing when you find nothing. Finding no defect is a normal result,
+   and an invented defect costs a worker a whole iteration.
+
+Rules: file your findings directly with \`cbugs\`, and nothing else. Do not
+fix code, edit requirements or guidance files, close or dismiss a bug, log
+a task (the command refuses it from an agent), or create a commit.
+EOF
+}
+
+merge_prompt() {
+  local findings=$1
+  cat <<EOF
+You are the merge agent of a review panel for this repository. The panel's
+reviewer agents have finished and filed their findings directly into the
+bug tracker. You combine the duplicates. You are not a reviewer: you do not
+read the code, and you file no finding.
+
+Panel run: $PANEL_ID. Every bug below was created by this panel run. Each
+line gives its id, its kind, and its current status:
+
+$findings
+
+1. Read each bug above with \`cbugs show <id>\`. Then read the bugs that
+   could overlap with them, with \`cbugs list\` and \`cbugs search <text>\`.
+   The tracker holds bugs of other panel runs and of converge runs too.
+2. Combine two bugs only when they describe the same defect. Preserve every
+   distinct finding.
+3. Keep exactly one retained bug for each duplicate set, and keep the
+   retained bug in the status it holds: a bug that is still open stays
+   open. For each duplicate, write
+   \`cbugs dismiss <id> --note <text>\`
+   where the note names the id of the retained bug and explains the
+   duplicate relationship. You may dismiss only bugs this panel run
+   created: never dismiss or close a bug that a different run created.
+4. When a duplicate held evidence, note text, or requirement citations
+   that the retained bug lacks, write
+   \`cbugs note <retained-id> <text> --cite <path>[:<id>]\`
+   on the retained bug, so that the unique part of the duplicate survives
+   where readers look.
+5. Before you change a bug, read it again with \`cbugs show <id>\`. Other
+   agents write the same database at the same time. Judge the bug as it is
+   now, and write your revision below whatever a concurrent writer wrote.
+
+Rules: change bug records and nothing else. Do not fix code, do not edit
+requirements or guidance files, do not file a new bug, do not run
+\`cbugs close\` (a closure records that the defect is gone, and you did no
+such work), and do not log a task (the command refuses it from an agent).
+A duplicate set must still hold one retained bug when you are done.
+EOF
+}
+
+# --------------------------------------------------------------- transcript
+#
+# The merge agent writes its transcript while it works, the way a converge
+# invocation does (RP-OUT-2). The reviewers run at the same time, so their
+# transcripts stay whole in their own log files: several live streams in
+# one terminal could not keep every line attributable to its source.
+#
+# The message stream of a harness gives one JSON object per line. A filter
+# turns each object into one tab-separated record, and the reader below
+# turns each record into one line for the operator. Text that a filter
+# cannot parse is dropped, so a partial line cannot stop the transcript.
+
+TRANSCRIPT_ACCENT=$CYAN
+FINAL_DRAWN=0
+
+# say_text <text>   Writes one line that the agent wrote.
+say_text() {
+  local line
+  [[ -z ${1// } ]] && return 0
+  while IFS= read -r line; do
+    gutter "$DIM" "" "$DIM$line$OFF" "text"
+  done < <(wrap "$GUT_WIDTH" "$1")
+}
+
+# say_final <color> <text>   Writes one line of the final message.
+say_final() {
+  local line
+  [[ -z ${2// } ]] && return 0
+  while IFS= read -r line; do
+    gutter "$1" "$G_SAY" "$BOLD$line$OFF" "final"
+  done < <(wrap $((GUT_WIDTH - 2)) "$2")
+}
+
+# say_stats <turns> <seconds> <cost>   Writes the totals of an invocation.
+say_stats() {
+  gutter "$DIM" "" "$DIM$(plural "$1" turn) $G_DOT $(duration "$2") $G_DOT $(printf '$%.2f' "$3")$OFF" "stats"
+}
+
+# render_tool <name> <argument> <lines>   Writes one line for a tool call.
+# When the transcript shortens a shell command that had more than one line,
+# the shortened text can hide the break, so the line names the count.
+render_tool() {
+  local name=$1 arg=$2 lines=${3:-1} budget suffix=""
+  is_number "$lines" || lines=1
+  # The repository prefix is only shortened for the tools whose main argument
+  # is a path. A shell command reaches the operator as the agent wrote it:
+  # shortening it wordlessly, even by a prefix, would hide text (CV-OUT-3.2).
+  if [[ ${name,,} != bash ]]; then
+    arg=${arg#"$REPO"/}
+  fi
+  budget=$((GUT_WIDTH - ${#name} - 1))
+  if [[ ${name,,} == bash && $lines -gt 1 && ${#arg} -gt $budget ]]; then
+    suffix=" ($lines lines)"
+    budget=$((budget - ${#suffix}))
+  fi
+  arg=$(fit "$budget" "$arg")$suffix
+  # Each harness names its tools in its own case.
+  case ${name,,} in
+    write|edit|multiedit|notebookedit|patch)
+      gutter "$YELLOW" "$G_EDIT" "$YELLOW$name$OFF $arg" "tool" ;;
+    bash)
+      gutter "$CYAN" "$G_SHELL" "$arg" "tool" ;;
+    *)
+      gutter "$DIM" "$G_READ" "$DIM$name $arg$OFF" "tool" ;;
+  esac
+}
+
+# render_fail <cause>   Writes one line for a tool call that failed.
+render_fail() {
+  gutter "$RED" "$G_ERR" "$RED$(fit "$GUT_WIDTH" "$1")$OFF" "fail"
+}
+
+# dispatch_held <held item> <finalize 0|1>
+# Renders one item that was held to keep its place in the order (opencode
+# only): text, tagged "text", a tool call, tagged "tool", or a failed tool
+# call, tagged "fail". Only text can be the final message, so a finalize
+# draws the separator once, ahead of the first final line.
+dispatch_held() {
+  local held=$1 finalize=$2 sub body name arg lines body2
+  sub=${held%%$'\t'*}
+  body=${held#*$'\t'}
+  [[ $body == "$held" ]] && body=""
+  case $sub in
+    tool)
+      name=${body%%$'\t'*}
+      body2=${body#*$'\t'}
+      [[ $body2 == "$body" ]] && body2=""
+      lines=${body2%%$'\t'*}
+      arg=${body2#*$'\t'}
+      [[ $arg == "$body2" ]] && arg=""
+      render_tool "$name" "$arg" "$lines"
+      ;;
+    fail)
+      render_fail "$body"
+      ;;
+    *)
+      if ((finalize)); then
+        if ((FINAL_DRAWN == 0)); then
+          FINAL_DRAWN=1
+          gutter "$DIM" "" ""
+        fi
+        say_final "$TRANSCRIPT_ACCENT" "$body"
+      else
+        say_text "$body"
+      fi
+      ;;
+  esac
+}
+
+# add <a> <b>   Adds two costs. The shell has no arithmetic for fractions.
+add() {
+  awk -v a="$1" -v b="$2" 'BEGIN { printf "%.10f", a + b }'
+}
+
+CLAUDE_FILTER='
+def clean: gsub("[\\t\\r]"; " ");
+def firstline: split("\n")[0] // "";
+def tool_arg:
+  if (.command != null) then
+    (.command | tostring | split("\n")) as $ls
+    | {text: ($ls | map(clean) | join(" ↵ ")), lines: ($ls | length)}
+  else
+    {text: ((.file_path // .pattern // .path // .url // .query // .description // "")
+            | tostring | firstline | clean), lines: 1}
+  end;
+fromjson? // empty
+| if (.type == "system") and (.subtype == "init") then
+    "init\tsession \((.session_id // "unknown")[0:8])"
+  elif .type == "assistant" then
+    ((.message.content // []) | if type == "array" then .[] else empty end)
+    | if .type == "text" then
+        ((.text // "") | split("\n")[] | "text\t" + clean)
+      elif .type == "tool_use" then
+        (((.input // {}) | tool_arg) as $a
+         | "tool\t\(.name // "tool")\t\($a.lines)\t\($a.text)")
+      else empty end
+  elif .type == "user" then
+    ((.message.content // []) | if type == "array" then .[] else empty end)
+    | select((.type == "tool_result") and (.is_error == true))
+    | ((.content // "") | if type == "array" then (map(.text // "") | join(" ")) else tostring end)
+    | firstline | "fail\t" + clean
+  elif .type == "result" then
+    ((if (.result // "") == "" then empty
+      else (.result | split("\n")[] | "final\t" + clean) end),
+     "stats\t\(.num_turns // 0)\t\(.duration_ms // 0)\t\(.total_cost_usd // 0)")
+  else empty end
+'
+
+# opencode ends a message with a step_finish, whose reason tells the reader
+# whether the text of the step was the final message, so the reader holds
+# the text until then. A tool call can happen between two held lines of
+# text, so it is held too, tagged with its own kind.
+OPENCODE_FILTER='
+def clean: gsub("[\\t\\r]"; " ");
+def firstline: split("\n")[0] // "";
+def tool_arg:
+  if (.command != null) then
+    (.command | tostring | split("\n")) as $ls
+    | {text: ($ls | map(clean) | join(" ↵ ")), lines: ($ls | length)}
+  else
+    {text: ((.filePath // .pattern // .path // .url // .query // .description // "")
+            | tostring | firstline | clean), lines: 1}
+  end;
+fromjson? // empty
+| if .type == "step_start" then
+    "init\tsession \((.sessionID // "unknown")[0:8])"
+  elif .type == "text" then
+    ((.part.text // "") | split("\n")[] | "hold\ttext\t" + clean)
+  elif .type == "tool_use" then
+    (.part.state // {}) as $state
+    | select(($state.status == "completed") or ($state.status == "error"))
+    | ((($state.input // {}) | tool_arg) as $a
+       | "hold\ttool\t\(.part.tool // "tool")\t\($a.lines)\t\($a.text)"),
+      (select($state.status == "error")
+       | (($state.error // "tool error") | tostring | firstline
+          | "hold\tfail\t" + clean))
+  elif .type == "step_finish" then
+    "tally\t\(.part.cost // 0)",
+    (if (.part.reason // "") == "stop" then "release\tfinal"
+     else "release\ttext" end)
+  else empty end
+'
+
+# stream_filter   Reports the filter of the harness of the running agent.
+stream_filter() {
+  case $INVOCATION_HARNESS in
+    claude) printf '%s' "$CLAUDE_FILTER" ;;
+    opencode) printf '%s' "$OPENCODE_FILTER" ;;
+  esac
+}
+
+# format_stream <color>
+# Reads a message stream on stdin. Writes a transcript for the operator.
+format_stream() {
+  local accent=$1
+  jq --unbuffered -R -r "$(stream_filter)" 2>/dev/null | {
+    local record kind rest rest2 name arg lines line turns ms cost
+    local as_final started=-1 first=1 counted=0 sum=0 reported=0
+    local -a hold=()
+    while IFS= read -r record; do
+      ((started < 0)) && started=$SECONDS
+      kind=${record%%$'\t'*}
+      rest=${record#*$'\t'}
+      [[ $rest == "$record" ]] && rest=""
+      case $kind in
+        init)
+          # A harness that reports no start reports one for each step instead.
+          ((first)) || continue
+          first=0
+          gutter "$DIM" "" "$DIM$rest$OFF" "init"
+          ;;
+        text)
+          say_text "$rest"
+          ;;
+        hold)
+          hold+=("$rest")
+          ;;
+        release)
+          as_final=0
+          [[ $rest == final ]] && as_final=1
+          for line in ${hold[@]+"${hold[@]}"}; do
+            dispatch_held "$line" "$as_final"
+          done
+          hold=()
+          ;;
+        tally)
+          [[ $rest =~ ^[0-9.eE+-]+$ ]] || rest=0
+          ((++counted))
+          sum=$(add "$sum" "$rest")
+          ;;
+        tool)
+          name=${rest%%$'\t'*}
+          rest2=${rest#*$'\t'}
+          [[ $rest2 == "$rest" ]] && rest2=""
+          lines=${rest2%%$'\t'*}
+          arg=${rest2#*$'\t'}
+          [[ $arg == "$rest2" ]] && arg=""
+          render_tool "$name" "$arg" "$lines"
+          ;;
+        fail)
+          render_fail "$rest"
+          ;;
+        final)
+          if ((FINAL_DRAWN == 0)); then
+            FINAL_DRAWN=1
+            gutter "$DIM" "" ""
+          fi
+          say_final "$accent" "$rest"
+          ;;
+        stats)
+          IFS=$'\t' read -r turns ms cost <<<"$rest"
+          is_number "$ms" || ms=0
+          is_number "$turns" || turns=0
+          [[ $cost =~ ^[0-9.eE+-]+$ ]] || cost=0
+          reported=1
+          say_stats "$turns" $((ms / 1000)) "$cost"
+          ;;
+      esac
+    done
+    # A harness that reports no totals leaves them to the reader. The stream
+    # ends when the agent ends, so the time here is the time of the agent.
+    for line in ${hold[@]+"${hold[@]}"}; do
+      dispatch_held "$line" 0
+    done
+    if ((reported == 0 && counted > 0)); then
+      say_stats "$counted" $((SECONDS - started)) "$sum"
+    fi
+  }
+}
+
+# ------------------------------------------------------------------- signals
+#
+# The panel follows the applicable converge stop conventions (RP-OUT-8): the
+# first Ctrl-C lets the running agents finish and starts nothing further; a
+# second Ctrl-C stops the panel and its own agents at once, with status 130;
+# a SIGTERM stops the panel with status 143. An interrupted panel must not
+# claim completion (RP-OUT-6). The cleanup touches only the processes this
+# panel started, each of which leads its own process group, so another run
+# keeps working (RP-RUN-4).
+
+STOP_REQUESTED=0
+HARD_STOP=0
+SIGNAL_STATUS=130
+AGENT_PIDS=()
+
+kill_agents() {
+  local pid
+  for pid in ${AGENT_PIDS[@]+"${AGENT_PIDS[@]}"}; do
+    kill -0 "$pid" 2>/dev/null || continue
+    # The setsid child leads its own process group, so one signal reaches
+    # its timeout and every agent under it. The plain kill is the fallback
+    # for a child whose group lead already exited.
+    kill -TERM -"$pid" 2>/dev/null || true
+    kill -TERM "$pid" 2>/dev/null || true
+  done
+}
+
+on_int() {
+  if ((STOP_REQUESTED == 0)); then
+    STOP_REQUESTED=1
+    warn "stop requested; the running agents finish, and no further invocation starts; press Ctrl-C again to stop at once"
+    return
+  fi
+  HARD_STOP=1
+  SIGNAL_STATUS=130
+  kill_agents
+}
+on_term() {
+  if ((HARD_STOP == 0)); then
+    HARD_STOP=1
+    SIGNAL_STATUS=143
+    warn "received SIGTERM; stopping at once"
+    kill_agents
+  fi
+}
+
+trap on_int INT
+trap on_term TERM
+
+# ------------------------------------------------------------------ coverage
+#
+# The controller records the coverage that the panel read, and no agent
+# records one: a call of reviewed add from an agent of the panel stops with
+# an error (CB-RVW-7, RP-COV-2). The controller calls the tool outside the
+# role environment that agents get, and keeps CONVERGE_RUN_DIR anchored to
+# the run directory (RP-INV-6). The commit list that the capture read at
+# startup is the commit list the panel records, whatever HEAD does later
+# (RP-COV-4).
+
+# record_reviewed <profile> <completed-at>   Appends one coverage record per
+# captured commit, under the profile of one successful reviewer (RP-COV-3).
+record_reviewed() {
+  local profile=$1 completed_at=$2 status out
+  status=0
+  out=$(
+    printf '%s\n' "${PENDING_HASHES[@]:-}" |
+      env -u CONVERGE_ROLE -u CONVERGE_ITERATION \
+        CONVERGE_RUN_DIR="$RUN_DIR" \
+        "$BIN_DIR/cbugs" reviewed add \
+        --profile "$profile" --completed-at "$completed_at"
+  ) || status=$?
+  if ((status != 0)); then
+    warn "cbugs reviewed add failed for profile $profile; the panel recorded no coverage for it"
+    return 1
+  fi
+  note "coverage recorded: profile=$profile $out"
+  return 0
+}
+
+# ---------------------------------------------------------------- agent pass
+#
+# Each agent invocation gets one transcript file, one prompt file, and one
+# stderr complement, and runs under its own session and the given timeout,
+# like a converge invocation (RP-REL-4). The environment names the role of
+# the caller, the run directory, the panel run, and the canonical profile
+# of that agent, so the bug tracker can attribute every revision it writes
+# (RP-RUN-2, RP-RUN-5). The iteration variable of the converge loop is
+# removed: a panel agent records no worker iteration. The assignment form
+# of env keeps every value whole, however its path is spelled.
+
+# print_start_line <glyph> <label> <profile> <log path>
+print_start_line() {
+  local glyph=$1 label=$2 profile=$3 log=$4
+  if [[ -z $log ]]; then
+    printf '  %s%s%s  %s%s%s %s%s %s%s\n' \
+      "$BLUE" "$glyph" "$OFF" "$BOLD" "$label" "$OFF" \
+      "$DIM" "$G_DOT" "$profile" "$OFF"
+  else
+    printf '  %s%s%s  %s%s%s %s%s %s %s %s%s\n' \
+      "$BLUE" "$glyph" "$OFF" "$BOLD" "$label" "$OFF" \
+      "$DIM" "$G_DOT" "$profile" "$G_ARROW" "${log##*/}" "$OFF"
+  fi
+}
+
+# run_reviewer <index> <count> <profile>
+# Starts one reviewer invocation in the background, in a session of its
+# own, without waiting for another (RP-REV-1). The message stream goes
+# straight into its transcript file: the reviewers run at the same time,
+# and merging several live streams into one terminal could not keep every
+# line attributable to its source (RP-OUT-2). The transcript opens with the
+# invocation event, so a reader of the file alone knows the role and the
+# full canonical profile (RP-OUT-2, RP-OUT-9).
+run_reviewer() {
+  local index=$1 count=$2 profile=$3
+  split_profile "$profile"
+  local harness=$SPLIT_HARNESS model=$SPLIT_MODEL effort=$SPLIT_EFFORT
+  printf -v seq '%04d' $((++SEQ))
+  local stem="$PANEL_ID-$seq-reviewer"
+  LOG="$LOG_DIR/$stem.jsonl"
+  RUN_REVIEWS[$index]=$stem
+  INV_STARTS[$index]=$SECONDS
+
+  harness_argv "$harness" "$model" "$effort" "$PANEL_PROMPT"
+  invocation_event reviewer "$profile" "$harness" "$model" "$effort" "$LOG"
+  printf '%s\n' "$PANEL_PROMPT" >"$LOG_DIR/$stem.prompt.md"
+  note "reviewer $index/$count start: profile=$profile log=$LOG"
+  print_start_line "$G_REVIEW" "reviewer $index/$count" "$profile" "$LOG"
+
+  (
+    trap '' INT
+    exec setsid env \
+      -u CONVERGE_ITERATION \
+      -u CONVERGE_SESSION \
+      -u CONVERGE_DAEMON \
+      -u REVIEW_PANEL_RUN \
+      -u REVIEW_PANEL_PROFILE \
+      CONVERGE_ROLE=reviewer \
+      CONVERGE_RUN_DIR="$RUN_DIR" \
+      REVIEW_PANEL_RUN="$PANEL_ID" \
+      REVIEW_PANEL_PROFILE="$profile" \
+      PATH="$AGENT_PATH" \
+      timeout -k 10 "$TIMEOUT" "${ARGV[@]}"
+  ) >>"$LOG" 2>>"$LOG_DIR/$stem.err" </dev/null &
+  AGENT_PIDS+=("$!")
+}
+
+# run_merge_agent <prompt> <profile>
+# Runs the one merge-agent invocation: live transcript on the terminal,
+# every message in the log file. Sets MERGE_STATUS and MERGE_SECONDS.
+run_merge_agent() {
+  local prompt=$1 profile=$2
+  split_profile "$profile"
+  local harness=$SPLIT_HARNESS model=$SPLIT_MODEL effort=$SPLIT_EFFORT
+  local started=$SECONDS
+  printf -v seq '%04d' $((++SEQ))
+  MERGE_STEM="$PANEL_ID-$seq-merge"
+  local LOG_FILE="$LOG_DIR/$MERGE_STEM.jsonl"
+  INVOCATION_HARNESS=$harness
+
+  harness_argv "$harness" "$model" "$effort" "$prompt"
+  invocation_event merge "$profile" "$harness" "$model" "$effort" "$LOG_FILE"
+  printf '%s\n' "$prompt" >"$LOG_DIR/$MERGE_STEM.prompt.md"
+  note "merge start: profile=$profile log=$LOG_FILE"
+  print_start_line "$G_COACH" "merge" "$profile" "$LOG_FILE"
+
+  # The message stream goes through a pipe to two readers: the log file
+  # keeps every message, and the terminal shows the work as it happens,
+  # the way converge renders one invocation. The startup probe proved that
+  # this directory supports a named pipe; a transient failure here runs
+  # the agent without a live transcript, and judges the result by the
+  # exit status, as an invocation of no output is judged.
+  rm -f "$RUNTIME_DIR/panel-stream"
+  if mkfifo "$RUNTIME_DIR/panel-stream" 2>/dev/null; then
+    TRANSCRIPT_ACCENT=$MAGENTA
+    FINAL_DRAWN=0
+    ( trap '' INT TERM; tee -a "$LOG_FILE" <"$RUNTIME_DIR/panel-stream" \
+      | format_stream "$MAGENTA" ) &
+    FORMATTER=$!
+    # The agent writes its message stream into the pipe, the way converge
+    # does; the tee reads it. The stdin of the agent stays the panel's.
+    (
+      trap '' INT
+      exec setsid env \
+        -u CONVERGE_ITERATION \
+        -u CONVERGE_SESSION \
+        -u CONVERGE_DAEMON \
+        -u REVIEW_PANEL_RUN \
+        -u REVIEW_PANEL_PROFILE \
+        CONVERGE_ROLE=merge \
+        CONVERGE_RUN_DIR="$RUN_DIR" \
+        REVIEW_PANEL_RUN="$PANEL_ID" \
+        REVIEW_PANEL_PROFILE="$profile" \
+        PATH="$AGENT_PATH" \
+        timeout -k 10 "$TIMEOUT" "${ARGV[@]}"
+    ) >"$RUNTIME_DIR/panel-stream" 2>>"$LOG_DIR/$MERGE_STEM.err" &
+  else
+    FORMATTER=0
+    warn "cannot create the stream pipe; the merge agent runs without a live transcript"
+    (
+      trap '' INT
+      exec setsid env \
+        -u CONVERGE_ITERATION \
+        -u CONVERGE_SESSION \
+        -u CONVERGE_DAEMON \
+        -u REVIEW_PANEL_RUN \
+        -u REVIEW_PANEL_PROFILE \
+        CONVERGE_ROLE=merge \
+        CONVERGE_RUN_DIR="$RUN_DIR" \
+        REVIEW_PANEL_RUN="$PANEL_ID" \
+        REVIEW_PANEL_PROFILE="$profile" \
+        PATH="$AGENT_PATH" \
+        timeout -k 10 "$TIMEOUT" "${ARGV[@]}"
+    ) </dev/null >>"$LOG_FILE" 2>>"$LOG_DIR/$MERGE_STEM.err" &
+  fi
+  MERGE_PID=$!
+  AGENT_PIDS+=("$MERGE_PID")
+
+  wait_child "$MERGE_PID"
+  MERGE_STATUS=$?
+  MERGE_SECONDS=$((SECONDS - started))
+  ((FORMATTER)) && { wait "$FORMATTER" 2>/dev/null; FORMATTER=0; }
+  rm -f "$RUNTIME_DIR/panel-stream"
+
+  if ((MERGE_STATUS == 124 || MERGE_STATUS == 137)); then
+    warn "merge exceeded the ${TIMEOUT}s timeout; killed it"
+    show_stderr "$LOG_DIR/$MERGE_STEM"
+    printf '{"type":"review_panel_event","event":"timeout","run":"%s","seconds":%s}\n' \
+      "$PANEL_ID" "$TIMEOUT" >>"$LOG_FILE"
+  elif ((MERGE_STATUS != 0)); then
+    bad "merge exited with status $MERGE_STATUS after $(duration "$MERGE_SECONDS")"
+    show_stderr "$LOG_DIR/$MERGE_STEM"
+    printf '{"type":"review_panel_event","event":"error","run":"%s","status":%s}\n' \
+      "$PANEL_ID" "$MERGE_STATUS" >>"$LOG_FILE"
+  else
+    good "merge finished in $(duration "$MERGE_SECONDS")"
+  fi
+  note "merge end: profile=$profile status=$MERGE_STATUS seconds=$MERGE_SECONDS"
+}
+
+# ---------------------------------------------------------------------- main
+
+# The resolved profiles must hold before any agent starts (RP-PROF-5). The
+# resolution happens once, here; the panel stores no profile selection for
+# later runs (RP-PROF-6).
+resolve_reviewer_env
+parse_profile_list reviewer "$REVIEWER_RAW" REVIEWER_PROFILES
+REVIEWER_COUNT=${#REVIEWER_PROFILES[@]}
+resolve_merge_env "${REVIEWER_PROFILES[0]:-}"
+# The merge profile must parse as exactly one profile (RP-PROF-4).
+parse_profile_list merge "$MERGE_PROFILE_RAW" MERGE_PROFILES
+if ((${#MERGE_PROFILES[@]} != 1)); then
+  echo "review-panel: REVIEW_PANEL_MERGE_PROFILE must name exactly one merge profile, not a list" >&2
+  exit 2
+fi
+MERGE_PROFILE=${MERGE_PROFILES[0]}
+
+# The message stream of the merge agent travels through a named pipe in the
+# temporary directory. Test once, here, that the directory supports one: a
+# failure discovered mid-run would leave no closing report; a failure
+# discovered here, before any agent starts, is a start that never began.
+fifo_probe="$RUNTIME_DIR/fifo_probe.$$"
+rm -f "$fifo_probe"
+if ! mkfifo "$fifo_probe" 2>/dev/null; then
+  echo "review-panel: cannot create a named pipe in the temporary directory" >&2
+  exit 2
+fi
+rm -f "$fifo_probe"
+
+# The agents need cbugs on their PATH, whatever the operator's PATH holds
+# (RP-INV-6).
+AGENT_PATH="$BIN_DIR:$PATH"
+
+# RP-OUT-1: the startup output shows the scope, the reviewer profiles, the
+# merge profile, the timeout, and the state and log paths, and says that
+# the panel reviews the live working tree.
+if ((${#SCOPE[@]})); then
+  SCOPE_SUMMARY=$(scope_list)
+else
+  SCOPE_SUMMARY="empty (the run directory)"
+fi
+PANEL_ROWS=(
+  "run dir|$(home_relative "$RUN_DIR")"
+  "scope|$SCOPE_SUMMARY"
+  "run log|$(home_relative "$RUN_LOG")"
+  "logs|$(home_relative "$LOG_DIR")"
+  "reviewers|$(join_list "${REVIEWER_PROFILES[@]}")"
+  "merge|$MERGE_PROFILE"
+  "timeout|${TIMEOUT}s for one invocation"
+  "source|the live working tree, with every uncommitted change and relevant untracked file"
+)
+panel "$G_REVIEW review-panel" "${PANEL_ROWS[@]}"
+note "=== panel start ($PANEL_ID) ==="
+for row in "${PANEL_ROWS[@]}"; do
+  note "${row%%|*}: ${row#*|}"
+done
+
+# RP-COV-1: capture, at startup, the commits that pending review covers for
+# the run directory, under the existing cbugs coverage rules. A failed read
+# is not an empty backlog: it makes the required coverage recording
+# impossible, and therefore the run incomplete (RP-COV-5).
+pending_capture=""
+if ! pending_capture=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" reviewed pending 2>/dev/null); then
+  warn "cbugs reviewed pending failed at startup; the panel cannot record coverage"
+  note "cbugs reviewed pending failed at startup"
+  PENDING_FAILED=1
+  PENDING_HASHES=()
+  PENDING_COUNT=0
+else
+  PENDING_FAILED=0
+  PENDING_HASHES=()
+  [[ -z $pending_capture ]] || mapfile -t PENDING_HASHES < <(awk 'NF { print $1 }' <<<"$pending_capture")
+  PENDING_COUNT=${#PENDING_HASHES[@]}
+  info "covers $(plural "$PENDING_COUNT" "unreviewed commit") at startup"
+fi
+
+PANEL_PROMPT=$(reviewer_prompt)
+RUN_REVIEWS=()
+INV_STARTS=()
+REVIEW_STATUSES=()
+REVIEW_FAILED=0
+# The finding bookkeeping is defined from the start, so an operator stop
+# that arrives at any point leaves the same honest report.
+FINDINGS_COLLECT_FAILED=0
+FINDINGS_JSON="[]"
+NEW_LINES=""
+NEW_COUNT=0
+
+# One review invocation per configured reviewer profile, started without
+# waiting for another (RP-REV-1). An operator stop that arrives during the
+# launches prevents the invocations that have not started (RP-REV-1).
+for ((i = 0; i < REVIEWER_COUNT; i++)); do
+  ((STOP_REQUESTED || HARD_STOP)) && break
+  run_reviewer $((i + 1)) "$REVIEWER_COUNT" "${REVIEWER_PROFILES[$i]}"
+done
+RUN_STARTED=${#AGENT_PIDS[@]}
+if ((RUN_STARTED < REVIEWER_COUNT)); then
+  warn "started $(plural "$RUN_STARTED" reviewer) of $REVIEWER_COUNT; the operator stop prevented the rest"
+  note "reviewers not started after the operator stop: $((REVIEWER_COUNT - RUN_STARTED))"
+fi
+
+# The controller waits for every started reviewer, one after another, while
+# the rest run on; the result of one reviewer changes nothing about what
+# the others do (RP-REV-2, RP-REV-6). A failed or timed-out reviewer gets
+# no retry and no fallback (RP-REV-6).
+for ((i = 0; i < RUN_STARTED; i++)); do
+  if wait_child "${AGENT_PIDS[$i]}"; then
+    status=0
+  else
+    status=$?
+  fi
+  REVIEW_STATUSES[$i]=$status
+  profile=${REVIEWER_PROFILES[$i]}
+  stem=${RUN_REVIEWS[$i]:-}
+  seconds=$((SECONDS - INV_STARTS[$i]))
+  if ((status == 124 || status == 137)); then
+    warn "reviewer $((i + 1))/$REVIEWER_COUNT ($profile) exceeded the ${TIMEOUT}s timeout; killed it"
+    show_stderr "$LOG_DIR/$stem"
+    [[ -z $stem ]] || printf '{"type":"review_panel_event","event":"timeout","run":"%s","seconds":%s}\n' \
+      "$PANEL_ID" "$TIMEOUT" >>"$LOG_DIR/$stem.jsonl"
+  elif ((status != 0)); then
+    warn "reviewer $((i + 1))/$REVIEWER_COUNT ($profile) exited with status $status after $(duration "$seconds")"
+    show_stderr "$LOG_DIR/$stem"
+    [[ -z $stem ]] || printf '{"type":"review_panel_event","event":"error","run":"%s","status":%s}\n' \
+      "$PANEL_ID" "$status" >>"$LOG_DIR/$stem.jsonl"
+  else
+    good "reviewer $((i + 1))/$REVIEWER_COUNT ($profile) finished in $(duration "$seconds")"
+    [[ -z $stem ]] || printf '{"type":"review_panel_event","event":"result","run":"%s","status":0}\n' \
+      "$PANEL_ID" >>"$LOG_DIR/$stem.jsonl"
+  fi
+  note "reviewer end: profile=$profile status=$status stem=$stem"
+  ((status == 0)) || REVIEW_FAILED=1
+done
+
+# RP-RUN-3: the findings of this run are selected by the attribution the
+# bug tracker keeps, not by a database-wide count or a time interval. The
+# read is a read: an operator stop does not prevent it, and the closing
+# report of a stopped run stays able to show the available findings. A
+# failed read leaves the run without an honest report (CB-ERR-2).
+if ! findings_raw=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" list --panel-run "$PANEL_ID" --json 2>/dev/null); then
+  FINDINGS_COLLECT_FAILED=1
+  warn "cbugs list --panel-run failed; the panel cannot report its findings"
+else
+  [[ -n $findings_raw ]] && FINDINGS_JSON=$findings_raw
+  if [[ $(jq -r 'type' <<<"$FINDINGS_JSON" 2>/dev/null) != array ]]; then
+    FINDINGS_COLLECT_FAILED=1
+    warn "cbugs list --panel-run gave no array; the panel cannot report its findings"
+  else
+    NEW_LINES=""
+    while IFS=$'\t' read -r id kind status title; do
+      NEW_LINES+="#$id ($kind, $status): $title
+"
+    done < <(jq -r '.[] | [.id, .kind, .status, .title] | @tsv' <<<"$FINDINGS_JSON")
+    NEW_COUNT=$(jq 'length' <<<"$FINDINGS_JSON")
+  fi
+fi
+
+# The duplicate merge pass runs when the operator stop has not shut the
+# panel down (RP-OUT-8). It still runs on a panel that a reviewer failure
+# left incomplete (RP-MERGE-2).
+MERGE_FAILED=0
+MERGE_RAN=0
+if ((STOP_REQUESTED || HARD_STOP)); then
+  warn "operator stop: the merge agent and the coverage recording step do not start"
+  note "merge skipped: operator stop"
+elif ((NEW_COUNT == 0)); then
+  note "merge skipped: the panel created no bug"
+else
+  heading "$MAGENTA" "merge duplicates" "$(date '+%H:%M:%S')"
+  note "merge phase: $(plural "$NEW_COUNT" "new bug") to reconcile"
+  run_merge_agent "$(merge_prompt "$NEW_LINES")" "$MERGE_PROFILE"
+  MERGE_RAN=1
+  MERGE_FAILED=1
+  ((MERGE_STATUS == 0)) && MERGE_FAILED=0
+fi
+
+# The retained new bugs are the findings that the merge pass did not close
+# as duplicates (RP-OUT-3). Another concurrent writer may have moved one of
+# them to a terminal status too; the current status decides.
+RETAINED_FAILED=0
+RETAINED_JSON="[]"
+if ((FINDINGS_COLLECT_FAILED)); then
+  RETAINED_FAILED=1
+else
+  if ! retained_raw=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" list --panel-run "$PANEL_ID" --json 2>/dev/null); then
+    RETAINED_FAILED=1
+    warn "cbugs list --panel-run failed after the merge; the retained findings are unknown"
+  else
+    [[ -n $retained_raw ]] && RETAINED_JSON=$retained_raw
+    [[ $(jq -r 'type' <<<"$RETAINED_JSON" 2>/dev/null) == array ]] || RETAINED_FAILED=1
+  fi
+fi
+RETAINED=$(jq -n --argjson prev "$FINDINGS_JSON" --argjson cur "$RETAINED_JSON" \
+  '[$cur[] | select(.status == "open")
+          | select(.id as $i | ([$prev[].id] | index($i)))]' 2>/dev/null) || RETAINED_FAILED=1
+RETAINED_CODE_JSON=$(jq -c '[.[] | select(.kind == "code")]' <<<"$RETAINED" 2>/dev/null)
+RETAINED_SPEC_JSON=$(jq -c '[.[] | select(.kind == "spec")]' <<<"$RETAINED" 2>/dev/null)
+[[ $(jq -r 'type' <<<"$RETAINED_CODE_JSON" 2>/dev/null) == array ]] || RETAINED_CODE_JSON='[]'
+[[ $(jq -r 'type' <<<"$RETAINED_SPEC_JSON" 2>/dev/null) == array ]] || RETAINED_SPEC_JSON='[]'
+RETAINED_CODE=$(jq 'length' <<<"$RETAINED_CODE_JSON" 2>/dev/null)
+RETAINED_SPEC=$(jq 'length' <<<"$RETAINED_SPEC_JSON" 2>/dev/null)
+is_number "$RETAINED_CODE" || RETAINED_CODE=0
+is_number "$RETAINED_SPEC" || RETAINED_SPEC=0
+
+# The coverage recording follows a complete review and merge phase
+# (RP-COV-2). A reviewer failure, a merge failure, an operator stop, a
+# failed capture, or a failed read-back prevents it (RP-COV-5).
+coverage_enabled=1
+((STOP_REQUESTED || HARD_STOP)) && coverage_enabled=0
+((RUN_STARTED < REVIEWER_COUNT)) && coverage_enabled=0
+((REVIEW_FAILED)) && coverage_enabled=0
+((MERGE_FAILED)) && coverage_enabled=0
+((FINDINGS_COLLECT_FAILED)) && coverage_enabled=0
+((RETAINED_FAILED)) && coverage_enabled=0
+((PENDING_FAILED)) && coverage_enabled=0
+COVERAGE_FAILED=0
+if ((coverage_enabled)) && ((PENDING_COUNT > 0)); then
+  completed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  coverage_status=0
+  for profile in ${REVIEWER_PROFILES[@]+"${REVIEWER_PROFILES[@]}"}; do
+    record_reviewed "$profile" "$completed_at" || coverage_status=1
+  done
+  if ((coverage_status)); then
+    COVERAGE_FAILED=1
+  else
+    info "recorded coverage for $(plural "$PENDING_COUNT" commit) under each reviewer profile"
+  fi
+fi
+
+# The ending: all phases decided. The exit status is 0 for a complete run
+# with no retained new code bug, 1 with a retained new code bug, 2 for an
+# invalid or incomplete run, and 130 or 143 for an operator stop. Errors
+# take priority over finding counts (RP-OUT-7, RP-OUT-8).
+
+TOTAL=$(duration $((SECONDS - RUN_START)))
+
+# The failed profiles and phases, for an incomplete run (RP-OUT-6).
+FAILED_ROWS=()
+((STOP_REQUESTED || HARD_STOP)) && FAILED_ROWS+=("stopped on the request of the operator")
+((PENDING_FAILED)) && FAILED_ROWS+=("coverage capture: cbugs reviewed pending failed at startup")
+for ((i = 0; i < RUN_STARTED; i++)); do
+  status=${REVIEW_STATUSES[$i]}
+  [[ $status == 0 ]] || FAILED_ROWS+=("reviewer $((i + 1))/$REVIEWER_COUNT (${REVIEWER_PROFILES[$i]}): exit status $status")
+done
+((RUN_STARTED < REVIEWER_COUNT)) && FAILED_ROWS+=("reviewer: invocations not started: $((REVIEWER_COUNT - RUN_STARTED))")
+((MERGE_RAN && MERGE_FAILED)) && FAILED_ROWS+=("merge agent: exit status $MERGE_STATUS")
+((COVERAGE_FAILED)) && FAILED_ROWS+=("coverage recording: cbugs reviewed add failed")
+((FINDINGS_COLLECT_FAILED)) && \
+  FAILED_ROWS+=("findings: cbugs list --panel-run failed before the merge")
+((RETAINED_FAILED)) && FAILED_ROWS+=("findings: cbugs list --panel-run failed after the merge")
+
+findings_block() {
+  local json=$1 id kind status title
+  while IFS=$'\t' read -r id kind status title; do
+    printf '  %s%s%s %s\n' "$YELLOW" "$G_WARN" "$OFF" \
+      "new $kind bug #$id: $title"
+    note "retained new bug #$id ($kind): $title"
+  done < <(jq -r '.[] | [.id, .kind, .status, .title] | @tsv' <<<"$json")
+}
+
+STOPPED=0
+((STOP_REQUESTED || HARD_STOP)) && STOPPED=1
+
+COMPLETE=1
+((STOPPED)) && COMPLETE=0
+((${#FAILED_ROWS[@]} > 0)) && COMPLETE=0
+
+# The findings of the closing report: separate counts for the retained new
+# spec bugs and the retained new code bugs, with their ids and titles
+# (RP-OUT-3). An incomplete run shows its available findings, and its
+# stop or its failure names itself: no unqualified success (RP-OUT-6).
+if ((RETAINED_CODE + RETAINED_SPEC > 0)); then
+  heading "$YELLOW" "findings" "$(plural "$RETAINED_CODE" "retained new code bug"), $(plural "$RETAINED_SPEC" "retained new spec bug")"
+  findings_block "$RETAINED_CODE_JSON"
+  findings_block "$RETAINED_SPEC_JSON"
+elif ((COMPLETE == 0)); then
+  info "the panel knows of no retained new bug to show; its findings may be incomplete"
+fi
+
+if ((COMPLETE)); then
+  if ((RETAINED_CODE > 0)); then
+    banner "$RED" "$E_STOP" "review complete in $TOTAL; the code findings above are the work that remains"
+    note "=== panel end: exit 1 ==="
+    exit 1
+  elif ((RETAINED_SPEC > 0)); then
+    # A run that retains spec bugs shows them, and prints no success
+    # message: a spec bug waits on a decision the human user makes
+    # (RP-OUT-5). It is a complete run, and it exits 0.
+    banner "$YELLOW" "$E_WARN" "review complete in $TOTAL; the spec findings above wait for a decision on the requirements"
+    note "=== panel end: exit 0 ==="
+    exit 0
+  else
+    banner "$GREEN" "$E_OK" "Review complete. No new bugs found."
+    note "=== panel end: exit 0 ==="
+    exit 0
+  fi
+else
+  for line in "${FAILED_ROWS[@]}"; do
+    printf '  %s%s%s\n' "$RED" "$G_ERR" "$line$OFF" >&2
+    note "failed: $line"
+  done
+  if ((STOPPED)); then
+    banner "$YELLOW" "$E_STOP" "review stopped on the request of the operator in $TOTAL; the summary above is incomplete"
+    note "=== panel end: exit $SIGNAL_STATUS ==="
+    exit "$SIGNAL_STATUS"
+  fi
+  banner "$YELLOW" "$E_STOP" "review incomplete in $TOTAL; the summary above is incomplete"
+  note "=== panel end: exit 2 ==="
+  exit 2
+fi

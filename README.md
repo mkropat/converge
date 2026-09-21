@@ -20,6 +20,9 @@ or require automated tests.
 
 - `bin/converge` — run agent iterations until a project satisfies its
   requirements documents. See [docs/converge-requirements.md](docs/converge-requirements.md).
+- `bin/review-panel` — run a panel of reviewers once over the live working
+  tree, merge their duplicate findings, and report. It files the findings
+  into the same bug tracker as `converge` and does not run a loop.
 - `bin/cbugs` — track the bugs of a converge project. The reviewer logs a bug,
   and a later worker fixes it. See
   [docs/cbugs-requirements.md](docs/cbugs-requirements.md) and
@@ -62,6 +65,17 @@ attach to the loop. Press Ctrl-C to stop the loop.
 
 Run `converge --help` to see all options.
 
+To review the current code once, with several reviewer agents at the same
+time, run `review-panel` in the same directory:
+
+```sh
+review-panel [requirements-scope ...]
+```
+
+The panel reviews the live working tree, records the coverage it read in the
+same bug database, and exits with status `0` when it retained no new code
+bug, `1` when it did, and `2` when the run was invalid or incomplete.
+
 ## Environment variables
 
 You set these variables to configure `converge`. Each holds a comma-separated
@@ -75,6 +89,13 @@ one entry per invocation. `converge` accepts no `--harness`, `--model`,
 | `CONVERGE_WORKER_PROFILE` | Worker profile list. Default: `claude:sonnet`. |
 | `CONVERGE_REVIEWER_PROFILE` | Reviewer profile list. Default: `claude:opus`. |
 | `CONVERGE_COACH_PROFILE` | Coach profile list. Default: `claude:opus`. |
+
+You set these variables to configure `review-panel`:
+
+| Variable | Meaning |
+| --- | --- |
+| `REVIEW_PANEL_PROFILES` | Ordered, comma-separated reviewer profile list. Unset, the panel uses `CONVERGE_REVIEWER_PROFILE`. Unset, that defaults to `claude:opus`. |
+| `REVIEW_PANEL_MERGE_PROFILE` | The single merge profile. Unset, the panel uses the first reviewer profile. |
 
 `converge` also reads the standard variables `XDG_STATE_HOME`, `TMPDIR`,
 `HOMEBREW_PREFIX`, and `HOME`:
