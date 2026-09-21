@@ -201,7 +201,7 @@ export CONVERGE_COACH_PROFILE='claude:opus'
 The operator starts a run over a connection that can break, and the run survives the loss of the terminal.
 
 - **CV-BG-1**: The client must run the loop in a process that has no controlling terminal and its own process group. A closed terminal or a lost connection must not stop the loop.
-- **CV-BG-2**: The client must start a loop only when no loop runs for the run directory. In all other cases it must attach to the loop that runs.
+- **CV-BG-2**: The client must start a loop only when no loop runs for the run directory. In all other cases it must attach to the loop that runs. A call with `--foreground` is the exception: it must report the error and exit, as **CV-BG-10** gives.
 - **CV-BG-3**: To attach again, the operator runs `converge` again in the same run directory. The client must need no argument for this.
 - **CV-BG-4**: One run directory must never have two loops. The test for a running loop must be a lock that the operating system releases when the loop dies. A file that a dead loop leaves behind must not block a new run.
 - **CV-BG-5**: The client must write the output of the loop to the terminal:
@@ -214,7 +214,7 @@ The operator starts a run over a connection that can break, and the run survives
   - **CV-BG-8.2**: The second Ctrl-C must stop the loop and every agent below it at once.
   - **CV-BG-8.3**: In both cases the client must show the closing report of the loop and exit with status 130.
 - **CV-BG-9**: The client must exit with the status of the loop.
-- **CV-BG-10**: `--foreground` must run the loop in the terminal, for a person who debugs the loop. The lock still applies.
+- **CV-BG-10**: `--foreground` must run the loop in the terminal, for a person who debugs the loop. The lock still applies. When a loop already runs for the run directory, `--foreground` must report the error and exit. It must not attach, and **CV-BG-6** does not apply.
 - **CV-BG-11**: Two loops may run at the same time in two run directories of one repository. Each loop commits to the shared repository, and no lock of the loop spans the repository. A worker of one loop can therefore meet an error from git when a worker of the other loop holds a lock of the repository. The worker prompt tells the worker to wait and to try the commit again, as **CV-ITER-3.13** gives.
 
 ## Iteration behavior
