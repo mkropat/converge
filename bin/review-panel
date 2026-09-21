@@ -1490,13 +1490,19 @@ done
 ((RETAINED_FAILED)) && FAILED_ROWS+=("findings: cbugs list --panel-run failed after the merge")
 
 findings_block() {
-  local json=$1 id kind status title
+  local json=$1 word=${2:-retained new} id kind status title
   while IFS=$'\t' read -r id kind status title; do
     printf '  %s%s%s %s\n' "$YELLOW" "$G_WARN" "$OFF" \
       "new $kind bug #$id: $title"
-    note "retained new bug #$id ($kind): $title"
+    note "$word bug #$id ($kind): $title"
   done < <(jq -r '.[] | [.id, .kind, .status, .title] | @tsv' <<<"$json")
 }
+
+# The findings the panel collected before the merge, for the close of a run
+# whose readback after the merge failed: they are available, and the report
+# must show them (RP-OUT-6). A read that never succeeded holds nothing.
+AVAILABLE_COUNT=$(jq -r 'length' <<<"$FINDINGS_JSON" 2>/dev/null)
+is_number "$AVAILABLE_COUNT" || AVAILABLE_COUNT=0
 
 STOPPED=0
 ((STOP_REQUESTED || HARD_STOP)) && STOPPED=1
@@ -1515,6 +1521,14 @@ if ((RETAINED_CODE + RETAINED_SPEC > 0)); then
   findings_block "$RETAINED_SPEC_JSON"
 elif ((COMPLETE == 0)); then
   info "the panel knows of no retained new bug to show; its findings may be incomplete"
+  # The readback after the merge failed, so the retained subset is unknown;
+  # the findings the panel collected before the merge are the available
+  # ones, and an incomplete run shows them (RP-OUT-6). None of them carries
+  # a claim of retention.
+  if ((AVAILABLE_COUNT > 0)); then
+    heading "$YELLOW" "available findings" "the merge outcome for these is unknown"
+    findings_block "$FINDINGS_JSON" "available new"
+  fi
 fi
 
 if ((COMPLETE)); then
