@@ -1163,15 +1163,18 @@ run_merge_agent() {
 
   # The message stream goes through a pipe to two readers: the log file
   # keeps every message, and the terminal shows the work as it happens,
-  # the way converge renders one invocation. The startup probe proved that
-  # this directory supports a named pipe; a transient failure here runs
-  # the agent without a live transcript, and judges the result by the
+  # the way converge renders one invocation. Another panel may run at the
+  # same time in this run directory (RP-RUN-1), so the pipe name carries
+  # the panel run id (RP-RUN-4). The startup probe proved that this
+  # directory supports a named pipe; a transient failure here runs the
+  # agent without a live transcript, and judges the result by the
   # exit status, as an invocation of no output is judged.
-  rm -f "$RUNTIME_DIR/panel-stream"
-  if mkfifo "$RUNTIME_DIR/panel-stream" 2>/dev/null; then
+  fifo="$RUNTIME_DIR/panel-stream-$PANEL_ID"
+  rm -f "$fifo"
+  if mkfifo "$fifo" 2>/dev/null; then
     TRANSCRIPT_ACCENT=$MAGENTA
     FINAL_DRAWN=0
-    ( trap '' INT TERM; tee -a "$LOG_FILE" <"$RUNTIME_DIR/panel-stream" \
+    ( trap '' INT TERM; tee -a "$LOG_FILE" <"$fifo" \
       | format_stream "$MAGENTA" ) &
     FORMATTER=$!
     # The agent writes its message stream into the pipe, the way converge
@@ -1190,7 +1193,7 @@ run_merge_agent() {
         REVIEW_PANEL_PROFILE="$profile" \
         PATH="$AGENT_PATH" \
         timeout -k 10 "$TIMEOUT" "${ARGV[@]}"
-    ) >"$RUNTIME_DIR/panel-stream" 2>>"$LOG_DIR/$MERGE_STEM.err" &
+    ) >"$fifo" 2>>"$LOG_DIR/$MERGE_STEM.err" &
   else
     FORMATTER=0
     warn "cannot create the stream pipe; the merge agent runs without a live transcript"
@@ -1217,7 +1220,7 @@ run_merge_agent() {
   MERGE_STATUS=$?
   MERGE_SECONDS=$((SECONDS - started))
   ((FORMATTER)) && { wait "$FORMATTER" 2>/dev/null; FORMATTER=0; }
-  rm -f "$RUNTIME_DIR/panel-stream"
+  rm -f "$RUNTIME_DIR/panel-stream-$PANEL_ID"
 
   if ((MERGE_STATUS == 124 || MERGE_STATUS == 137)); then
     warn "merge exceeded the ${TIMEOUT}s timeout; killed it"
