@@ -156,7 +156,8 @@ LOG_DIR="$STATE_DIR/logs"
 # converge loop's lines never overwrite one another (RP-RUN-4).
 RUN_LOG="$STATE_DIR/review-panel.log"
 # The temporary directory holds only what a running process needs now: the
-# stream pipe of the merge agent. The system removes the directory, so a
+# stream pipe of the merge agent, and the runtime record each reviewer
+# invocation writes about itself. The system removes the directory, so a
 # dead panel leaves nothing behind (CV-RUN-4).
 RUNTIME_DIR="${TMPDIR:-/tmp}/converge/$SLUG"
 
@@ -1173,12 +1174,26 @@ run_reviewer() {
   split_profile "$profile"
   local harness=$SPLIT_HARNESS model=$SPLIT_MODEL effort=$SPLIT_EFFORT
   printf -v seq '%04d' $((++SEQ))
-  local stem="$PANEL_ID-$seq-reviewer"
+  local stem="$PANEL_ID-$seq-reviewer" end_file
   LOG="$LOG_DIR/$stem.jsonl"
   RUN_REVIEWS[$((index - 1))]=$stem
   INV_STARTS[$((index - 1))]=$SECONDS
 
   harness_argv "$harness" "$model" "$effort" "$PANEL_PROMPT"
+  # The controller reaps the reviewers one after another, so the reap time
+  # of one reviewer can name a later wall time than the time it exited: a
+  # reviewer that ended while an earlier one was still being reaped would
+  # otherwise read as running until its own reap turn (RP-OUT-9). The
+  # invocation therefore measures its own runtime: the harness runs inside
+  # a small wrapper, and the wrapper, when the harness exits, writes the
+  # seconds its own SECONDS clock has counted. The wait loop below prefers
+  # that record and keeps the reap arithmetic only as the fallback, which
+  # is what an invocation that was stopped, or whose record failed to be
+  # written, leaves behind.
+  end_file="$RUNTIME_DIR/$stem.end"
+  rm -f "$end_file"
+  ARGV=(bash -c 'end="$1"; shift; "$@"; rc=$?; printf "%s\n" "$SECONDS" >"$end"; exit "$rc"' \
+    _ "$end_file" "${ARGV[@]}")
   invocation_event reviewer "$profile" "$harness" "$model" "$effort" "$LOG"
   printf '%s\n' "$PANEL_PROMPT" >"$LOG_DIR/$stem.prompt.md"
   note "reviewer $index/$count start: profile=$profile stem=$stem log=$LOG"
@@ -1419,6 +1434,19 @@ for ((i = 0; i < RUN_STARTED; i++)); do
   profile=${REVIEWER_PROFILES[$i]}
   stem=${RUN_REVIEWS[$i]:-}
   seconds=$((SECONDS - INV_STARTS[$i]))
+  # The invocation recorded its own runtime when the harness exited. The
+  # controller reaps one reviewer after another, so the reap arithmetic
+  # alone would report a late-exited reviewer as running until the reap of
+  # an earlier one; this record outranks it (RP-OUT-9). The record goes
+  # away after it is read.
+  if [[ -n $stem ]]; then
+    end_file="$RUNTIME_DIR/$stem.end"
+    if [[ -s $end_file ]]; then
+      recorded=$(<"$end_file")
+      is_number "$recorded" && seconds=$recorded
+    fi
+    rm -f "$end_file"
+  fi
   if ((status == 124 || status == 137)); then
     warn "reviewer $((i + 1))/$REVIEWER_COUNT ($profile) exceeded the ${TIMEOUT}s timeout; killed it"
     show_stderr "$LOG_DIR/$stem"
@@ -1434,7 +1462,7 @@ for ((i = 0; i < RUN_STARTED; i++)); do
     [[ -z $stem ]] || printf '{"type":"review_panel_event","event":"result","run":"%s","status":0}\n' \
       "$PANEL_ID" >>"$LOG_DIR/$stem.jsonl"
   fi
-  note "reviewer end: profile=$profile status=$status stem=$stem"
+  note "reviewer end: profile=$profile status=$status stem=$stem seconds=$seconds"
   ((status == 0)) || REVIEW_FAILED=1
 done
 
