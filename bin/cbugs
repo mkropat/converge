@@ -1138,9 +1138,10 @@ verb_list() {
 
   local where rows
   where=$(where_clause ${kinds[@]+"${kinds[@]}"} -- ${statuses[@]+"${statuses[@]}"})
+  [[ -z $panel_run ]] || where+="${where:+ AND }$(panel_clause "$panel_run")"
   rows=$(sqlite3_run json "
 SELECT id, kind, status, title FROM bug_current bc
-${where:+WHERE $where}${panel_run:+$([ -n "$where" ] && printf ' AND ')$(panel_clause "$panel_run")}
+${where:+WHERE $where}
 ORDER BY revision_id DESC;
 ") || exit 1
   print_listing "$rows" "$json"
