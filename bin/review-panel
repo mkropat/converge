@@ -1158,6 +1158,12 @@ print_start_line() {
 # invocation event, so a reader of the file alone knows the role and the
 # full canonical profile (RP-OUT-2, RP-OUT-9).
 #
+# The index is 1-based and names the reviewer to the operator only. The
+# controller keeps RUN_REVIEWS and INV_STARTS at the 0-based position of
+# AGENT_PIDS and REVIEW_STATUSES, which the wait loop below reads back, so
+# every closing event, stderr read, and duration belongs to its own
+# invocation (RP-OUT-2, RP-OUT-9).
+#
 # The environment names the one invocation of this panel run that the agent
 # belongs to, so the bug tracker can tell two invocations of one run apart
 # in the revisions they write, whatever the concurrent writers do
@@ -1169,8 +1175,8 @@ run_reviewer() {
   printf -v seq '%04d' $((++SEQ))
   local stem="$PANEL_ID-$seq-reviewer"
   LOG="$LOG_DIR/$stem.jsonl"
-  RUN_REVIEWS[$index]=$stem
-  INV_STARTS[$index]=$SECONDS
+  RUN_REVIEWS[$((index - 1))]=$stem
+  INV_STARTS[$((index - 1))]=$SECONDS
 
   harness_argv "$harness" "$model" "$effort" "$PANEL_PROMPT"
   invocation_event reviewer "$profile" "$harness" "$model" "$effort" "$LOG"
