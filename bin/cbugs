@@ -81,11 +81,16 @@ EOF
 
 usage_list() {
   cat >&2 <<'EOF'
-Usage: cbugs list [--kind code|spec|task]... [--status open|closed|wontfix]... [--json]
+Usage: cbugs list [--kind code|spec|task]... [--status open|closed|wontfix]...
+                  [--panel-run <id>] [--json]
 
 Prints the bugs of the project, newest revision first. Repeat --kind or
 --status to show more than one value; several values of one option mean
 their union. With no option, list shows every bug.
+
+--panel-run <id> shows only the bugs that the named panel run created: the
+run id of a review-panel agent is in the first revision of each bug it
+logged.
 EOF
 }
 
@@ -100,7 +105,8 @@ EOF
 
 usage_search() {
   cat >&2 <<'EOF'
-Usage: cbugs search <text> [--kind code|spec|task]... [--status open|closed|wontfix]... [--json]
+Usage: cbugs search <text> [--kind code|spec|task]... [--status open|closed|wontfix]...
+                           [--panel-run <id>] [--json]
 
 Prints the bugs whose title, in any revision, whose notes, or whose
 citations contain the text. The search ignores the difference between
@@ -468,7 +474,7 @@ like_escape() {
 # The data model. This mirrors docs/cbugs-schema.sql. Nothing here is ever
 # changed or removed: the newest revision of a bug is its current state, and
 # a row of reviewed commits never changes.
-DB_VERSION=5
+DB_VERSION=6
 
 # The current-state view, which both the schema and the migration rebuild.
 BUG_CURRENT_VIEW_SQL=$(cat <<'SQL'
@@ -496,15 +502,17 @@ CREATE TABLE IF NOT EXISTS bug (
 );
 
 CREATE TABLE IF NOT EXISTS revision (
-  id         INTEGER PRIMARY KEY,
-  bug_id     INTEGER NOT NULL REFERENCES bug (id),
-  status     TEXT NOT NULL CHECK (status IN ('open', 'closed', 'wontfix')),
-  title      TEXT NOT NULL CHECK (title <> ''),
-  note       TEXT NOT NULL,
-  role       TEXT,
-  iteration  INTEGER,
-  commit_id  TEXT,
-  created_at TEXT NOT NULL
+  id            INTEGER PRIMARY KEY,
+  bug_id        INTEGER NOT NULL REFERENCES bug (id),
+  status        TEXT NOT NULL CHECK (status IN ('open', 'closed', 'wontfix')),
+  title         TEXT NOT NULL CHECK (title <> ''),
+  note          TEXT NOT NULL,
+  role          TEXT,
+  iteration     INTEGER,
+  commit_id     TEXT,
+  created_at    TEXT NOT NULL,
+  panel_run     TEXT CHECK (panel_run <> ''),
+  panel_profile TEXT CHECK (panel_profile <> '')
 );
 
 CREATE INDEX IF NOT EXISTS revision_bug ON revision (bug_id, id);
@@ -601,8 +609,24 @@ COMMIT;
 SQL
 )
 
+# The migration from version 5 to version 6. It adds the two panel columns to
+# the revision table, and nothing else. The values describe the panel run and
+# the canonical agent profile that the caller brought, which the environment
+# already carries; every existing revision keeps NULL, which means the
+# revision names no panel run (RP-RUN-5's shared contract gained its storage
+# here). Every bug, citation, and review record is preserved unchanged. One
+# transaction, like the previous steps.
+MIGRATE_V5_6_SQL=$(cat <<SQL
+BEGIN IMMEDIATE;
+ALTER TABLE revision ADD COLUMN panel_run TEXT CHECK (panel_run <> '');
+ALTER TABLE revision ADD COLUMN panel_profile TEXT CHECK (panel_profile <> '');
+PRAGMA user_version = $DB_VERSION;
+COMMIT;
+SQL
+)
+
 # init_db   Prepares the database before the command answers the call. It
-# creates the database on first use, migrates a version 2, 3, or 4
+# creates the database on first use, migrates a version 2, 3, 4, or 5
 # database one step at a time -- one transaction per step -- and stops
 # with an error when the version is one that this command does not know.
 #
@@ -633,14 +657,15 @@ init_db() {
   fi
   ver=$(sqlite3_run raw "PRAGMA user_version;") || exit 1
   while [[ $ver != "$DB_VERSION" ]]; do
-    case $ver in
-      2) sqlite3_run raw "$MIGRATE_V2_3_SQL" >/dev/null ;;
-      3) sqlite3_run raw "$MIGRATE_V3_4_SQL" >/dev/null ;;
-      4) sqlite3_run raw "$MIGRATE_V4_5_SQL" >/dev/null ;;
-      *)
-        echo "cbugs: $DB is database version $ver, but this command knows version $DB_VERSION and migrates only versions 2, 3, and 4" >&2
-        exit 1
-        ;;
+      case $ver in
+        2) sqlite3_run raw "$MIGRATE_V2_3_SQL" >/dev/null ;;
+        3) sqlite3_run raw "$MIGRATE_V3_4_SQL" >/dev/null ;;
+        4) sqlite3_run raw "$MIGRATE_V4_5_SQL" >/dev/null ;;
+        5) sqlite3_run raw "$MIGRATE_V5_6_SQL" >/dev/null ;;
+        *)
+          echo "cbugs: $DB is database version $ver, but this command knows version $DB_VERSION and migrates only versions 2, 3, 4, and 5" >&2
+          exit 1
+          ;;
     esac
     ver=$(sqlite3_run raw "PRAGMA user_version;") || exit 1
   done
@@ -658,9 +683,20 @@ init_db() {
 ROLE_SQL="NULL"
 ITERATION_SQL="NULL"
 COMMIT_SQL="NULL"
+PANEL_RUN_SQL="NULL"
+PANEL_PROFILE_SQL="NULL"
 CREATED_AT=""
 
 # provenance <commit override, or "">
+#
+# The panel fields supplement the role and the iteration that the loop
+# exports. A command that runs one panel run exports REVIEW_PANEL_RUN and
+# REVIEW_PANEL_PROFILE into every agent that it starts (a reviewer, and the
+# merge agent); each revision therefore names the panel run it belongs to
+# and the canonical profile that wrote it (RP-RUN-2, RP-RUN-5). A caller
+# that sets neither keeps the plain authorship rules: both fields stay
+# NULL, and the command refuses nothing (CB-PROV-1 through CB-PROV-5 hold
+# as before). An empty value counts as an absent one.
 provenance() {
   local override=$1 commit=""
   if [[ -n ${CONVERGE_ROLE:-} ]]; then
@@ -672,6 +708,16 @@ provenance() {
     ITERATION_SQL="$CONVERGE_ITERATION"
   else
     ITERATION_SQL="NULL"
+  fi
+  if [[ -n ${REVIEW_PANEL_RUN:-} ]]; then
+    PANEL_RUN_SQL="'$(sql_quote "$REVIEW_PANEL_RUN")'"
+  else
+    PANEL_RUN_SQL="NULL"
+  fi
+  if [[ -n ${REVIEW_PANEL_PROFILE:-} ]]; then
+    PANEL_PROFILE_SQL="'$(sql_quote "$REVIEW_PANEL_PROFILE")'"
+  else
+    PANEL_PROFILE_SQL="NULL"
   fi
   if [[ -n $override ]]; then
     commit=$override
@@ -818,6 +864,21 @@ where_clause() {
   printf '%s' "$out"
 }
 
+# panel_clause <panel run id>   SQL that selects the bugs whose first revision
+# the given panel run wrote: the first revision of a bug is its report, so
+# its panel fields name the panel run that created the bug (RP-RUN-2). The
+# caller embeds the id with sql_quote.
+panel_clause() {
+  printf '%s' "EXISTS (SELECT 1 FROM revision fp WHERE fp.bug_id = bc.id AND fp.id = (SELECT MIN(f2.id) FROM revision f2 WHERE f2.bug_id = bc.id) AND fp.panel_run = '$(sql_quote "$1")')"
+}
+
+# parse_panel_run <value>   Stops when the value is empty; a panel run id is
+# the identity of the selection, and an empty one selects nothing.
+parse_panel_run() {
+  [[ -n $1 ]] || { echo "cbugs: --panel-run must name a panel run id" >&2; exit 2; }
+  printf '%s' "$1"
+}
+
 # validate_kind <kind> [allow-empty]   Stops with an error unless the kind is
 # code, spec, or task. With allow-empty set to 1, an empty kind passes, for a
 # caller that checks "required" itself.
@@ -954,8 +1015,8 @@ verb_add() {
   id=$(sqlite3_run raw "
 BEGIN IMMEDIATE;
 INSERT INTO bug (kind) VALUES ('$(sql_quote "$kind")');
-INSERT INTO revision (bug_id, status, title, note, role, iteration, commit_id, created_at)
-VALUES (last_insert_rowid(), 'open', '$(sql_quote "$title")', '$(sql_quote "$note")', $ROLE_SQL, $ITERATION_SQL, $COMMIT_SQL, '$CREATED_AT');
+INSERT INTO revision (bug_id, status, title, note, role, iteration, commit_id, created_at, panel_run, panel_profile)
+VALUES (last_insert_rowid(), 'open', '$(sql_quote "$title")', '$(sql_quote "$note")', $ROLE_SQL, $ITERATION_SQL, $COMMIT_SQL, '$CREATED_AT', $PANEL_RUN_SQL, $PANEL_PROFILE_SQL);
 $(citation_sql)
 SELECT bug_id FROM revision ORDER BY id DESC LIMIT 1;
 COMMIT;
@@ -978,8 +1039,8 @@ write_revision() {
   fi
   sqlite3_run raw "
 BEGIN IMMEDIATE;
-INSERT INTO revision (bug_id, status, title, note, role, iteration, commit_id, created_at)
-SELECT $id, $status_expr, $title_expr, '$(sql_quote "$note")', $ROLE_SQL, $ITERATION_SQL, $COMMIT_SQL, '$CREATED_AT'
+INSERT INTO revision (bug_id, status, title, note, role, iteration, commit_id, created_at, panel_run, panel_profile)
+SELECT $id, $status_expr, $title_expr, '$(sql_quote "$note")', $ROLE_SQL, $ITERATION_SQL, $COMMIT_SQL, '$CREATED_AT', $PANEL_RUN_SQL, $PANEL_PROFILE_SQL
 FROM revision r WHERE r.bug_id = $id ORDER BY r.id DESC LIMIT 1;
 $(citation_sql)
 COMMIT;
@@ -1056,7 +1117,7 @@ verb_status_change() {
 # --------------------------------------------------------------- list, show, search
 
 verb_list() {
-  local json=0
+  local json=0 panel_run=""
   local -a kinds=() statuses=()
   while (($#)); do
     case $1 in
@@ -1064,6 +1125,8 @@ verb_list() {
       --kind=*) kinds+=("${1#*=}"); shift ;;
       --status) need_value "$1" $#; statuses+=("$2"); shift 2 ;;
       --status=*) statuses+=("${1#*=}"); shift ;;
+      --panel-run) need_value "$1" $#; panel_run=$(parse_panel_run "$2"); shift 2 ;;
+      --panel-run=*) panel_run=$(parse_panel_run "${1#*=}"); shift ;;
       --json) json=1; shift ;;
       -h|--help) usage_list; exit 0 ;;
       *) echo "cbugs list: unexpected argument '$1'" >&2; exit 2 ;;
@@ -1076,8 +1139,8 @@ verb_list() {
   local where rows
   where=$(where_clause ${kinds[@]+"${kinds[@]}"} -- ${statuses[@]+"${statuses[@]}"})
   rows=$(sqlite3_run json "
-SELECT id, kind, status, title FROM bug_current
-${where:+WHERE $where}
+SELECT id, kind, status, title FROM bug_current bc
+${where:+WHERE $where}${panel_run:+$([ -n "$where" ] && printf ' AND ')$(panel_clause "$panel_run")}
 ORDER BY revision_id DESC;
 ") || exit 1
   print_listing "$rows" "$json"
@@ -1101,7 +1164,7 @@ verb_show() {
   local bug revs cites
   bug=$(sqlite3_run json "SELECT id, kind, status, title FROM bug_current WHERE id = $id;") || exit 1
   revs=$(sqlite3_run json "
-SELECT id, status, title, note, role, iteration, commit_id, created_at
+SELECT id, status, title, note, role, iteration, commit_id, created_at, panel_run, panel_profile
 FROM revision WHERE bug_id = $id ORDER BY id ASC;
 ") || exit 1
   cites=$(sqlite3_run json "
@@ -1131,7 +1194,8 @@ WHERE r.bug_id = $id ORDER BY c.id ASC;
   printf '%s#%s%s  %s%s%s  %s  %s\n' "$BOLD" "$bid" "$OFF" "$DIM" "$kind" "$OFF" "$status" "$title"
   printf '\n%srevisions%s\n' "$BOLD" "$OFF"
   local rid rstatus rtitle rnote rrole riter rcommit rcreated meta rcite
-  while IFS=$'\t' read -r rid rstatus rtitle rrole riter rcommit rcreated; do
+  local rpanelrun rpanelprofile
+  while IFS=$'\t' read -r rid rstatus rtitle rrole riter rcommit rcreated rpanelrun rpanelprofile; do
     # A field that is null in the data comes through as "-", a placeholder
     # that no real role, iteration, or commit id ever equals. IFS-tab
     # splitting collapses a genuinely empty field, which would misalign
@@ -1140,6 +1204,11 @@ WHERE r.bug_id = $id ORDER BY c.id ASC;
     [[ $rrole == "-" ]] || meta="$rrole"
     [[ $riter == "-" ]] || meta+=" iter $riter"
     [[ $rcommit == "-" ]] || meta+=" @${rcommit:0:8}"
+    # The panel fields name the panel run and the canonical profile of the
+    # agent that wrote the revision (RP-RUN-2). A plain caller wrote none,
+    # and shows neither.
+    [[ $rpanelrun == "-" ]] || meta+=" panel run $rpanelrun"
+    [[ $rpanelprofile == "-" ]] || meta+=" profile $rpanelprofile"
     printf '  %s%s%s  %s  %s%s%s\n' "$DIM" "$rcreated" "$OFF" "$rstatus" "$DIM" "$meta" "$OFF"
     printf '    %s\n' "$rtitle"
     rnote=$(jq -r --argjson i "$rid" '.[] | select(.id == $i) | .note' <<<"$revs")
@@ -1153,11 +1222,11 @@ WHERE r.bug_id = $id ORDER BY c.id ASC;
     done < <(jq -r --argjson i "$rid" \
       '.[] | select(.id == $i) | .citations[] | .path + (if .req then ":" + .req else "" end)' \
       <<<"$revs")
-  done < <(jq -r '.[] | [.id, .status, .title, (.role // "-"), (.iteration // "-"), (.commit_id // "-"), .created_at] | @tsv' <<<"$revs")
+  done < <(jq -r '.[] | [.id, .status, .title, (.role // "-"), (.iteration // "-"), (.commit_id // "-"), .created_at, (.panel_run // "-"), (.panel_profile // "-")] | @tsv' <<<"$revs")
 }
 
 verb_search() {
-  local text="" json=0
+  local text="" json=0 panel_run=""
   local -a kinds=() statuses=()
   [[ ${1:-} == -h || ${1:-} == --help ]] && { usage_search; exit 0; }
   [[ $# -ge 1 && $1 != -* ]] || { usage_search; exit 2; }
@@ -1168,6 +1237,8 @@ verb_search() {
       --kind=*) kinds+=("${1#*=}"); shift ;;
       --status) need_value "$1" $#; statuses+=("$2"); shift 2 ;;
       --status=*) statuses+=("${1#*=}"); shift ;;
+      --panel-run) need_value "$1" $#; panel_run=$(parse_panel_run "$2"); shift 2 ;;
+      --panel-run=*) panel_run=$(parse_panel_run "${1#*=}"); shift ;;
       --json) json=1; shift ;;
       -h|--help) usage_search; exit 0 ;;
       *) echo "cbugs search: unexpected argument '$1'" >&2; exit 2 ;;
@@ -1177,7 +1248,8 @@ verb_search() {
   for s in ${kinds[@]+"${kinds[@]}"}; do validate_kind "$s"; done
   for s in ${statuses[@]+"${statuses[@]}"}; do validate_status "$s"; done
 
-  local where pattern rows
+  local where pattern rows panel_extra=""
+  [[ -z $panel_run ]] || panel_extra=" AND $(panel_clause "$panel_run")"
   where=$(where_clause ${kinds[@]+"${kinds[@]}"} -- ${statuses[@]+"${statuses[@]}"})
   pattern="%$(like_escape "$text")%"
   rows=$(sqlite3_run json "
@@ -1193,7 +1265,7 @@ WHERE ${where:+$where AND }EXISTS (
           AND (LOWER(c.path) LIKE LOWER('$pattern') ESCAPE '\\'
             OR LOWER(COALESCE(c.req, '')) LIKE LOWER('$pattern') ESCAPE '\\')
       ))
-)
+)$panel_extra
 ORDER BY revision_id DESC;
 ") || exit 1
   print_listing "$rows" "$json"

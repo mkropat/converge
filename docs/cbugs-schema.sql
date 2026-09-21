@@ -13,7 +13,7 @@
 -- The reviewed commits form a history of coverage. Multiple rows can name
 -- one commit, and each row is immutable.
 
-PRAGMA user_version = 5;
+PRAGMA user_version = 6;
 
 -- The identity of a defect.
 --
@@ -49,16 +49,26 @@ CREATE TABLE bug (
 --
 -- `role` and `iteration` come from the environment that the loop exports. Both
 -- are null when a person runs the command.
+--
+-- `panel_run` and `panel_profile` come from the same kind of contract, in the
+-- environment of the agents that `bin/review-panel` starts. A run of that
+-- command exports its own identity and the canonical profile of each agent,
+-- so every revision an agent writes names the panel run it belongs to, and
+-- the reviewer invocation that filed it. Both are null for every other
+-- caller, and null values hold no meaning: the plain authorship rules of
+-- `role` and `iteration` stand beside them unchanged.
 CREATE TABLE revision (
-  id         INTEGER PRIMARY KEY,
-  bug_id     INTEGER NOT NULL REFERENCES bug (id),
-  status     TEXT NOT NULL CHECK (status IN ('open', 'closed', 'wontfix')),
-  title      TEXT NOT NULL CHECK (title <> ''),
-  note       TEXT NOT NULL,
-  role       TEXT,
-  iteration  INTEGER,
-  commit_id  TEXT,
-  created_at TEXT NOT NULL
+  id            INTEGER PRIMARY KEY,
+  bug_id        INTEGER NOT NULL REFERENCES bug (id),
+  status        TEXT NOT NULL CHECK (status IN ('open', 'closed', 'wontfix')),
+  title         TEXT NOT NULL CHECK (title <> ''),
+  note          TEXT NOT NULL,
+  role          TEXT,
+  iteration     INTEGER,
+  commit_id     TEXT,
+  created_at    TEXT NOT NULL,
+  panel_run     TEXT CHECK (panel_run <> ''),
+  panel_profile TEXT CHECK (panel_profile <> '')
 );
 
 CREATE INDEX revision_bug ON revision (bug_id, id);
@@ -160,5 +170,7 @@ CREATE INDEX reviewed_commit ON reviewed (commit_id);
 -- `user` to `task`. Version 3 to version 4 adds the reviewed table. Version 4
 -- to version 5 removes commit uniqueness and adds profile, preserving every
 -- review id, hash, iteration, and timestamp, with null for each old profile.
--- All steps preserve bugs, revisions, and citations except the kind rename.
--- Unsupported versions cause an error that names both versions.
+-- Version 5 to version 6 adds the two panel columns of the revision table,
+-- with null for each old revision. All steps preserve bugs, revisions, and
+-- citations except the kind rename. Unsupported versions cause an error that
+-- names both versions.
