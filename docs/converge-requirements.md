@@ -91,7 +91,7 @@ These principles explain the intent behind the requirements. Apply them when a r
   - **CV-INV-3.3**: Retired. Accepted `--coach-model`. See **CV-INV-11** and **CV-HARN-8**.
   - **CV-INV-3.4**: Retired. Accepted `--review-model`. See **CV-INV-11** and **CV-HARN-8**.
   - **CV-INV-3.5**: Retired. Defined votes alone as the stop condition. **CV-INV-3.15** replaces this behavior.
-  - **CV-INV-3.6**: `--coach-every <K>`: the number of worker iterations between coach runs. The script sets the default.
+  - **CV-INV-3.6**: `--coach-every <K>`: the number of worker iterations between coach runs. The script sets the default. `K` can be `0`: then the coach is due on every check. **CV-COACH-8** gives the details.
   - **CV-INV-3.7**: `--no-coach`: disable the coach.
   - **CV-INV-3.8**: Retired. `--review-every <R>` gave the number of worker iterations between review passes. **CV-INV-3.14** replaces this behavior. The count lived in the memory of the loop, and a Ctrl-C that stopped the run threw it away. The count of unreviewed commits is durable, in the bug database.
   - **CV-INV-3.9**: `--no-review`: disable the reviewer.
@@ -100,7 +100,7 @@ These principles explain the intent behind the requirements. Apply them when a r
   - **CV-INV-3.12**: `--foreground`: run the loop in the terminal of the operator, and not in the background.
   - **CV-INV-3.13**: Retired. Required more than `N` unreviewed commits. **CV-INV-3.14** replaces this threshold.
   - **CV-INV-3.14**: `--review-after <N>`: run a cadence pass when at least `N` commits are unreviewed, subject to **CV-CONV-18**. `N` must be a positive integer. Default: `5`.
-  - **CV-INV-3.15**: `--consensus <N>`: the required number of consecutive done votes. Default: `2`. **CV-CONV-14** gives the other convergence conditions.
+  - **CV-INV-3.15**: `--consensus <N>`: the required number of consecutive done votes. Default: `2`. `N` can be `0`: then no vote is required, and the loop can converge before the first worker invocation. **CV-CONV-14** gives the other convergence conditions.
 - **CV-INV-4**: Retired. Passed unknown options to the harness. **CV-INV-11** rejects harness arguments.
 - **CV-INV-5**: Retired. A run took no positional argument. **CV-INV-8** replaces this behavior.
 - **CV-INV-6**: Retired. Passed arguments after `--` to the harness. **CV-INV-11** replaces this behavior.
@@ -294,7 +294,7 @@ The operator starts a run over a connection that can break, and the run survives
 - **CV-CONV-11**: Retired. Required pending commits for final review and bypassed it at consensus. **CV-CONV-16** replaces this behavior.
 - **CV-CONV-12**: Retired. Relied on later workers to reset votes after review findings. **CV-CONV-15** and **CV-CONV-17** replace this behavior; **CV-REV-18** retains whole-code review.
 - **CV-CONV-13**: Retired. Forbade bug queries for decisions. **CV-CONV-17** permits blocking-bug checks.
-- **CV-CONV-14**: Convergence requires `N` consecutive done votes from different worker invocations and no open code bug or task. When review is enabled, it also requires final approval for the current HEAD. This applies even when `--consensus` is `1`. Disabled review requires no approval.
+- **CV-CONV-14**: Convergence requires `N` consecutive done votes from different worker invocations and no open code bug or task. When review is enabled, it also requires final approval for the current HEAD. This applies even when `--consensus` is `1`. Disabled review requires no approval. When `N` is `0`, the vote condition holds with no worker invocation.
 - **CV-CONV-15**: A successful final pass must grant approval only for the exact HEAD it reviewed, only if HEAD has not changed during the pass, and only if no open code bug or task remains. Approval must exist only in session memory. Any HEAD change must invalidate it. A restart must require fresh approval. Cadence passes and reviewed-commit records must not grant approval.
 - **CV-CONV-16**: After a done vote, an enabled reviewer must run a final pass if the current HEAD lacks approval, subject to **CV-CONV-18**. This rule applies even with no pending commit or enough votes for consensus. It must not repeat a final pass at the same approved HEAD. One due final pass must replace a due cadence pass. No other rule may add a special final pass to bypass stop checks.
 - **CV-CONV-17**: The loop must read open code-bug and task counts to gate approval and convergence. Any open code bug or task must reset consecutive votes and prevent approval. Spec bugs must never block approval or convergence. A review failure or timeout must reset votes and grant no approval.
@@ -357,7 +357,7 @@ The worker builds. The reviewer reads what the worker built. One agent cannot do
 - **CV-COACH-6**: The coach must write only the guidance file, the journal, and a bug. The coach must not edit code, must not edit requirements documents, and must not stop the loop.
 - **CV-COACH-7**: The loop must log coach output the same way it logs worker output.
 
-- **CV-COACH-8**: The coach cadence must start at zero each session. Every started worker iteration must count toward the iteration limit and coach cadence, including failures and timeouts. After every `K` iterations, an enabled coach is due. It must run synchronously under **CV-CONV-18**, after any due review, even if the worker or reviewer failed or timed out. A stop condition takes priority.
+- **CV-COACH-8**: The coach cadence must start at zero each session. Every started worker iteration must count toward the iteration limit and coach cadence, including failures and timeouts. After every `K` iterations, an enabled coach is due. When `K` is `0`, the coach is due on every check, including before the first worker iteration. It must run synchronously under **CV-CONV-18**, after any due review, even if the worker or reviewer failed or timed out. A stop condition takes priority.
 
 ## State and logs
 
