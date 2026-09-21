@@ -474,7 +474,7 @@ like_escape() {
 # The data model. This mirrors docs/cbugs-schema.sql. Nothing here is ever
 # changed or removed: the newest revision of a bug is its current state, and
 # a row of reviewed commits never changes.
-DB_VERSION=6
+DB_VERSION=7
 
 # The current-state view, which both the schema and the migration rebuild.
 BUG_CURRENT_VIEW_SQL=$(cat <<'SQL'
@@ -512,7 +512,8 @@ CREATE TABLE IF NOT EXISTS revision (
   commit_id     TEXT,
   created_at    TEXT NOT NULL,
   panel_run     TEXT CHECK (panel_run <> ''),
-  panel_profile TEXT CHECK (panel_profile <> '')
+  panel_profile TEXT CHECK (panel_profile <> ''),
+  panel_invocation TEXT CHECK (panel_invocation <> '')
 );
 
 CREATE INDEX IF NOT EXISTS revision_bug ON revision (bug_id, id);
@@ -589,7 +590,11 @@ SQL
 # adds the optional profile column. Every existing review id, full commit
 # hash, iteration, and created_at value is preserved unchanged; each old
 # record gets a NULL profile, which means unknown. It touches no bug,
-# revision, or citation. One transaction, like the previous steps.
+# revision, or citation. One transaction, like the previous steps. Each
+# step records only the version that the step itself reaches, and not the
+# whole DB_VERSION: init_db migrates one step at a time, and a step that
+# claimed the last version would end the loop while later steps are still
+# missing.
 MIGRATE_V4_5_SQL=$(cat <<SQL
 BEGIN IMMEDIATE;
 CREATE TABLE reviewed_migrate (
@@ -604,7 +609,7 @@ INSERT INTO reviewed_migrate (id, commit_id, iteration, created_at, profile)
 DROP TABLE reviewed;
 ALTER TABLE reviewed_migrate RENAME TO reviewed;
 CREATE INDEX IF NOT EXISTS reviewed_commit ON reviewed (commit_id);
-PRAGMA user_version = $DB_VERSION;
+PRAGMA user_version = 5;
 COMMIT;
 SQL
 )
@@ -620,13 +625,27 @@ MIGRATE_V5_6_SQL=$(cat <<SQL
 BEGIN IMMEDIATE;
 ALTER TABLE revision ADD COLUMN panel_run TEXT CHECK (panel_run <> '');
 ALTER TABLE revision ADD COLUMN panel_profile TEXT CHECK (panel_profile <> '');
-PRAGMA user_version = $DB_VERSION;
+PRAGMA user_version = 6;
+COMMIT;
+SQL
+)
+
+# The migration from version 6 to version 7. It adds one panel column to the
+# revision table, and nothing else. The value names the invocation of a panel
+# run that wrote the revision, which the environment carries next to the panel
+# run and the profile (RP-RUN-2); every existing revision keeps NULL, and
+# every bug, citation, and review record is preserved unchanged. One
+# transaction, like the previous steps.
+MIGRATE_V6_7_SQL=$(cat <<SQL
+BEGIN IMMEDIATE;
+ALTER TABLE revision ADD COLUMN panel_invocation TEXT CHECK (panel_invocation <> '');
+PRAGMA user_version = 7;
 COMMIT;
 SQL
 )
 
 # init_db   Prepares the database before the command answers the call. It
-# creates the database on first use, migrates a version 2, 3, 4, or 5
+# creates the database on first use, migrates a version 2, 3, 4, 5, or 6
 # database one step at a time -- one transaction per step -- and stops
 # with an error when the version is one that this command does not know.
 #
@@ -662,8 +681,9 @@ init_db() {
         3) sqlite3_run raw "$MIGRATE_V3_4_SQL" >/dev/null ;;
         4) sqlite3_run raw "$MIGRATE_V4_5_SQL" >/dev/null ;;
         5) sqlite3_run raw "$MIGRATE_V5_6_SQL" >/dev/null ;;
+        6) sqlite3_run raw "$MIGRATE_V6_7_SQL" >/dev/null ;;
         *)
-          echo "cbugs: $DB is database version $ver, but this command knows version $DB_VERSION and migrates only versions 2, 3, 4, and 5" >&2
+          echo "cbugs: $DB is database version $ver, but this command knows version $DB_VERSION and migrates only versions 2, 3, 4, 5, and 6" >&2
           exit 1
           ;;
     esac
@@ -685,6 +705,7 @@ ITERATION_SQL="NULL"
 COMMIT_SQL="NULL"
 PANEL_RUN_SQL="NULL"
 PANEL_PROFILE_SQL="NULL"
+PANEL_INVOCATION_SQL="NULL"
 CREATED_AT=""
 
 # provenance <commit override, or "">
@@ -693,8 +714,11 @@ CREATED_AT=""
 # exports. A command that runs one panel run exports REVIEW_PANEL_RUN and
 # REVIEW_PANEL_PROFILE into every agent that it starts (a reviewer, and the
 # merge agent); each revision therefore names the panel run it belongs to
-# and the canonical profile that wrote it (RP-RUN-2, RP-RUN-5). A caller
-# that sets neither keeps the plain authorship rules: both fields stay
+# and the canonical profile that wrote it (RP-RUN-2, RP-RUN-5). The same
+# command exports REVIEW_PANEL_INVOCATION, which names the one invocation
+# the agent belongs to inside the panel run, so two invocations of one run
+# stay distinguishable however they write (RP-RUN-2). A caller
+# that sets none of them keeps the plain authorship rules: both fields stay
 # NULL, and the command refuses nothing (CB-PROV-1 through CB-PROV-5 hold
 # as before). An empty value counts as an absent one.
 provenance() {
@@ -718,6 +742,11 @@ provenance() {
     PANEL_PROFILE_SQL="'$(sql_quote "$REVIEW_PANEL_PROFILE")'"
   else
     PANEL_PROFILE_SQL="NULL"
+  fi
+  if [[ -n ${REVIEW_PANEL_INVOCATION:-} ]]; then
+    PANEL_INVOCATION_SQL="'$(sql_quote "$REVIEW_PANEL_INVOCATION")'"
+  else
+    PANEL_INVOCATION_SQL="NULL"
   fi
   if [[ -n $override ]]; then
     commit=$override
@@ -1015,8 +1044,8 @@ verb_add() {
   id=$(sqlite3_run raw "
 BEGIN IMMEDIATE;
 INSERT INTO bug (kind) VALUES ('$(sql_quote "$kind")');
-INSERT INTO revision (bug_id, status, title, note, role, iteration, commit_id, created_at, panel_run, panel_profile)
-VALUES (last_insert_rowid(), 'open', '$(sql_quote "$title")', '$(sql_quote "$note")', $ROLE_SQL, $ITERATION_SQL, $COMMIT_SQL, '$CREATED_AT', $PANEL_RUN_SQL, $PANEL_PROFILE_SQL);
+INSERT INTO revision (bug_id, status, title, note, role, iteration, commit_id, created_at, panel_run, panel_profile, panel_invocation)
+VALUES (last_insert_rowid(), 'open', '$(sql_quote "$title")', '$(sql_quote "$note")', $ROLE_SQL, $ITERATION_SQL, $COMMIT_SQL, '$CREATED_AT', $PANEL_RUN_SQL, $PANEL_PROFILE_SQL, $PANEL_INVOCATION_SQL);
 $(citation_sql)
 SELECT bug_id FROM revision ORDER BY id DESC LIMIT 1;
 COMMIT;
@@ -1039,8 +1068,8 @@ write_revision() {
   fi
   sqlite3_run raw "
 BEGIN IMMEDIATE;
-INSERT INTO revision (bug_id, status, title, note, role, iteration, commit_id, created_at, panel_run, panel_profile)
-SELECT $id, $status_expr, $title_expr, '$(sql_quote "$note")', $ROLE_SQL, $ITERATION_SQL, $COMMIT_SQL, '$CREATED_AT', $PANEL_RUN_SQL, $PANEL_PROFILE_SQL
+INSERT INTO revision (bug_id, status, title, note, role, iteration, commit_id, created_at, panel_run, panel_profile, panel_invocation)
+SELECT $id, $status_expr, $title_expr, '$(sql_quote "$note")', $ROLE_SQL, $ITERATION_SQL, $COMMIT_SQL, '$CREATED_AT', $PANEL_RUN_SQL, $PANEL_PROFILE_SQL, $PANEL_INVOCATION_SQL
 FROM revision r WHERE r.bug_id = $id ORDER BY r.id DESC LIMIT 1;
 $(citation_sql)
 COMMIT;
@@ -1165,7 +1194,7 @@ verb_show() {
   local bug revs cites
   bug=$(sqlite3_run json "SELECT id, kind, status, title FROM bug_current WHERE id = $id;") || exit 1
   revs=$(sqlite3_run json "
-SELECT id, status, title, note, role, iteration, commit_id, created_at, panel_run, panel_profile
+SELECT id, status, title, note, role, iteration, commit_id, created_at, panel_run, panel_profile, panel_invocation
 FROM revision WHERE bug_id = $id ORDER BY id ASC;
 ") || exit 1
   cites=$(sqlite3_run json "
@@ -1195,8 +1224,8 @@ WHERE r.bug_id = $id ORDER BY c.id ASC;
   printf '%s#%s%s  %s%s%s  %s  %s\n' "$BOLD" "$bid" "$OFF" "$DIM" "$kind" "$OFF" "$status" "$title"
   printf '\n%srevisions%s\n' "$BOLD" "$OFF"
   local rid rstatus rtitle rnote rrole riter rcommit rcreated meta rcite
-  local rpanelrun rpanelprofile
-  while IFS=$'\t' read -r rid rstatus rtitle rrole riter rcommit rcreated rpanelrun rpanelprofile; do
+  local rpanelrun rpanelprofile rpanelinv
+  while IFS=$'\t' read -r rid rstatus rtitle rrole riter rcommit rcreated rpanelrun rpanelprofile rpanelinv; do
     # A field that is null in the data comes through as "-", a placeholder
     # that no real role, iteration, or commit id ever equals. IFS-tab
     # splitting collapses a genuinely empty field, which would misalign
@@ -1205,11 +1234,13 @@ WHERE r.bug_id = $id ORDER BY c.id ASC;
     [[ $rrole == "-" ]] || meta="$rrole"
     [[ $riter == "-" ]] || meta+=" iter $riter"
     [[ $rcommit == "-" ]] || meta+=" @${rcommit:0:8}"
-    # The panel fields name the panel run and the canonical profile of the
-    # agent that wrote the revision (RP-RUN-2). A plain caller wrote none,
-    # and shows neither.
+    # The panel fields name the panel run, the canonical profile of the
+    # agent, and the one invocation of the run that wrote the revision
+    # (RP-RUN-2). A plain caller wrote none of them, and shows none of
+    # them.
     [[ $rpanelrun == "-" ]] || meta+=" panel run $rpanelrun"
     [[ $rpanelprofile == "-" ]] || meta+=" profile $rpanelprofile"
+    [[ $rpanelinv == "-" ]] || meta+=" invocation $rpanelinv"
     printf '  %s%s%s  %s  %s%s%s\n' "$DIM" "$rcreated" "$OFF" "$rstatus" "$DIM" "$meta" "$OFF"
     printf '    %s\n' "$rtitle"
     rnote=$(jq -r --argjson i "$rid" '.[] | select(.id == $i) | .note' <<<"$revs")
@@ -1223,7 +1254,7 @@ WHERE r.bug_id = $id ORDER BY c.id ASC;
     done < <(jq -r --argjson i "$rid" \
       '.[] | select(.id == $i) | .citations[] | .path + (if .req then ":" + .req else "" end)' \
       <<<"$revs")
-  done < <(jq -r '.[] | [.id, .status, .title, (.role // "-"), (.iteration // "-"), (.commit_id // "-"), .created_at, (.panel_run // "-"), (.panel_profile // "-")] | @tsv' <<<"$revs")
+  done < <(jq -r '.[] | [.id, .status, .title, (.role // "-"), (.iteration // "-"), (.commit_id // "-"), .created_at, (.panel_run // "-"), (.panel_profile // "-"), (.panel_invocation // "-")] | @tsv' <<<"$revs")
 }
 
 verb_search() {

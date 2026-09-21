@@ -13,7 +13,7 @@
 -- The reviewed commits form a history of coverage. Multiple rows can name
 -- one commit, and each row is immutable.
 
-PRAGMA user_version = 6;
+PRAGMA user_version = 7;
 
 -- The identity of a defect.
 --
@@ -54,9 +54,12 @@ CREATE TABLE bug (
 -- environment of the agents that `bin/review-panel` starts. A run of that
 -- command exports its own identity and the canonical profile of each agent,
 -- so every revision an agent writes names the panel run it belongs to, and
--- the reviewer invocation that filed it. Both are null for every other
--- caller, and null values hold no meaning: the plain authorship rules of
--- `role` and `iteration` stand beside them unchanged.
+-- the reviewer invocation that filed it. `panel_invocation` names the one
+-- invocation of the panel run that wrote the revision, so two invocations
+-- of one run stay distinct even when they hold the same profile. All three
+-- are null for every other caller, and null values hold no meaning: the
+-- plain authorship rules of `role` and `iteration` stand beside them
+-- unchanged.
 CREATE TABLE revision (
   id            INTEGER PRIMARY KEY,
   bug_id        INTEGER NOT NULL REFERENCES bug (id),
@@ -68,7 +71,8 @@ CREATE TABLE revision (
   commit_id     TEXT,
   created_at    TEXT NOT NULL,
   panel_run     TEXT CHECK (panel_run <> ''),
-  panel_profile TEXT CHECK (panel_profile <> '')
+  panel_profile TEXT CHECK (panel_profile <> ''),
+  panel_invocation TEXT CHECK (panel_invocation <> '')
 );
 
 CREATE INDEX revision_bug ON revision (bug_id, id);
@@ -171,6 +175,7 @@ CREATE INDEX reviewed_commit ON reviewed (commit_id);
 -- to version 5 removes commit uniqueness and adds profile, preserving every
 -- review id, hash, iteration, and timestamp, with null for each old profile.
 -- Version 5 to version 6 adds the two panel columns of the revision table,
--- with null for each old revision. All steps preserve bugs, revisions, and
--- citations except the kind rename. Unsupported versions cause an error that
--- names both versions.
+-- with null for each old revision. Version 6 to version 7 adds
+-- `panel_invocation`, with null for each old revision. All steps preserve
+-- bugs, revisions, and citations except the kind rename. Unsupported
+-- versions cause an error that names both versions.
