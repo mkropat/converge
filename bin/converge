@@ -2241,8 +2241,10 @@ integration of the recent work with the old code matters most."
 
 # run_due_review   Step 3 of CV-CONV-18: runs a due final pass or, if none is
 # due, a due cadence pass, then applies the blocking-bug reset. A final pass
-# is due after a done vote left the current HEAD unapproved (CV-CONV-16); it
-# is consumed here whether or not it actually runs, so it is not repeated at
+# is due after a done vote left the current HEAD unapproved (CV-CONV-16), and
+# before the first worker when --consensus is 0: no vote is due then, but
+# convergence still needs approval, so a final pass must run first (CV-CONV-14).
+# It is consumed here whether or not it actually runs, so it is not repeated at
 # an unchanged HEAD. One due final pass replaces a due cadence pass.
 run_due_review() {
   local final_was_due=$FINAL_DUE
@@ -2273,6 +2275,11 @@ ITERATION=0
 CONVERGED_VOTES=0
 APPROVED_HEAD=""
 FINAL_DUE=0
+# --consensus 0 needs no vote (CV-INV-3.15), so convergence must be
+# reachable before the first worker invocation. With review enabled, CV-CONV-14
+# still requires final approval of the current HEAD, so a final pass is due
+# from the start and CV-CONV-18 step 3 runs it before the first worker.
+((CONSENSUS == 0 && REVIEW_ENABLED)) && FINAL_DUE=1
 FAIL_WAIT=0
 PENDING_LOGS=()
 SINCE_COACH=0
