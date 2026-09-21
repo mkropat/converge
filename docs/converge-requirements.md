@@ -125,7 +125,7 @@ These principles explain the intent behind the requirements. Apply them when a r
   - **CV-INV-10.4**: The script must stop with an error when the call gives
     `--init-state` a positional argument or another option of CV-INV-3. Such a
     call carries settings that the init operation cannot use.
-  - **CV-INV-10.5**: A run tests harness commands, as **CV-HARN-11** gives. The init operation must test none, because it makes directories and runs no agent.
+  - **CV-INV-10.5**: A run tests no harness commands; a missing harness fails on its first invocation. The init operation must test none, because it makes directories and runs no agent.
 - **CV-INV-11**: The script must reject `--harness`, `--model`, `--review-model`, and `--coach-model`. It must reject all arguments after `--`. It must name each rejected argument. It must accept no profile option and read no profile configuration file.
 
 ## Requirements scope
@@ -168,7 +168,7 @@ Each role selects a harness, a model, and optional effort through an agent profi
 - **CV-HARN-1**: Retired. Selected one harness for the run. **CV-HARN-8** replaces this behavior.
 - **CV-HARN-2**: Retired. Kept one harness on attach. **CV-HARN-13** preserves the profile lists.
 - **CV-HARN-3**: Retired. Stored the selected harness. **CV-HARN-12** forbids new selection state.
-- **CV-HARN-4**: Retired. Tested one harness. **CV-HARN-11** validates enabled roles.
+- **CV-HARN-4**: Retired. Tested one harness. **CV-HARN-11** validates profile lists.
 - **CV-HARN-5**: Retired. Selected models through options, old environment variables, and harness defaults. **CV-HARN-8** replaces this behavior.
   - **CV-HARN-5.1**: Retired. Defined Claude model defaults. See **CV-HARN-8**.
   - **CV-HARN-5.2**: Retired. Defined OpenCode model defaults. See **CV-HARN-8**.
@@ -182,7 +182,7 @@ Each role selects a harness, a model, and optional effort through an agent profi
 - **CV-HARN-8**: The loop must select ordered, comma-separated profile lists only from `CONVERGE_WORKER_PROFILE`, `CONVERGE_REVIEWER_PROFILE`, and `CONVERGE_COACH_PROFILE`. An unset variable defaults to `claude:sonnet` for the worker and `claude:opus` for the reviewer and coach. An empty value is an error.
 - **CV-HARN-9**: Each profile must have the form `harness:model[:effort]`. The loop must trim spaces around each list entry. Each present field must be nonempty and contain no whitespace, colon, or comma. A model may contain `/`. The harness must be `claude` or `opencode`. The canonical profile is the trimmed entry, with all field values unchanged. The loop must reject duplicate canonical profiles within a role.
 - **CV-HARN-10**: Effort must use the selected harness's native setting. Omitted effort must use the harness default. The loop must reject an unsupported explicit effort. It must never omit or replace explicit effort as a fallback.
-- **CV-HARN-11**: Before the first agent invocation, the loop must validate profile syntax and settings for all enabled roles. It must check that every harness they need is available on PATH. It must report invalid settings before starting any agent. A disabled role must not require an installed harness.
+- **CV-HARN-11**: Before the first agent invocation, the loop must validate profile syntax and settings for all roles, enabled or disabled. It must report invalid settings before starting any agent. The loop tests no harness command; a missing harness fails on its first invocation.
 - **CV-HARN-12**: The loop must ignore old stored harness selection and write no new harness or profile selection state. On a new session, it must reject a set `CONVERGE_HARNESS` or `CONVERGE_<HARNESS>_MODEL`, `CONVERGE_<HARNESS>_REVIEW_MODEL`, or `CONVERGE_<HARNESS>_COACH_MODEL`, for `CLAUDE` or `OPENCODE`, including empty values. The error must name the old variable and direct the operator to the role profile variables.
 - **CV-HARN-13**: The loop must take a session snapshot of the profile lists. An attached client must leave these lists unchanged, even if its environment differs. A new session must read its own environment.
 - **CV-HARN-14**: Each role must use its list in independent round-robin order. Each session must start each role at its first entry. Cadence and final passes must share the reviewer sequence. Each started invocation consumes one turn, including a failure or timeout. A skipped or disabled invocation consumes no turn. Failure must not cause a fallback invocation. The next normally scheduled invocation must use the next entry.
@@ -446,3 +446,4 @@ These are recorded decisions, not oversights.
 - **CV-OOS-29**: Retired. Accepted convergence without whole-code approval. **CV-CONV-15** requires session approval; **CV-OOS-31** rejects durable approval.
 - **CV-OOS-30** — **Failure fallback**: rejected. Failure must not select an extra invocation or another profile. Normal round-robin selection remains required under **CV-HARN-14**.
 - **CV-OOS-31** — **Durable final approval**: rejected. Reviewed-commit records survive a restart, but final approval does not. A new session requires fresh approval under **CV-CONV-15**.
+- **CV-OOS-32** — **Up-front harness availability checking**: rejected. The loop starts the harness command directly, so a missing harness fails on its first invocation. A pre-flight check must gather the harness names from the profile lists, and the PATH can still change between the check and the first invocation. The check also gives a disabled role power over a run: a missing coach harness would stop a run whose coach never runs.

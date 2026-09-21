@@ -669,8 +669,9 @@ wait_child() {
 # permission prompts disabled, and with a message stream on stdout. An empty
 # effort omits the flag, so the harness applies its own default (CV-HARN-10).
 #
-# The validation that the harness is on PATH happens earlier, once for the
-# session, in validate_profiles.
+# The validation that a profile list parses happens earlier, once for the
+# session. No check tests that the harness command is on PATH (CV-OOS-32), so
+# the first invocation reports a missing harness itself.
 harness_argv() {
   local harness=$1 model=$2 effort=$3 prompt=$4
   case $harness in
@@ -1089,15 +1090,6 @@ parse_profile_list coach "$COACH_PROFILE_RAW" COACH_PROFILES
 WORKER_PROFILE_IDX=0
 REVIEWER_PROFILE_IDX=0
 COACH_PROFILE_IDX=0
-
-# CV-HARN-11: validate every enabled role before the first invocation, and
-# check on PATH only the harnesses that an enabled role actually needs. A
-# disabled role requires no installed harness.
-declare -A NEEDED_HARNESSES=()
-for p in "${WORKER_PROFILES[@]}"; do NEEDED_HARNESSES[${p%%:*}]=1; done
-((! REVIEW_ENABLED)) || for p in "${REVIEWER_PROFILES[@]}"; do NEEDED_HARNESSES[${p%%:*}]=1; done
-((! COACH_ENABLED)) || for p in "${COACH_PROFILES[@]}"; do NEEDED_HARNESSES[${p%%:*}]=1; done
-for h in "${!NEEDED_HARNESSES[@]}"; do need_tool "$h"; done
 
 # The message stream of every invocation travels through a named pipe in the
 # runtime directory, so that the transcript shows live while the log file
