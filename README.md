@@ -1,6 +1,20 @@
 # converge
 
-Tools that run autonomous agent iterations against a repository.
+converge runs autonomous coding agents to bring a repository into agreement with
+its requirements. Each iteration starts with a fresh worker. The worker reads
+the requirements, inspects the current code and open bugs, and chooses one
+useful change. It decides what to do next from the current state, not from a
+stored implementation plan.
+
+Three roles keep the work directed: the worker changes the code, a separate
+reviewer checks it against the requirements, and a coach uses run history to
+correct recurring process failures. Bug history and coach guidance carry over
+between iterations and runs.
+
+By default, the loop finishes only after two consecutive worker votes that the
+work is complete, no open code bugs or human-requested tasks, and a successful
+final review of the current Git `HEAD`. These checks do not prove correctness
+or require automated tests.
 
 ## Commands
 
@@ -92,3 +106,21 @@ restart keeps what the coach learned.
 
 Nothing removes the old logs. Delete the directory of a repository when you no
 longer need them.
+
+## Comparison with Ralph
+
+Both loops use fresh agent contexts and saved state. The table compares
+converge's implementation with Ralph's documented behavior, not an audit of
+Ralph's source.
+
+| Area | converge | Ralph |
+| --- | --- | --- |
+| Work selection | Each worker chooses one useful change from requirements, current code, and open bugs. No stored implementation plan. | Each iteration selects one incomplete task from a prepared task plan. |
+| Review and guidance | Separate reviewer and coach roles check the code and correct recurring process failures. | Separate review is optional. A human supplies steering instructions. |
+| Completion | By default, two consecutive worker votes, no open code bugs or tasks, and final review approval of the current `HEAD`. | The agent updates task status, runs checks, and emits a completion signal that the runner accepts. |
+| Scope and history | Tracks code defects, requirements problems, and human-requested tasks separately, with revision history. Requirements problems do not block completion. | Stores task specifications, acceptance criteria, progress flags, and a journal. |
+| State location | Keeps loop state outside the repository. | Keeps loop state in the project's `.agent/` directory. |
+| Execution isolation | Launches agents directly with permission bypass or automatic approval. No built-in sandbox. | Runs agents in Docker Sandbox microVMs with filesystem and network controls. |
+| Verification workflow | Leaves test procedures to project requirements and the agent harness. No mandatory test command. | Supplies testing and UI workflow instructions and skills. These are not independently enforced checks. |
+| Agent selection | Supports Claude and OpenCode, with separate model rotation for each role. | Documents six agent backends, with operator-selected agents and models. |
+| Run limits and human decisions | No worker-iteration limit by default. No dedicated signal to stop for a human decision. | Defaults to 10 iterations. Separate signals stop for a blocker or a human decision. |
