@@ -412,17 +412,34 @@ strip_style() {
   sed -E $'s/\x1b\\[[0-9;]*m//g' <<<"$1"
 }
 
+# STREAM_LABEL   The text that names the concurrent invocation that the
+# stream belongs to, such as "reviewer 1/3". format_stream sets it for its
+# own subshell. gutter prints it before every transcript line and tags the
+# event log with it, so concurrent output stays attributable to its source
+# (RP-OUT-2). It is empty for the merge stream, which runs alone.
+STREAM_LABEL=""
+
 # gutter <color> <marker> <text> <tag>   Prints one transcript line, behind a
 # rule, and writes the same line to the event log as plain text (CV-OUT-11).
+# When STREAM_LABEL is set, the display carries it before the line, and the
+# event log tag carries it, so a reader can tell which invocation wrote the
+# line (RP-OUT-2).
 gutter() {
-  local marker=$2 tag=${4:-}
+  local marker=$2 tag=${4:-} text=$3
   if [[ -z $marker && -z $3 ]]; then
     printf '  %s%s%s\n' "$DIM" "$G_GUT" "$OFF"
     return
   fi
   [[ -z $marker ]] && marker=" "
-  printf '  %s%s%s %s%s%s %s%s\n' \
-    "$DIM" "$G_GUT" "$OFF" "$1" "$marker" "$OFF" "$3" "$OFF"
+  if [[ -n $STREAM_LABEL ]]; then
+    [[ -n $tag ]] && tag="$STREAM_LABEL $tag" || tag=$STREAM_LABEL
+    printf '  %s%s%s %s%s%s %s%s%s %s%s\n' \
+      "$DIM" "$G_GUT" "$OFF" "$1" "$marker" "$OFF" \
+      "$DIM" "$STREAM_LABEL" "$OFF" "$text" "$OFF"
+  else
+    printf '  %s%s%s %s%s%s %s%s\n' \
+      "$DIM" "$G_GUT" "$OFF" "$1" "$marker" "$OFF" "$text" "$OFF"
+  fi
   if [[ -n $tag ]]; then
     note "[$tag] $(strip_style "$3")"
   else
@@ -1160,17 +1177,23 @@ print_start_line() {
 # run_reviewer <index> <count> <profile>
 # Starts one reviewer invocation in the background, in a session of its
 # own, without waiting for another (RP-REV-1). The message stream goes
-# straight into its transcript file: the reviewers run at the same time,
-# and merging several live streams into one terminal could not keep every
-# line attributable to its source (RP-OUT-2). The transcript opens with the
+# through a per-invocation named pipe to two readers: the transcript file
+# keeps every message, and a formatter shows the work as it happens, the
+# way converge renders one invocation. Every transcript line carries the
+# reviewer label, so the interleaved streams of concurrent reviewers stay
+# attributable to their source (RP-OUT-2). The transcript opens with the
 # invocation event, so a reader of the file alone knows the role and the
 # full canonical profile (RP-OUT-2, RP-OUT-9).
 #
 # The index is 1-based and names the reviewer to the operator only. The
-# controller keeps RUN_REVIEWS and INV_STARTS at the 0-based position of
-# AGENT_PIDS and REVIEW_STATUSES, which the wait loop below reads back, so
-# every closing event, stderr read, and duration belongs to its own
-# invocation (RP-OUT-2, RP-OUT-9).
+# controller keeps RUN_REVIEWS, INV_STARTS, and FORMATTERS at the 0-based
+# position of AGENT_PIDS and REVIEW_STATUSES, which the wait loop below
+# reads back, so every closing event, stderr read, duration, and transcript
+# drain belongs to its own invocation (RP-OUT-2, RP-OUT-9).
+#
+# A transient failure to make the pipe runs the reviewer without a live
+# transcript, exactly as the merge path judges such an invocation by its
+# exit status.
 #
 # The environment names the one invocation of this panel run that the agent
 # belongs to, so the bug tracker can tell two invocations of one run apart
@@ -1180,6 +1203,10 @@ run_reviewer() {
   local index=$1 count=$2 profile=$3
   split_profile "$profile"
   local harness=$SPLIT_HARNESS model=$SPLIT_MODEL effort=$SPLIT_EFFORT
+  # The formatter of this invocation renders the stream of this harness
+  # (RP-OUT-2): stream_filter reads INVOCATION_HARNESS of the forked
+  # subshell, so the variable must hold this reviewer's harness.
+  INVOCATION_HARNESS=$harness
   printf -v seq '%04d' $((++SEQ))
   local stem="$PANEL_ID-$seq-reviewer" end_file
   LOG="$LOG_DIR/$stem.jsonl"
@@ -1206,31 +1233,72 @@ run_reviewer() {
   note "reviewer $index/$count start: profile=$profile stem=$stem log=$LOG"
   print_start_line "$G_REVIEW" "reviewer $index/$count" "$profile" "$LOG"
 
-  (
-    trap '' INT
-    exec setsid env \
-      -u CONVERGE_ITERATION \
-      -u CONVERGE_SESSION \
-      -u CONVERGE_DAEMON \
-      -u REVIEW_PANEL_RUN \
-      -u REVIEW_PANEL_PROFILE \
-      -u REVIEW_PANEL_INVOCATION \
-      CONVERGE_ROLE=reviewer \
-      CONVERGE_RUN_DIR="$RUN_DIR" \
-      REVIEW_PANEL_RUN="$PANEL_ID" \
-      REVIEW_PANEL_PROFILE="$profile" \
-      REVIEW_PANEL_INVOCATION="$stem" \
-      PATH="$AGENT_PATH" \
-      timeout -k 10 "$TIMEOUT" "${ARGV[@]}"
-  ) >>"$LOG" 2>>"$LOG_DIR/$stem.err" </dev/null &
-  AGENT_PIDS+=("$!")
+  # The writer (the harness) opens the pipe for writing, and tee holds the
+  # read end, so the two ends connect without a race. The pipe name carries
+  # the panel run id and the invocation stem, so concurrent agents of this
+  # run and of another never share one pipe (RP-RUN-4).
+  TRANSCRIPT_ACCENT=$BLUE
+  FINAL_DRAWN=0
+  STREAM_LABEL="reviewer $index/$count"
+  local fifo="$RUNTIME_DIR/panel-stream-$PANEL_ID-$stem" fifo_ok=0
+  rm -f "$fifo"
+  if mkfifo "$fifo" 2>/dev/null; then
+    fifo_ok=1
+    ( trap '' INT TERM; tee -a "$LOG" <"$fifo" | format_stream "$BLUE" ) &
+    FORMATTERS[$((index - 1))]=$!
+    (
+      trap '' INT
+      exec setsid env \
+        -u CONVERGE_ITERATION \
+        -u CONVERGE_SESSION \
+        -u CONVERGE_DAEMON \
+        -u REVIEW_PANEL_RUN \
+        -u REVIEW_PANEL_PROFILE \
+        -u REVIEW_PANEL_INVOCATION \
+        CONVERGE_ROLE=reviewer \
+        CONVERGE_RUN_DIR="$RUN_DIR" \
+        REVIEW_PANEL_RUN="$PANEL_ID" \
+        REVIEW_PANEL_PROFILE="$profile" \
+        REVIEW_PANEL_INVOCATION="$stem" \
+        PATH="$AGENT_PATH" \
+        timeout -k 10 "$TIMEOUT" "${ARGV[@]}"
+    ) >"$fifo" 2>>"$LOG_DIR/$stem.err" </dev/null &
+    AGENT_PIDS+=("$!")
+  else
+    FORMATTERS[$((index - 1))]=0
+    warn "cannot create the stream pipe for reviewer $index/$count; it runs without a live transcript"
+    (
+      trap '' INT
+      exec setsid env \
+        -u CONVERGE_ITERATION \
+        -u CONVERGE_SESSION \
+        -u CONVERGE_DAEMON \
+        -u REVIEW_PANEL_RUN \
+        -u REVIEW_PANEL_PROFILE \
+        -u REVIEW_PANEL_INVOCATION \
+        CONVERGE_ROLE=reviewer \
+        CONVERGE_RUN_DIR="$RUN_DIR" \
+        REVIEW_PANEL_RUN="$PANEL_ID" \
+        REVIEW_PANEL_PROFILE="$profile" \
+        REVIEW_PANEL_INVOCATION="$stem" \
+        PATH="$AGENT_PATH" \
+        timeout -k 10 "$TIMEOUT" "${ARGV[@]}"
+    ) >>"$LOG" 2>>"$LOG_DIR/$stem.err" </dev/null &
+    AGENT_PIDS+=("$!")
+  fi
+  STREAM_LABEL=""
 }
 
 # run_merge_agent <prompt> <profile>
 # Runs the one merge-agent invocation: live transcript on the terminal,
-# every message in the log file. Sets MERGE_STATUS and MERGE_SECONDS.
+# every message in the log file. The merge stream runs alone, so its lines
+# carry no label and the tag scheme of its notes does not change. Sets
+# MERGE_STATUS and MERGE_SECONDS.
 run_merge_agent() {
   local prompt=$1 profile=$2
+  TRANSCRIPT_ACCENT=$MAGENTA
+  FINAL_DRAWN=0
+  STREAM_LABEL=""
   split_profile "$profile"
   local harness=$SPLIT_HARNESS model=$SPLIT_MODEL effort=$SPLIT_EFFORT
   local started=$SECONDS
@@ -1256,8 +1324,6 @@ run_merge_agent() {
   fifo="$RUNTIME_DIR/panel-stream-$PANEL_ID"
   rm -f "$fifo"
   if mkfifo "$fifo" 2>/dev/null; then
-    TRANSCRIPT_ACCENT=$MAGENTA
-    FINAL_DRAWN=0
     ( trap '' INT TERM; tee -a "$LOG_FILE" <"$fifo" \
       | format_stream "$MAGENTA" ) &
     FORMATTER=$!
@@ -1406,6 +1472,7 @@ PANEL_PROMPT=$(reviewer_prompt)
 RUN_REVIEWS=()
 INV_STARTS=()
 REVIEW_STATUSES=()
+FORMATTERS=()
 REVIEW_FAILED=0
 # The finding bookkeeping is defined from the start, so an operator stop
 # that arrives at any point leaves the same honest report.
@@ -1441,6 +1508,16 @@ for ((i = 0; i < RUN_STARTED; i++)); do
   profile=${REVIEWER_PROFILES[$i]}
   stem=${RUN_REVIEWS[$i]:-}
   seconds=$((SECONDS - INV_STARTS[$i]))
+  # The writer (the harness) closed the pipe. Let the reviewer's transcript
+  # finish before the result line reports its outcome, so that the lines
+  # stay in order and the drain belongs to this invocation's position
+  # (RP-OUT-2, RP-OUT-9). The formatter of a reviewer that runs without a
+  # pipe is 0, and a drain waits for nothing.
+  if [[ -n $stem && -n ${FORMATTERS[$i]:-} && ${FORMATTERS[$i]} -ne 0 ]]; then
+    wait_child "${FORMATTERS[$i]}" 2>/dev/null
+    FORMATTERS[$i]=0
+    rm -f "$RUNTIME_DIR/panel-stream-$PANEL_ID-$stem"
+  fi
   # The invocation recorded its own runtime when the harness exited. The
   # controller reaps one reviewer after another, so the reap arithmetic
   # alone would report a late-exited reviewer as running until the reap of
