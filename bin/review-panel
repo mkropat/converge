@@ -133,6 +133,25 @@ REPO="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$RUN_DIR")"
 # within it, and a hash of the absolute path (RP-REL-3). The panel therefore
 # reads and writes the same state, the same logs directory, and the same
 # bug database that converge uses.
+#
+# The agents need the GNU timeout and the GNU setsid that converge uses,
+# and Homebrew keeps them off the normal PATH on macOS. Put them on the PATH
+# of this script and of the agents it starts, the same way converge does
+# (CV-PLAT-4).
+#
+# This prepend happens before the panel derives the state directory name
+# (CB-DB-2): the hash below prefers md5sum, and converge and cbugs run the
+# prepend before their own hash, so the prepend order decides which hash one
+# run directory gets. Doing it late makes the panel fall back to cksum on a
+# plain macOS PATH while cbugs hashes with md5sum, and one run directory would
+# then hold two state directories.
+for brew_prefix in "${HOMEBREW_PREFIX:-}" /opt/homebrew /usr/local; do
+  [[ -n $brew_prefix ]] || continue
+  for bin_dir in "$brew_prefix/opt/coreutils/libexec/gnubin" \
+                 "$brew_prefix/opt/util-linux/bin"; do
+    [[ -d $bin_dir ]] && PATH="$bin_dir:$PATH"
+  done
+done
 hash_path() {
   if command -v md5sum >/dev/null 2>&1; then
     printf '%s' "$1" | md5sum | cut -c1-12
@@ -166,18 +185,6 @@ if ! mkdir -p "$LOG_DIR" "$RUNTIME_DIR"; then
   exit 2
 fi
 chmod 700 "$RUNTIME_DIR" 2>/dev/null || true
-
-# The agents need the GNU timeout and the GNU setsid that converge uses,
-# and Homebrew keeps them off the normal PATH on macOS. Put them on the PATH
-# of this script and of the agents it starts, the same way converge does
-# (CV-PLAT-4).
-for brew_prefix in "${HOMEBREW_PREFIX:-}" /opt/homebrew /usr/local; do
-  [[ -n $brew_prefix ]] || continue
-  for bin_dir in "$brew_prefix/opt/coreutils/libexec/gnubin" \
-                 "$brew_prefix/opt/util-linux/bin"; do
-    [[ -d $bin_dir ]] && PATH="$bin_dir:$PATH"
-  done
-done
 
 # need_tool <command> [macOS Homebrew formula]
 need_tool() {

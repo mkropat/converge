@@ -221,6 +221,24 @@ fi
 RUN_DIR="$(pwd -P)"
 REPO="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$RUN_DIR")"
 
+# The loop needs the GNU versions of the tools below. macOS supplies the BSD
+# versions, and Homebrew keeps the GNU versions off the normal PATH. Put them
+# on the PATH of this script and of the agents that it starts.
+#
+# This prepend happens before the loop derives the state directory name
+# (CB-DB-2): the hash below prefers md5sum, and cbugs and review-panel run the
+# prepend before their own hash, so the prepend order decides which hash one
+# run directory gets. Doing it late makes converge fall back to cksum on a
+# plain macOS PATH while cbugs hashes with md5sum, and one run directory would
+# then hold two state directories.
+for brew_prefix in "${HOMEBREW_PREFIX:-}" /opt/homebrew /usr/local; do
+  [[ -n $brew_prefix ]] || continue
+  for bin_dir in "$brew_prefix/opt/coreutils/libexec/gnubin" \
+                 "$brew_prefix/opt/util-linux/bin"; do
+    [[ -d $bin_dir ]] && PATH="$bin_dir:$PATH"
+  done
+done
+
 # State lives outside the repository, at a path that is stable per run
 # directory.
 hash_path() {
@@ -290,17 +308,6 @@ if ((INIT_STATE)); then
   printf '%s\n' "$STATE_DIR"
   exit 0
 fi
-
-# The loop needs the GNU versions of the tools below. macOS supplies the BSD
-# versions, and Homebrew keeps the GNU versions off the normal PATH. Put them
-# on the PATH of this script and of the agents that it starts.
-for brew_prefix in "${HOMEBREW_PREFIX:-}" /opt/homebrew /usr/local; do
-  [[ -n $brew_prefix ]] || continue
-  for bin_dir in "$brew_prefix/opt/coreutils/libexec/gnubin" \
-                 "$brew_prefix/opt/util-linux/bin"; do
-    [[ -d $bin_dir ]] && PATH="$bin_dir:$PATH"
-  done
-done
 
 # need_tool <command> [macOS Homebrew formula]
 need_tool() {
