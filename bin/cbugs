@@ -322,8 +322,8 @@ create_state_dir() {
 # any directory, including one that is not a converge project.
 #
 # Skip the token after a value-taking option, so a literal '-h' or '--help'
-# given as a --title, --note, --cite, --commit, or --status value is not
-# mistaken for the flag.
+# given as a --title, --note, --cite, --commit, --status, or --panel-run
+# value is not mistaken for the flag.
 HELP_REQUESTED=0
 skip_next=0
 for arg in "$@"; do
@@ -333,7 +333,7 @@ for arg in "$@"; do
   fi
   case $arg in
     -h|--help) HELP_REQUESTED=1 ;;
-    --title|--kind|--note|--cite|--commit|--status|--iteration|--profile|--completed-at) skip_next=1 ;;
+    --title|--kind|--note|--cite|--commit|--status|--iteration|--profile|--completed-at|--panel-run) skip_next=1 ;;
   esac
 done
 
