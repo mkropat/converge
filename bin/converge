@@ -905,7 +905,7 @@ report_last_run() {
 attach() {
   local session=$1 mode=$2
   local out="$SESSION_DIR/$session.out"
-  local pid replay lines status
+  local pid replay lines status replay_check
 
   pid=$(first_line "$RUNTIME_DIR/$session.pid")
   if ! is_number "$pid"; then
@@ -933,16 +933,14 @@ attach() {
     replay=$((lines - 4))
     ((replay < 5)) && replay=5
     tail -n "$replay" "$out"
-    # CV-BG-5.2: the follow must show the new output, so it must start at a
-    # line number that no line lives below. Count the lines right after the
-    # replay, and start the follow one line after the count: every line the
-    # loop appends from here on, before or while the follow starts, is at
-    # or after that number, and tail re-reads the count when it opens. The
-    # count and the follow are two reads, so one line can in principle
-    # still fall between them; without the count, a whole heading's worth
-    # of lines fell under every attach.
-    replay_end=$(wc -l <"$out" 2>/dev/null)
-    is_number "$replay_end" || replay_end=0
+    while :; do
+      replay_end=$(wc -l <"$out" 2>/dev/null)
+      replay_check=$(wc -l <"$out" 2>/dev/null)
+      is_number "$replay_end" || replay_end=0
+      is_number "$replay_check" || replay_check=$replay_end
+      [[ $replay_end == "$replay_check" ]] && break
+    done
+
     heading "$BLUE" "attached to the loop from $(session_start "$session")" \
       "$(grep -aoE 'iteration [0-9]+' "$out" | tail -n 1)"
   fi
