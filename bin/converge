@@ -1868,7 +1868,7 @@ report_changes() {
   local -a dirty=()
   after=$(git rev-parse HEAD 2>/dev/null) || after=
   if [[ -z $after || ( -n $before && $before == "$after" ) ]]; then
-    info "no new commits"
+    info "no new commits, 0 files changed, 0 lines changed"
   else
     # An empty $before means the repository had no commit at all before this
     # invocation. There is nothing to range from, so count and list every
