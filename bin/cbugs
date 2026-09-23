@@ -1294,7 +1294,7 @@ verb_search() {
    )) FROM revision rv WHERE rv.bug_id = bc.id)
  ) AS value
  FROM bug_current bc
- WHERE $where$panel_extra
+ WHERE ${where:-1}$panel_extra
  ORDER BY revision_id DESC;
  ") || exit 1
   rows=$(python3 -c '
@@ -1311,7 +1311,7 @@ for record in json.load(sys.stdin):
     if needle in "\\n".join(texts).casefold():
         result.append(bug)
 print(json.dumps(result, ensure_ascii=False))
-' "$text" <<<"$rows")
+' "$text" <<<"${rows:-[]}")
   print_listing "$rows" "$json"
 
 }
