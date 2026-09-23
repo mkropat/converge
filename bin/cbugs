@@ -1258,6 +1258,7 @@ WHERE r.bug_id = $id ORDER BY c.id ASC;
 }
 
 verb_search() {
+  need_tool python3 python
   local text="" json=0 panel_run=""
   local -a kinds=() statuses=()
   [[ ${1:-} == -h || ${1:-} == --help ]] && { usage_search; exit 0; }
