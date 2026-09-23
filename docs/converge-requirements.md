@@ -35,6 +35,7 @@ These are the section codes.
 | `ITER` | Iteration behavior |
 | `ENV` | The environment of an agent |
 | `OUT` | Output |
+| `COST` | Cost tracking |
 | `CONV` | Convergence and stopping |
 | `REV` | Reviewer |
 | `COACH` | Coach |
@@ -278,6 +279,21 @@ The operator starts a run over a connection that can break, and the run survives
 - **CV-OUT-12**: After each review pass, the loop must report the number of commits that the pass recorded. The report of a final pass must say that the pass read the whole code.
 
 - **CV-OUT-13**: The loop must find the bugs of a pass by comparing the bug lists before and after the pass. It must also check blocking-bug counts under **CV-CONV-17**.
+
+## Cost tracking
+
+- **CV-COST-1**: The loop must track recorded cost for each worker, reviewer, and coach invocation. It must use the harness total, or the cost computed from the message stream under **CV-HARN-7.2**, without counting the same cost twice. A cost is absent when neither source supplies cost data. The loop must not treat absent cost as a recorded zero.
+- **CV-COST-2**: Session spend must be the sum of recorded invocation costs for one loop session. It must include startup invocations and invocations that fail, time out, or stop, when they have recorded cost. An attached client must not start a new cost session or count costs again.
+- **CV-COST-3**: The average cost for each role must be its recorded spend divided by its number of invocations with recorded cost. An explicit recorded zero must count as one sample. An invocation with no recorded cost must not count as a sample. Each reviewer invocation must count separately, including a startup review. Worker iteration counts must not serve as the divisor for reviewer or coach averages.
+- **CV-COST-4**: Cumulative costs must include the current session and saved costs from all prior sessions for the same absolute run-directory path, under **CV-ID-1** and **CV-ID-3**. Cumulative role averages must use total recorded role spend divided by total recorded samples for that role, not an average of session averages. Cost history must start with sessions that use this feature. The loop must not import costs from older session logs.
+- **CV-COST-5**: Cost history must identify an agent profile by its canonical `harness:model[:effort]` under **CV-HARN-9**. It must combine that profile's spend across roles and sessions. Changes to other settings must not create a separate cost identity. Omitted effort remains omitted in the identity, even if the harness default changes. Cost history must not select profiles for a later session.
+- **CV-COST-6**: The closing report must include a cost summary on every graceful session exit. This includes convergence, the iteration limit, and the stop after the first Ctrl-C. A second Ctrl-C, SIGTERM under **CV-FAIL-9**, a crash, or a forced kill does not require a cost summary. The closing-report requirements elsewhere in this document still apply.
+- **CV-COST-7**: The cost summary must be a table with exactly three columns: label, session cost, and cumulative cost. It must contain these rows in order:
+  - **CV-COST-7.1**: Total spend.
+  - **CV-COST-7.2**: Average cost per worker invocation, per reviewer invocation, and per coach invocation, in separate rows.
+  - **CV-COST-7.3**: Spend per agent profile used by at least one started invocation in the current session, in separate rows. The first column must identify the full canonical profile. Profiles must not become column headers. A profile configured but not used in the current session must have no row. A profile used only in prior sessions must have no row, but its costs and samples must remain in cumulative totals and role averages.
+- **CV-COST-8**: The table must show costs in USD. It must use enough decimal places to distinguish a small nonzero cost from zero. Exact decimal formatting is not prescribed. An average with no recorded samples must show `—`. A spend cell with no recorded costs must also show `—`. An explicit recorded zero must show zero. The summary must show recorded costs only, without a warning about absent costs.
+- **CV-COST-9**: On every graceful session exit, the loop must save enough cost history in the state directory to produce later cumulative summaries. Saving costs during a session is optional. A crash, a second Ctrl-C, or another immediate stop may lose that session's costs. Costs saved before such a stop must count in later summaries. Each cost and sample must count at most once, including after a client attaches again or a session ends. The storage format is not prescribed. Prefer a simple implementation over additional recovery behavior.
 
 ## Convergence and stopping
 
