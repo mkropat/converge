@@ -1310,7 +1310,7 @@ for record in json.load(sys.stdin):
         texts.extend((revision.get("title") or "", revision.get("note") or ""))
         for citation in revision.get("citations") or []:
             texts.extend((citation.get("path") or "", citation.get("req") or ""))
-    if needle in "\\n".join(texts).casefold():
+    if any(needle in t.casefold() for t in texts):
         result.append(bug)
 print(json.dumps(result, ensure_ascii=False))
 ' "$text" <<<"${rows:-[]}") || {
