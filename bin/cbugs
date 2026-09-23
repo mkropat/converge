@@ -1254,14 +1254,14 @@ WHERE r.bug_id = $id ORDER BY c.id ASC;
     done < <(jq -r --argjson i "$rid" \
       '.[] | select(.id == $i) | .citations[] | .path + (if .req then ":" + .req else "" end)' \
       <<<"$revs")
-  done < <(jq -r '.[] | [.id, .status, .title, (.role // "-"), (.iteration // "-"), (.commit_id // "-"), .created_at, (.panel_run // "-"), (.panel_profile // "-"), (.panel_invocation // "-")] | @tsv' <<<"$revs")
+  done < <(jq -r '.[] | [.id, .status, .title, (.note // ""), (.role // "-"), (.iteration // "-"), (.commit_id // "-"), .created_at, (.panel_run // "-"), (.panel_profile // "-"), (.panel_invocation // "-")] | @tsv' <<<"$revs")
 }
 
 verb_search() {
-  need_tool python3 python
   local text="" json=0 panel_run=""
   local -a kinds=() statuses=()
   [[ ${1:-} == -h || ${1:-} == --help ]] && { usage_search; exit 0; }
+  need_tool python3 python
   [[ $# -ge 1 && $1 != -* ]] || { usage_search; exit 2; }
   text=$1; shift
   while (($#)); do
