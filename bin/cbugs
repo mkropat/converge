@@ -1349,10 +1349,22 @@ count_pending() {
   # that change a path under it. A commit that touches no such path is not
   # pending, however near the root of the repository it sits.
   if [[ $REPO == "$RUN_DIR" ]]; then
-    reachable=$(git -C "$REPO" rev-list HEAD 2>/dev/null || true)
+    if ! reachable=$(git -C "$REPO" rev-list HEAD 2>"$ERRFILE"); then
+      echo "cbugs: cannot read repository history" >&2
+      while IFS= read -r row; do
+        [[ -n $row ]] && echo "cbugs: $row" >&2
+      done <"$ERRFILE"
+      return 1
+    fi
   else
     rel=${RUN_DIR#"$REPO"/}
-    reachable=$(git -C "$REPO" rev-list HEAD -- ":(top,literal)$rel" 2>/dev/null || true)
+    if ! reachable=$(git -C "$REPO" rev-list HEAD -- ":(top,literal)$rel" 2>"$ERRFILE"); then
+      echo "cbugs: cannot read repository history" >&2
+      while IFS= read -r row; do
+        [[ -n $row ]] && echo "cbugs: $row" >&2
+      done <"$ERRFILE"
+      return 1
+    fi
   fi
   # No commit, no reachable history, or no relevant commit: print nothing,
   # exit 0.
