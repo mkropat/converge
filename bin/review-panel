@@ -1250,8 +1250,8 @@ run_reviewer() {
   # written, leaves behind.
   end_file="$RUNTIME_DIR/$stem.end"
   rm -f "$end_file"
-  ARGV=(bash -c 'end="$1"; shift; "$@"; rc=$?; printf "%s\n" "$SECONDS" >"$end"; exit "$rc"' \
-    _ "$end_file" "${ARGV[@]}")
+ARGV=(bash -c 'end="$1"; shift; "$@" & child=$!; trap "kill -TERM $child 2>/dev/null; wait $child; exit 124" TERM INT; wait "$child"; rc=$?; printf "%s\n" "$SECONDS" >"$end"; exit "$rc"' \
+     _ "$end_file" "${ARGV[@]}")
   invocation_event reviewer "$profile" "$harness" "$model" "$effort" "$LOG"
   printf '%s\n' "$PANEL_PROMPT" >"$LOG_DIR/$stem.prompt.md"
   note "reviewer $index/$count start: profile=$profile stem=$stem log=$LOG"
@@ -1285,7 +1285,7 @@ run_reviewer() {
         REVIEW_PANEL_PROFILE="$profile" \
         REVIEW_PANEL_INVOCATION="$stem" \
         PATH="$AGENT_PATH" \
-        timeout -k 10 "$TIMEOUT" "${ARGV[@]}"
+        timeout --foreground -k 10 "$TIMEOUT" "${ARGV[@]}"
     ) >"$fifo" 2>>"$LOG_DIR/$stem.err" </dev/null &
     AGENT_PIDS+=("$!")
   else
@@ -1306,7 +1306,7 @@ run_reviewer() {
         REVIEW_PANEL_PROFILE="$profile" \
         REVIEW_PANEL_INVOCATION="$stem" \
         PATH="$AGENT_PATH" \
-        timeout -k 10 "$TIMEOUT" "${ARGV[@]}"
+        timeout --foreground -k 10 "$TIMEOUT" "${ARGV[@]}"
     ) >>"$LOG" 2>>"$LOG_DIR/$stem.err" </dev/null &
     AGENT_PIDS+=("$!")
   fi
@@ -1368,7 +1368,7 @@ run_merge_agent() {
         REVIEW_PANEL_PROFILE="$profile" \
         REVIEW_PANEL_INVOCATION="$MERGE_STEM" \
         PATH="$AGENT_PATH" \
-        timeout -k 10 "$TIMEOUT" "${ARGV[@]}"
+        timeout --foreground -k 10 "$TIMEOUT" "${ARGV[@]}"
     ) >"$fifo" 2>>"$LOG_DIR/$MERGE_STEM.err" &
   else
     FORMATTER=0
@@ -1388,7 +1388,7 @@ run_merge_agent() {
         REVIEW_PANEL_PROFILE="$profile" \
         REVIEW_PANEL_INVOCATION="$MERGE_STEM" \
         PATH="$AGENT_PATH" \
-        timeout -k 10 "$TIMEOUT" "${ARGV[@]}"
+        timeout --foreground -k 10 "$TIMEOUT" "${ARGV[@]}"
     ) </dev/null >>"$LOG_FILE" 2>>"$LOG_DIR/$MERGE_STEM.err" &
   fi
   MERGE_PID=$!
