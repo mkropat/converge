@@ -1501,7 +1501,7 @@ verb_reviewed_add() {
       echo "cbugs reviewed add: name the commits to record, as arguments or on standard input, one per line" >&2
       exit 2
     fi
-    while IFS=$' \t\r' read -r value || [[ -n $value ]]; do
+    while IFS= read -r value || [[ -n $value ]]; do
       [[ -n $value ]] && commits+=("$value")
     done
   fi
