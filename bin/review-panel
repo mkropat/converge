@@ -1251,7 +1251,15 @@ run_reviewer() {
   # written, leaves behind.
   end_file="$RUNTIME_DIR/$stem.end"
   rm -f "$end_file"
-ARGV=(bash -c 'end="$1"; shift; "$@" & child=$!; trap "kill -TERM $child 2>/dev/null; wait $child; exit 124" TERM INT; wait "$child"; rc=$?; printf "%s\n" "$SECONDS" >"$end"; exit "$rc"' \
+# The harness runs under its own setsid, so it and every child it spawns
+# form one inner process group of their own: the trap then TERMs the whole
+# group, not only the direct child. A grandchild that survives its direct
+# ancestor would otherwise inherit this stream pipe's write end and hold
+# tee open forever, and the controller would never drain the formatter nor
+# finish the reap: the invocation would outlive --timeout indefinitely
+# (RP-REV-6, RP-RUN-4). The plain kill is the fallback for a child whose
+# group is already gone.
+ARGV=(bash -c 'end="$1"; shift; setsid "$@" & child=$!; trap "kill -TERM -$child 2>/dev/null; kill -TERM $child 2>/dev/null; wait $child; exit 124" TERM INT; wait "$child"; rc=$?; printf "%s\n" "$SECONDS" >"$end"; exit "$rc"' \
      _ "$end_file" "${ARGV[@]}")
   invocation_event reviewer "$profile" "$harness" "$model" "$effort" "$LOG"
   printf '%s\n' "$PANEL_PROMPT" >"$LOG_DIR/$stem.prompt.md"
