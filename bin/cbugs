@@ -164,12 +164,14 @@ usage_reviewed_pending() {
   cat >&2 <<'EOF'
 Usage: cbugs reviewed pending [--json]
 
-Prints the commits that no row of the reviewed table names and that git
-reaches from the HEAD of the repository, the newest first: one line for
-each commit, with the full hash and the subject.
+Prints the unreviewed commits, the newest first: one line for each commit,
+with the full hash and the subject. A commit is relevant when it changes one
+or more paths in the run directory; the command reads it as relevant when the
+repository HEAD reaches it and no row of the reviewed table names it. A call
+from the root of the repository makes every reachable commit relevant.
 
-Prints nothing and exits with the status 0 when no commit is unreviewed,
-and when the repository holds no commit.
+Prints nothing and exits with the status 0 when no commit is unreviewed, and
+when the repository holds no relevant commit.
 EOF
 }
 
@@ -1334,15 +1336,26 @@ print(json.dumps(result, ensure_ascii=False))
 
 # count_pending <json>   One shared reader for both forms: prints one line
 # per unreviewed commit -- "<hash>\t<subject>" -- or nothing, and exits 0,
-# when no commit is unreviewed or the repository holds no commit (CB-RVW-8).
-# The command reads the repository at the time of the call: git rev-list
-# walks HEAD now, and the rows of the reviewed table are the names that no
-# pass recorded yet.
+# when no commit is unreviewed and the repository holds no relevant commit
+# (CB-RVW-8). A relevant commit changes one or more paths in the run
+# directory, and every commit that the repository HEAD reaches is relevant
+# when the run directory is the root of the repository. The command reads
+# the repository at the time of the call: git rev-list walks HEAD now, and
+# the rows of the reviewed table are the names that no pass recorded yet.
 count_pending() {
   local -a pending=()
-  local reachable="" row hash subject
-  # No commit, or no reachable history: print nothing, exit 0.
-  reachable=$(git -C "$REPO" rev-list HEAD 2>/dev/null || true)
+  local reachable="" row hash subject rel
+  # The commits of a run directory that sits beside the root are the ones
+  # that change a path under it. A commit that touches no such path is not
+  # pending, however near the root of the repository it sits.
+  if [[ $REPO == "$RUN_DIR" ]]; then
+    reachable=$(git -C "$REPO" rev-list HEAD 2>/dev/null || true)
+  else
+    rel=${RUN_DIR#"$REPO"/}
+    reachable=$(git -C "$REPO" rev-list HEAD -- "$rel" 2>/dev/null || true)
+  fi
+  # No commit, no reachable history, or no relevant commit: print nothing,
+  # exit 0.
   [[ -n $reachable ]] || return 0
   while IFS= read -r row; do
     [[ -n $row ]] && pending+=("$row")
