@@ -1481,9 +1481,18 @@ verb_reviewed_add() {
     done
   fi
   # One commit is one value: the same value twice, or two values that name
-  # the same commit, add one row and count once.
+  # the same commit, add one row and count once. An empty value names no
+  # commit of the repository (CB-RVW-10), and it must say so before the
+  # subscripted dedup read below: an empty key fails the expansion of both
+  # the guard and the assignment, and a failed assignment expansion aborts
+  # the whole script inside the loop, with no message that names the cause
+  # (bug 42).
   local -A seen=()
   for value in ${commits[@]+"${commits[@]}"}; do
+    [[ -n $value ]] || {
+      echo "cbugs reviewed add: '$value' names no commit of the repository" >&2
+      exit 2
+    }
     [[ -n ${seen[$value]:-} ]] || { seen[$value]=1; named+=("$value"); }
   done
   ((0 < ${#named[@]})) || {
