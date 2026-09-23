@@ -21,7 +21,7 @@ Verbs:
   add      Log a new bug.
   list     List bugs.
   show     Show one bug in full, with its revisions.
-  search   Find bugs by text in their titles or notes.
+  search   Find bugs by text in titles, notes, or citations.
   note     Add a note to a bug, without changing its status.
   close    Mark a bug closed: the defect is gone.
   dismiss  Mark a bug wontfix: no one will act on it.
