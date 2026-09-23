@@ -278,6 +278,16 @@ RUN_LOG="$STATE_DIR/converge.log"
 # never written again.
 # The name of the session that the newest loop writes.
 CURRENT="$STATE_DIR/current"
+# The cost ledger. One line per started invocation, appended when the
+# invocation ends: <session><TAB><role><TAB><profile><TAB><cost>. A numeric
+# fourth field is the recorded cost of the invocation (CV-COST-1); an empty
+# fourth field records a profile the session used with no cost data, so the
+# profile still gets a row in the session's summary, and yields no sample
+# (CV-COST-3). The line shape covers every graceful and ungraceful end: the
+# ledger needs no separate save step (CV-COST-9), and it holds only costs
+# that this feature recorded, so no import from older session logs happens
+# (CV-COST-4).
+COST_LEDGER="$STATE_DIR/cost-history.tsv"
 # The temporary directory. It holds only the files that show that a process is
 # alive now. The system removes them, so a dead loop leaves nothing that blocks
 # a new run. A pipe also stays here, because a home directory can be on a
@@ -1243,11 +1253,12 @@ trap 'on_signal USR1' USR1
 # run_agent <role> <prompt>
 # Picks the role's next profile in round robin and runs one non-interactive
 # harness invocation with it. Writes the full message stream to a new log
-# file. Sets LOG_FILE, RESULT_TEXT, RUN_STATUS, RUN_PROFILE, and
+# file, and one line about the invocation to the cost ledger (COST_LEDGER).
+# Sets LOG_FILE, RESULT_TEXT, RUN_STATUS, RUN_PROFILE, and
 # INVOCATION_HARNESS.
 run_agent() {
   local role=$1 prompt=$2 glyph=$G_WORKER started=$SECONDS seq_text
-  local fifo_failed=0
+  local fifo_failed=0 cost_record
   case $role in
     coach) glyph=$G_COACH ;;
     reviewer) glyph=$G_REVIEW ;;
@@ -1312,6 +1323,11 @@ run_agent() {
     reviewer) accent=$BLUE ;;
   esac
   local fifo="$RUNTIME_DIR/stream.$$" fifo_ok=0
+  # The recorded cost of this invocation lands here when the stream ends
+  # (format_stream). Removed first, so that a stale file of the invocation
+  # before cannot be read twice, and never read when no stream ran.
+  local cost_file="$RUNTIME_DIR/stream-cost.$$"
+  rm -f "$cost_file"
   for _ in 1 2 3; do
     rm -f "$fifo"
     if mkfifo "$fifo" 2>/dev/null; then
@@ -1321,7 +1337,7 @@ run_agent() {
     sleep 1
   done
   if ((fifo_ok)); then
-    ( trap '' INT; tee -a "$LOG_FILE" <"$fifo" | format_stream "$accent" ) &
+    ( trap '' INT; tee -a "$LOG_FILE" <"$fifo" | format_stream "$accent" "$cost_file" ) &
     FORMATTER=$!
 
     harness_argv "$INVOCATION_HARNESS" "$model" "$effort" "$prompt"
@@ -1362,7 +1378,33 @@ run_agent() {
   fi
   RUN_SECONDS=$((SECONDS - started))
 
+  # The recorded cost of this invocation, as format_stream wrote it. A value
+  # of "absent" or a missing file means the harness total and the message
+  # stream both carried no cost data (CV-COST-1).
+  cost_record=$(first_line "$cost_file")
+  rm -f "$cost_file"
+  [[ ! $cost_record =~ $DECIMAL_RE ]] && cost_record=""
+  # CV-COST-1, CV-COST-2, CV-COST-9: one ledger line per started
+  # invocation, appended once, when the invocation ends. Every graceful
+  # exit therefore has its whole already-recorded history in place, and a
+  # cost or sample counts at most once, since no caller re-appends. A
+  # numeric cost is a recorded cost and one sample; an empty one is the
+  # profile of this started invocation with no cost data, and no sample.
+  printf '%s\t%s\t%s\t%s\n' "$RUN_ID" "$role" "$RUN_PROFILE" "$cost_record" \
+    >>"$COST_LEDGER" 2>/dev/null || \
+    warn "cannot append to the cost history $COST_LEDGER; this invocation's cost stays out of the summaries"
+
   RESULT_TEXT="$(final_message "$LOG_FILE" "$INVOCATION_HARNESS")"
+
+  # The cost event goes to the invocation log too, so a reader who
+  # diagnoses the logs sees the recorded cost beside the message stream
+  # (CV-STATE-11). An absent cost is logged as null, and never as zero.
+  if [[ -n $cost_record ]]; then
+    jq -nc --argjson cost "$cost_record" \
+      '{type:"converge_event",event:"cost",cost_usd:$cost}' >>"$LOG_FILE" 2>/dev/null
+  else
+    printf '{"type":"converge_event","event":"cost","cost_usd":null}\n' >>"$LOG_FILE" 2>/dev/null
+  fi
 
   if ((fifo_failed)); then
     : # already reported above
@@ -1381,7 +1423,7 @@ run_agent() {
   local bytes err_bytes
   bytes=$(wc -c <"$LOG_FILE")
   err_bytes=$(wc -c <"$LOG_FILE.err" 2>/dev/null)
-  note "$role end: status=$RUN_STATUS seconds=$RUN_SECONDS bytes=${bytes// } stderr=${err_bytes// }"
+  note "$role end: status=$RUN_STATUS seconds=$RUN_SECONDS cost=${cost_record:-absent} bytes=${bytes// } stderr=${err_bytes// }"
 }
 
 # wait_seconds <seconds>
@@ -1491,9 +1533,13 @@ voted_converged() {
 #                          this one line; 1 for anything but a shell command.
 #   fail <cause>           One tool call that failed.
 #   final <line>           One line of the final message.
-#   stats <turns> <ms> <cost>   The totals that the harness reports.
-#   tally <cost>           One turn and its cost, when the harness reports no
-#                          totals. The reader adds these up.
+#   stats <turns> <ms> <cost>   The totals that the harness reports. A cost
+#                          column that is there names the harness total; a
+#                          missing or empty one names no harness total
+#                          (CV-COST-1: the total and its absence differ).
+#   tally <cost>           One turn, when the harness reports no totals, with
+#                          its cost when the step reported one and an empty
+#                          cost when it did not. The reader adds these up.
 
 GUT_WIDTH=$((COLS - 6))
 
@@ -1534,7 +1580,9 @@ fromjson? // empty
   elif .type == "result" then
     ((if (.result // "") == "" then empty
       else (.result | split("\n")[] | "final\t" + clean) end),
-     "stats\t\(.num_turns // 0)\t\(.duration_ms // 0)\t\(.total_cost_usd // 0)")
+     (if .total_cost_usd == null
+      then "stats\t\(.num_turns // 0)\t\(.duration_ms // 0)"
+      else "stats\t\(.num_turns // 0)\t\(.duration_ms // 0)\t\(.total_cost_usd)" end))
   else empty end
 '
 
@@ -1576,7 +1624,7 @@ fromjson? // empty
        | (($state.error // "tool error") | tostring | firstline
           | "hold\tfail\t" + clean))
   elif .type == "step_finish" then
-    "tally\t\(.part.cost // 0)",
+    "tally\t\(.part.cost // "")",
     (if (.part.reason // "") == "stop" then "release\tfinal"
      else "release\ttext" end)
   else empty end
@@ -1609,8 +1657,13 @@ say_final() {
 }
 
 # say_stats <turns> <seconds> <cost>   Writes the totals of an invocation.
+# An empty <cost> means the agent reported no cost (CV-COST-1: absent is not
+# a recorded zero, so the line shows nothing where it cannot show a cost).
 say_stats() {
-  gutter "$DIM" "" "$DIM$(plural "$1" turn) $G_DOT $(duration "$2") $G_DOT $(printf '$%.2f' "$3")$OFF" "stats"
+  local text
+  text="$(plural "$1" turn) $G_DOT $(duration "$2")"
+  [[ -n $3 ]] && text="$text $G_DOT $(fmt_usd "$3")"
+  gutter "$DIM" "" "$DIM$text$OFF" "stats"
 }
 
 # render_tool <name> <argument> <lines>   Writes one line for a tool call.
@@ -1691,13 +1744,33 @@ add() {
   awk -v a="$1" -v b="$2" 'BEGIN { printf "%.10f", a + b }'
 }
 
-# format_stream <color>
-# Reads a message stream on stdin. Writes a transcript for the operator.
+# fmt_usd <cost>   Prints a recorded cost in USD. Six decimals, so that a
+# small nonzero cost stays distinct from zero (CV-COST-8).
+fmt_usd() {
+  printf '$%.6f' "$1"
+}
+
+# DECIMAL_RE   The shape of a recorded cost: a decimal number, with an
+# optional exponent. Every value the loop stores or sums as a cost must
+# match it, so a stray text field can never count as a recorded zero.
+DECIMAL_RE='^-?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$'
+
+# format_stream <color> [cost file]
+# Reads a message stream on stdin. Writes a transcript for the operator. When
+# a cost file is named, the recorded cost of the invocation is written there
+# as one line when the stream ends: the harness total when the harness
+# reported one, else the cost that the message stream carried, else "absent"
+# (CV-COST-1). Neither a "stats" record without a cost column nor a stream
+# whose steps report no cost makes a recorded cost, and absent cost is never
+# treated as a recorded zero (CV-COST-1).
 format_stream() {
-  local accent=$1
+  local accent=$1 cost_file=${2:-}
   jq --unbuffered -R -r "$(stream_filter)" 2>/dev/null | {
     local record kind rest rest2 name arg lines final=0 turns ms cost line held as_final
     local started=-1 first=1 counted=0 sum=0 reported=0
+    #reported_cost   The last cost total that a "stats" record carried.
+    #stream_cost     True when at least one "tally" record carried a cost.
+    local reported_cost='' stream_cost=0 cost_out
     local -a hold=()
     while IFS= read -r record; do
       ((started < 0)) && started=$SECONDS
@@ -1726,9 +1799,11 @@ format_stream() {
           hold=()
           ;;
         tally)
-          [[ $rest =~ ^[0-9.eE+-]+$ ]] || rest=0
           ((++counted))
-          sum=$(add "$sum" "$rest")
+          if [[ $rest =~ $DECIMAL_RE ]]; then
+            stream_cost=1
+            sum=$(add "$sum" "$rest")
+          fi
           ;;
         tool)
           name=${rest%%$'\t'*}
@@ -1750,12 +1825,18 @@ format_stream() {
           say_final "$accent" "$rest"
           ;;
         stats)
+          # A missing or empty cost column names no harness total.
+          # A later "stats" record replaces an earlier one.
           IFS=$'\t' read -r turns ms cost <<<"$rest"
           is_number "$ms" || ms=0
           is_number "$turns" || turns=0
-          [[ $cost =~ ^[0-9.eE+-]+$ ]] || cost=0
           reported=1
-          say_stats "$turns" $((ms / 1000)) "$cost"
+          if [[ $cost =~ $DECIMAL_RE ]]; then
+            reported_cost=$cost
+          else
+            reported_cost=""
+          fi
+          say_stats "$turns" $((ms / 1000)) "$reported_cost"
           ;;
       esac
     done
@@ -1765,8 +1846,17 @@ format_stream() {
       dispatch_held "$held" 0
     done
     if ((reported == 0 && counted > 0)); then
-      say_stats "$counted" $((SECONDS - started)) "$sum"
+      ((stream_cost)) && cost_out=$sum || cost_out=""
+      say_stats "$counted" $((SECONDS - started)) "$cost_out"
     fi
+    if ((reported)); then
+      cost_out=$reported_cost
+    elif ((stream_cost)); then
+      cost_out=$sum
+    else
+      cost_out=absent
+    fi
+    [[ -n $cost_file ]] && printf '%s\n' "$cost_out" >"$cost_file"
   }
 }
 
@@ -2278,6 +2368,118 @@ run_due_review() {
   apply_blocking_reset
 }
 
+# print_cost_summary
+# Prints the cost summary of the closing report (CV-COST-6 to CV-COST-8),
+# reading the cost ledger once. The ledger carries one line per started
+# invocation: <session><TAB><role><TAB><profile><TAB><cost>. The session
+# owns the RUN_ID of this loop, so an attached client adds nothing (CV-COST-2)
+# and no prior session is counted twice.
+#
+# The table has exactly three columns: label, session cost, and cumulative
+# cost (CV-COST-7). A dash names a cell with no recorded costs (CV-COST-8):
+# an average with no recorded samples, or a spend with no sample at all. A
+# recorded zero shows as zero. Costs recorded only in prior sessions stay out
+# of the session column but stay inside the cumulative column (CV-COST-4, 5).
+print_cost_summary() {
+  local kind key n1 v1 n2 v2 i role
+  local lw sw cw
+  local -A srps=() crps=()   # role: session and cumulative samples
+  local -A srp=() crp=()     # role: session and cumulative recorded spend
+  local -a pnames=() psn=() psv=() pcn=() pcv=()
+  local stn=0 stv=0 ctn=0 ctv=0
+  local -a labels=() left=() right=()
+
+  # One awk pass over the ledger. A line whose fourth field is a number is a
+  # recorded cost and a sample; an empty fourth field is a started invocation
+  # with no cost data, which makes no sample (CV-COST-3). A line is valid
+  # when it transports four fields, or ends in a tab, which is the empty
+  # cost column after the trailing empty field awk drops; anything else is a
+  # torn tail that a kill interrupted, and the summaries lose it, without
+  # ever counting it twice (CV-COST-9).
+  while IFS=$'\t' read -r kind key n1 v1 n2 v2; do
+    case $kind in
+      ROLE) srps[$key]=$n1; srp[$key]=$v1; crps[$key]=$n2; crp[$key]=$v2 ;;
+      PROF) pnames+=("$key"); psn+=("$n1"); psv+=("$v1"); pcn+=("$n2"); pcv+=("$v2") ;;
+      TOTAL) stn=$n1; stv=$v1; ctn=$n2; ctv=$v2 ;;
+    esac
+  done < <(awk -F '\t' -v SESSION="$RUN_ID" '
+    {
+      if (NF > 4 || (NF != 4 && $0 !~ "\t$")) next
+      c = $4
+      if (c !~ /^-?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$/) c = ""
+      r = $2
+      p = $3
+      if ($1 == SESSION) {
+        if (!(p in spu)) { pk[++np] = p; spu[p] = 1 }
+        if (c != "") {
+          srn[r]++; srp[r] += c; spn[p]++; spp[p] += c
+          stn++; stp += c
+        }
+      }
+      if (c != "") {
+        crn[r]++; crp[r] += c; cpn[p]++; cpp[p] += c
+        ctn++; ctp += c
+      }
+    }
+    END {
+      OFS = "\t"
+      split("worker reviewer coach", RL, " ")
+      for (i = 1; i <= 3; i++) {
+        rr = RL[i]
+        print "ROLE", rr, srn[rr] + 0, \
+          (srn[rr] > 0 ? sprintf("%.6f", srp[rr] / srn[rr]) : "0"), \
+          crn[rr] + 0, \
+          (crn[rr] > 0 ? sprintf("%.6f", crp[rr] / crn[rr]) : "0")
+      }
+      for (i = 1; i <= np; i++) {
+        pp = pk[i]
+        print "PROF", pp, spn[pp] + 0, sprintf("%.6f", spp[pp] + 0), \
+              cpn[pp] + 0, sprintf("%.6f", cpp[pp] + 0)
+      }
+      print "TOTAL", "total", stn + 0, sprintf("%.6f", stp + 0), \
+            ctn + 0, sprintf("%.6f", ctp + 0)
+    }' "$COST_LEDGER" 2>/dev/null)
+
+  # One cell of the table (CV-COST-8): the cost when the day holds at least
+  # one recorded cost, else a dash. A recorded zero — one sample with zero
+  # spend — shows as zero.
+  cell() {
+    if (($1 > 0)); then
+      fmt_usd "$2"
+    else
+      printf '—'
+    fi
+  }
+  labels+=("Total spend")
+  left+=("$(cell "$stn" "$stv")")
+  right+=("$(cell "$ctn" "$ctv")")
+  for role in worker reviewer coach; do
+    labels+=("Average per $role invocation")
+    left+=("$(cell "${srps[$role]:-0}" "${srp[$role]:-0}")")
+    right+=("$(cell "${crps[$role]:-0}" "${crp[$role]:-0}")")
+  done
+  for ((i = 0; i < ${#pnames[@]}; i++)); do
+    labels+=("${pnames[i]}")
+    left+=("$(cell "${psn[i]}" "${psv[i]}")")
+    right+=("$(cell "${pcn[i]}" "${pcv[i]}")")
+  done
+
+  lw=0 sw=7 cw=10
+  for ((i = 0; i < ${#labels[@]}; i++)); do
+    ((${#labels[i]} > lw)) && lw=${#labels[i]}
+    ((${#left[i]} > sw)) && sw=${#left[i]}
+    ((${#right[i]} > cw)) && cw=${#right[i]}
+  done
+  info "cost summary (USD)"
+  printf '  %-*s %*s %*s\n' "$lw" "" "$sw" "session" "$cw" "cumulative"
+  for ((i = 0; i < ${#labels[@]}; i++)); do
+    printf '  %-*s %s%s%s %s%s%s\n' "$lw" "${labels[i]}" \
+      "$DIM" "$(printf '%*s' "$sw" "${left[i]}")" "$OFF" \
+      "$DIM" "$(printf '%*s' "$cw" "${right[i]}")" "$OFF"
+    note "cost summary: ${labels[i]}: ${left[i]} / ${right[i]}"
+  done
+}
+
 ITERATION=0
 CONVERGED_VOTES=0
 APPROVED_HEAD=""
@@ -2434,6 +2636,12 @@ else
   CLOSING_TEXT="stopped after $(plural "$ITERATION" iteration) in $TOTAL, without convergence"
   banner "$YELLOW" "$E_STOP" "$CLOSING_TEXT"
 fi
+
+# CV-COST-6: every graceful session exit carries a cost summary. The exits
+# above are those: convergence, the iteration limit, and the stop after the
+# first Ctrl-C. A second Ctrl-C and SIGTERM leave through the signal traps
+# and print a banner there without this summary, as CV-COST-6 allows.
+print_cost_summary
 
 note "$CLOSING_TEXT"
 note "=== run end: exit $EXIT_STATUS ==="
