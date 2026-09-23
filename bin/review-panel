@@ -1680,8 +1680,9 @@ COVERAGE_FAILED=0
 if ((coverage_enabled)) && ((PENDING_COUNT > 0)); then
   completed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   coverage_status=0
-  for profile in ${REVIEWER_PROFILES[@]+"${REVIEWER_PROFILES[@]}"}; do
-    record_reviewed "$profile" "$completed_at" || coverage_status=1
+  for ((i = 0; i < REVIEWER_COUNT; i++)); do
+    [[ ${REVIEW_STATUSES[$i]:-1} == 0 ]] || continue
+    record_reviewed "${REVIEWER_PROFILES[$i]}" "$completed_at" || coverage_status=1
   done
   if ((coverage_status)); then
     COVERAGE_FAILED=1
