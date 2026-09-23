@@ -4,10 +4,12 @@
 # See docs/converge-requirements.md for the required behavior.
 set -uo pipefail
 
-# The script uses bash 4 syntax. macOS supplies bash 3.2. This test must stay
-# above the first use of that syntax, because bash parses a script as it runs.
-if ((BASH_VERSINFO[0] < 4)); then
-  echo "converge: bash ${BASH_VERSION} is too old; bash 4 or later is needed" >&2
+# The script uses bash 4.3 syntax: parse_profile_list needs the nameref of
+# `local -n`. macOS supplies bash 3.2. This test must stay above the first
+# use of that syntax, because bash parses a script as it runs.
+if ((BASH_VERSINFO[0] < 4)) || \
+  ((BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 3)); then
+  echo "converge: bash ${BASH_VERSION} is too old; bash 4.3 or later is needed" >&2
   echo "converge: on macOS, run 'brew install bash'" >&2
   exit 2
 fi
