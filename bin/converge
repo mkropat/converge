@@ -2495,6 +2495,7 @@ print_cost_summary() {
   done
   info "cost summary (USD)"
   printf '  %-*s %*s %*s\n' "$lw" "" "$sw" "session" "$cw" "cumulative"
+  note "cost summary columns: label / session / cumulative"
   for ((i = 0; i < ${#labels[@]}; i++)); do
     printf '  %-*s %s%s%s %s%s%s\n' "$lw" "${labels[i]}" \
       "$DIM" "$(printf '%*s' "$sw" "${left[i]}")" "$OFF" \
