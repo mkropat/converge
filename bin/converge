@@ -550,9 +550,41 @@ unreviewed_count() {
   awk 'NF { c++ } END { print c + 0 }' <<<"$hashes"
 }
 
-# reachable_count   Prints the number of commits that git reaches from HEAD.
-reachable_count() {
-  git rev-list --count HEAD 2>/dev/null || printf '0'
+# relevant_count   Prints the number of the relevant commits: the commits
+# that the repository HEAD reaches and that change one or more paths in the
+# run directory (CV-REV-19). Every reachable commit is relevant when the run
+# directory is the root of the repository. The ":(top,literal)" magic
+# anchors the path at the root of the repository: the loop does not change
+# its own working directory, and a pathspec resolved from the run directory
+# would name a path under the run directory instead.
+relevant_count() {
+  if [[ -z $RUN_SUBPATH ]]; then
+    git rev-list --count HEAD 2>/dev/null || printf '0'
+  else
+    git rev-list --count HEAD -- ":(top,literal)$RUN_SUBPATH" 2>/dev/null || printf '0'
+  fi
+}
+
+# DIR_HEAD_NONE   The key that names a run directory with no directory HEAD,
+# which by CV-INV-9 is a run directory with no relevant commit. No git hash
+# can hold this shape, so one key covers both cases of CV-CONV-15, and an
+# approval can never confuse the two.
+DIR_HEAD_NONE='(none)'
+
+# dir_head_key   Prints a key that names the directory HEAD: the newest
+# relevant commit (CV-CONV-15). The sentinel DIR_HEAD_NONE stands in for the
+# empty case, so callers compare keys that cover both cases. The
+# ":(top,literal)" magic anchors the path at the root of the repository, for
+# the same reason relevant_count gives.
+dir_head_key() {
+  local head=""
+  if [[ -z $RUN_SUBPATH ]]; then
+    head=$(git rev-parse HEAD 2>/dev/null) || head=""
+  else
+    head=$(git rev-list -1 HEAD -- ":(top,literal)$RUN_SUBPATH" 2>/dev/null) || head=""
+  fi
+  [[ -n $head ]] || head=$DIR_HEAD_NONE
+  printf '%s' "$head"
 }
 
 # scope_list   Renders the scope paths as the operator wrote them, for a
@@ -2084,8 +2116,12 @@ worker that judges its own work is the author of that work.
 
 This pass reads: $focus
 
-1. Read the code that this pass covers, and the requirements documents that
-   it touches.${scope_line}
+The run directory is $RUN_DIR. The changes in it are the focus of this
+review.
+
+1. Read each commit that this pass covers in full. Focus on the changes in
+   the run directory, and read the requirements documents that the changes
+   touch.${scope_line}
 2. Run \`cbugs search <text>\` before you log anything. Log nothing that an
    open bug already names.
 3. For each defect in the code (behavior that contradicts a requirement, an
@@ -2109,23 +2145,28 @@ the command refuses one from you anyway.
 EOF
 }
 
-# unreviewed_list / unreviewed_hashes / unreviewed_count / reachable_count
-# sit with the other counting helpers, above; the cadence pass and the final
-# pass use them, and the startup panel uses the count.
+# unreviewed_list / unreviewed_hashes / unreviewed_count / relevant_count
+# and dir_head_key sit with the other counting helpers, above; the cadence
+# pass and the final pass use them, and the startup panel uses the count.
 
 # cadence_focus <pending lines> <pending count>   Prints the text that names
-# what a cadence pass reads. When no commit that the current history reaches
-# has been recorded, the range is the whole history of the repository, and
-# the reviewer must judge how far back to read (CV-REV-17). Otherwise the
-# range is every unreviewed commit, however many there are (CV-REV-16): the
-# loop lists them, so the reviewer needs no query to learn what it has not
-# read yet.
+# what a cadence pass reads. When the bug database holds no record of a
+# relevant commit, the range is every relevant commit in the repository
+# history, and the reviewer must judge how far back to read (CV-REV-17).
+# Otherwise the range is every unreviewed commit, however many there are
+# (CV-REV-16): the loop lists them, so the reviewer needs no query to learn
+# what it has not read yet.
 cadence_focus() {
-  if (($2 == $(reachable_count))); then
-    printf 'the whole history of the repository (first pass: judge how far back to read; the most recent commits matter most)'
+  # No count verb reports the rows of the reviewed table, so the equality of
+  # the pending and the relevant counts stands in for "no relevant commit is
+  # recorded": nothing that the history reaches is covered, whatever rows
+  # older history may hold.
+  if (($2 == $(relevant_count))); then
+    printf 'every relevant commit in the repository history (first pass: judge
+how far back to read; the most recent commits matter most)'
     return
   fi
-  printf 'every commit that no review pass has recorded: %s unreviewed
+  printf 'every unreviewed commit: %s relevant
 commits, newest first:
 
 %s' "$2" "$1"
@@ -2172,17 +2213,19 @@ apply_blocking_reset() {
 
 # convergence_holds   True exactly when CV-CONV-14 holds right now: enough
 # consecutive done votes, no open code bug or task, and, with review
-# enabled, final approval of the exact current HEAD. Approval never applies
-# to a disabled reviewer. A failed blocking-bug read prevents convergence.
+# enabled, final approval of the exact current directory HEAD. Approval
+# never applies to a disabled reviewer. A failed blocking-bug read prevents
+# convergence.
 convergence_holds() {
   ((CONVERGED_VOTES >= CONSENSUS)) || return 1
   local n
   n=$(blocking_count) || return 1
   ((0 == n)) || return 1
   if ((REVIEW_ENABLED)); then
-    local head
-    head=$(git rev-parse HEAD 2>/dev/null) || head=
-    [[ -n $head && $head == "$APPROVED_HEAD" ]] || return 1
+    # A commit that changes no path in the run directory moves the
+    # repository HEAD and leaves the directory HEAD alone, so the key, and
+    # not the repository HEAD, decides whether the approval stands.
+    [[ $(dir_head_key) == "$APPROVED_HEAD" ]] || return 1
   fi
   return 0
 }
@@ -2212,19 +2255,23 @@ record_reviewed() {
 
 # run_review_pass <cadence|final>   Runs the reviewer, then records what the
 # pass covered. A cadence pass reads the range of the pass: the commits that
-# no pass recorded, and the whole history when a pass has recorded nothing
-# that the current history reaches (CV-REV-16, CV-REV-17). A final pass reads
-# the whole code of the repository at HEAD (CV-REV-18), even when no commit
-# is pending (CV-CONV-16). The loop records the commits that no pass had
-# recorded when this pass started (CV-REV-15): a commit that another loop
-# writes while the pass runs stays unreviewed. A pass that fails or times out
-# records nothing, so the next pass covers the same work, and resets the
-# consecutive vote count and grants no approval (CV-CONV-17).
+# no pass recorded, and every relevant commit of the history when a pass has
+# recorded nothing that the current history reaches (CV-REV-16, CV-REV-17).
+# A final pass reads the whole code in the run directory at the directory
+# HEAD (CV-REV-18), even when no commit is pending (CV-CONV-16). The loop
+# records the commits that no pass had recorded when this pass started
+# (CV-REV-15): a commit that another loop writes while the pass runs stays
+# unreviewed. A pass that fails or times out records nothing, so the next
+# pass covers the same work, and resets the consecutive vote count and
+# grants no approval (CV-CONV-17).
 #
-# A successful final pass grants approval for the exact HEAD it reviewed,
-# only when HEAD did not move during the pass, the recording of coverage
-# below did not fail, and no open code bug or task remains (CV-CONV-15). The
-# caller (run_due_review) still owns whether a final pass is due at all.
+# A successful final pass grants approval for the exact directory HEAD it
+# reviewed, only when the directory HEAD did not move during the pass, the
+# recording of coverage below did not fail, and no open code bug or task
+# remains (CV-CONV-15). A commit that changes no path in the run directory
+# moves the repository HEAD and leaves the directory HEAD alone, so it
+# invalidates nothing. The caller (run_due_review) still owns whether a
+# final pass is due at all.
 run_review_pass() {
   local kind=$1 pending_list pending_count pending_failed=0 bugs_before bugs_after new_bugs count
   local recorded=0 head_before head_after record_failed=0 completed_at
@@ -2257,9 +2304,10 @@ run_review_pass() {
 
   local focus prompt
   if [[ $kind == final ]]; then
-    focus="the whole code of the repository at HEAD, not only the commits
-that no review pass has recorded. Judge how much of the code to read; the
-integration of the recent work with the old code matters most."
+    focus="the whole code in the run directory at the directory HEAD, not
+only the commits that no review pass has recorded. Judge how much of the
+code to read; the integration of the recent work with the old code matters
+most."
   else
     focus=$(cadence_focus "$pending_list" "$pending_count")
   fi
@@ -2267,7 +2315,7 @@ integration of the recent work with the old code matters most."
 
   bugs_before=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" list --json 2>/dev/null) || bugs_before_ok=0
   [[ -n $bugs_before ]] || bugs_before='[]'
-  head_before=$(git rev-parse HEAD 2>/dev/null) || head_before=
+  head_before=$(dir_head_key)
 
   run_agent reviewer "$prompt"
   ((STOP_REQUESTED)) || handle_invocation_wait "$LOG_FILE" "$INVOCATION_HARNESS"
@@ -2331,10 +2379,10 @@ integration of the recent work with the old code matters most."
   fi
 
   # CV-OUT-12: the number of commits that the pass recorded, and, for a
-  # final pass, that it read the whole code.
+  # final pass, that it read the whole code in the run directory.
   if ((RUN_STATUS == 0)); then
     if [[ $kind == final ]]; then
-      info "the final pass read the whole code; recorded $(plural "$recorded" commit)"
+      info "the final pass read the whole code in the run directory; recorded $(plural "$recorded" commit)"
     else
       info "the pass recorded $(plural "$recorded" commit)"
     fi
@@ -2348,15 +2396,20 @@ integration of the recent work with the old code matters most."
 
   if [[ $kind == final ]]; then
     if ((RUN_STATUS == 0)) && ((! record_failed)); then
-      head_after=$(git rev-parse HEAD 2>/dev/null) || head_after=
+      head_after=$(dir_head_key)
       local blocking
-      if [[ -n $head_after && $head_after == "$head_before" ]] && blocking=$(blocking_count) && ((0 == blocking)); then
+      if [[ $head_after == "$head_before" ]] && blocking=$(blocking_count) && ((0 == blocking)); then
         APPROVED_HEAD=$head_after
-        info "final approval granted for $head_after"
-        note "final approval granted for $head_after"
+        if [[ $head_after == "$DIR_HEAD_NONE" ]]; then
+          info "final approval granted; the run directory holds no relevant commit"
+          note "final approval granted; the run directory holds no relevant commit"
+        else
+          info "final approval granted for directory HEAD $head_after"
+          note "final approval granted for directory HEAD $head_after"
+        fi
       else
         info "final approval withheld"
-        note "final approval withheld (HEAD moved during the pass, an open code bug or task remains, or the bug tracker could not be read)"
+        note "final approval withheld (the directory HEAD moved during the pass, an open code bug or task remains, or the bug tracker could not be read)"
       fi
     else
       info "final approval withheld; the pass failed"
@@ -2367,18 +2420,19 @@ integration of the recent work with the old code matters most."
 
 # run_due_review   Step 3 of CV-CONV-18: runs a due final pass or, if none is
 # due, a due cadence pass, then applies the blocking-bug reset. A final pass
-# is due after a done vote left the current HEAD unapproved (CV-CONV-16), and
-# before the first worker when --consensus is 0: no vote is due then, but
-# convergence still needs approval, so a final pass must run first (CV-CONV-14).
-# It is consumed here whether or not it actually runs, so it is not repeated at
-# an unchanged HEAD. One due final pass replaces a due cadence pass.
+# is due after a done vote left the current directory HEAD unapproved
+# (CV-CONV-16), and before the first worker when --consensus is 0: no vote is
+# due then, but convergence still needs approval, so a final pass must run
+# first (CV-CONV-14). It is consumed here whether or not it actually runs, so
+# it is not repeated at an unchanged directory HEAD. One due final pass
+# replaces a due cadence pass.
 run_due_review() {
   local final_was_due=$FINAL_DUE
   FINAL_DUE=0
   if ((REVIEW_ENABLED)) && ((! STOP_REQUESTED)); then
     local head
-    head=$(git rev-parse HEAD 2>/dev/null) || head=
-    if ((final_was_due)) && [[ -n $head && $head != "$APPROVED_HEAD" ]]; then
+    head=$(dir_head_key)
+    if ((final_was_due)) && [[ $head != "$APPROVED_HEAD" ]]; then
       run_review_pass final
     else
       local pending
@@ -2516,8 +2570,8 @@ APPROVED_HEAD=""
 FINAL_DUE=0
 # --consensus 0 needs no vote (CV-INV-3.15), so convergence must be
 # reachable before the first worker invocation. With review enabled, CV-CONV-14
-# still requires final approval of the current HEAD, so a final pass is due
-# from the start and CV-CONV-18 step 3 runs it before the first worker.
+# still requires final approval of the current directory HEAD, so a final pass
+# is due from the start and CV-CONV-18 step 3 runs it before the first worker.
 ((CONSENSUS == 0 && REVIEW_ENABLED)) && FINAL_DUE=1
 FAIL_WAIT=0
 PENDING_LOGS=()
