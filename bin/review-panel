@@ -1467,7 +1467,11 @@ PANEL_ROWS=(
   "timeout|${TIMEOUT}s for one invocation"
   "source|the live working tree, with every uncommitted change and relevant untracked file"
 )
-panel "$G_REVIEW review-panel" "${PANEL_ROWS[@]}"
+PANEL_TEXT=$(panel "$G_REVIEW review-panel" "${PANEL_ROWS[@]}")
+printf '%s\n' "$PANEL_TEXT"
+while IFS= read -r panel_line; do
+  note "$(strip_style "$panel_line")"
+done <<<"$PANEL_TEXT"
 note "=== panel start ($PANEL_ID) ==="
 for row in "${PANEL_ROWS[@]}"; do
   note "${row%%|*}: ${row#*|}"

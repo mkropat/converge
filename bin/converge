@@ -1210,7 +1210,11 @@ PANEL_ROWS+=(
   "stop|$(plural "$CONSENSUS" "converged vote") in a row"
   "timeout|${TIMEOUT}s for one invocation"
 )
-panel "$G_LOOP converge" "${PANEL_ROWS[@]}"
+PANEL_TEXT=$(panel "$G_LOOP converge" "${PANEL_ROWS[@]}")
+printf '%s\n' "$PANEL_TEXT"
+while IFS= read -r panel_line; do
+  note "$(strip_style "$panel_line")"
+done <<<"$PANEL_TEXT"
 for row in "${PANEL_ROWS[@]}"; do
   note "${row%%|*}: ${row#*|}"
 done
