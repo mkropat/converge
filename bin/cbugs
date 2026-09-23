@@ -1244,6 +1244,7 @@ WHERE r.bug_id = $id ORDER BY c.id ASC;
     printf '  %s%s%s  %s  %s%s%s\n' "$DIM" "$rcreated" "$OFF" "$rstatus" "$DIM" "$meta" "$OFF"
     printf '    %s\n' "$rtitle"
     rnote=$(jq -r --argjson i "$rid" '.[] | select(.id == $i) | .note' <<<"$revs")
+    [[ $rnote == '__EMPTY_NOTE__' ]] && rnote=""
     if [[ -n $rnote ]]; then
       while IFS= read -r line; do
         printf '      %s%s%s\n' "$DIM" "$line" "$OFF"
@@ -1254,7 +1255,7 @@ WHERE r.bug_id = $id ORDER BY c.id ASC;
     done < <(jq -r --argjson i "$rid" \
       '.[] | select(.id == $i) | .citations[] | .path + (if .req then ":" + .req else "" end)' \
       <<<"$revs")
-  done < <(jq -r '.[] | [.id, .status, .title, (.note // ""), (.role // "-"), (.iteration // "-"), (.commit_id // "-"), .created_at, (.panel_run // "-"), (.panel_profile // "-"), (.panel_invocation // "-")] | @tsv' <<<"$revs")
+  done < <(jq -r '.[] | [.id, .status, .title, (if (.note // "") == "" then "__EMPTY_NOTE__" else .note end), (.role // "-"), (.iteration // "-"), (.commit_id // "-"), .created_at, (.panel_run // "-"), (.panel_profile // "-"), (.panel_invocation // "-")] | @tsv' <<<"$revs")
 }
 
 verb_search() {

@@ -1721,8 +1721,12 @@ findings_block() {
 
 # The findings the panel gathered: FINDINGS_JSON holds the list that a read
 # collected, which is the read before the merge, or, when that read failed,
-# the read after the merge. A read that never succeeded holds nothing
-# (RP-OUT-6).
+# the read after the merge. When the merge succeeded, its read-back gives the
+# known current outcome for every finding, including a run that remains
+# incomplete because another phase failed (RP-OUT-6).
+if ((MERGE_RAN)) && ((MERGE_FAILED == 0)) && ((RETAINED_FAILED == 0)); then
+  FINDINGS_JSON=$RETAINED_JSON
+fi
 AVAILABLE_COUNT=$(jq -r 'length' <<<"$FINDINGS_JSON" 2>/dev/null)
 is_number "$AVAILABLE_COUNT" || AVAILABLE_COUNT=0
 
@@ -1744,12 +1748,15 @@ if ((RETAINED_CODE + RETAINED_SPEC > 0)); then
 elif ((COMPLETE == 0)); then
   info "the panel knows of no retained new bug to show; its findings may be incomplete"
   if ((AVAILABLE_COUNT > 0)); then
-    if ((FINDINGS_COLLECT_FAILED)); then
-      # The find-read that failed is the pre-merge read, and what the
-      # report holds here is the read after the merge: the merge outcome
-      # of each bug below is what its status says, and no line of the
-      # panel claims an unknown fate.
-      heading "$YELLOW" "findings of this panel run" "read after the merge; the read before it failed"
+    if ((FINDINGS_COLLECT_FAILED)) || { ((MERGE_RAN)) && ((MERGE_FAILED == 0)) && ((RETAINED_FAILED == 0)); }; then
+      # The report holds a post-merge read, so the merge outcome of each bug
+      # below is what its status says, and no line of the panel claims an
+      # unknown fate.
+      if ((FINDINGS_COLLECT_FAILED)); then
+        heading "$YELLOW" "findings of this panel run" "read after the merge; the read before it failed"
+      else
+        heading "$YELLOW" "findings of this panel run" "read after the merge"
+      fi
       findings_block "$FINDINGS_JSON" "known new"
     else
       heading "$YELLOW" "available findings" "the merge outcome for these is unknown"

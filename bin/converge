@@ -926,13 +926,12 @@ attach() {
   # An attach shows the last screen of earlier output, then a rule, then the
   # new output, in that order. The replay must finish printing before the
   # rule appears, so it runs without -f, ahead of the follow below.
-  local replay_end=0
+  local replay_end=0 replay_start=1
   if [[ $mode == again ]]; then
     lines=$(tput lines 2>/dev/null) || lines=24
     is_number "$lines" || lines=24
     replay=$((lines - 4))
     ((replay < 5)) && replay=5
-    tail -n "$replay" "$out"
     while :; do
       replay_end=$(wc -l <"$out" 2>/dev/null)
       replay_check=$(wc -l <"$out" 2>/dev/null)
@@ -940,6 +939,9 @@ attach() {
       is_number "$replay_check" || replay_check=$replay_end
       [[ $replay_end == "$replay_check" ]] && break
     done
+    replay_start=$((replay_end - replay + 1))
+    ((replay_start < 1)) && replay_start=1
+    sed -n "${replay_start},${replay_end}p" "$out"
 
     heading "$BLUE" "attached to the loop from $(session_start "$session")" \
       "$(grep -aoE 'iteration [0-9]+' "$out" | tail -n 1)"
