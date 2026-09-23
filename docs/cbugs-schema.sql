@@ -122,8 +122,9 @@ JOIN revision AS r
 --
 -- The loop records one row for every commit that it gave to a review pass,
 -- after the pass ends with success. The count of the commits that no row
--- names, and that HEAD reaches, tells the loop when the next pass runs. The
--- record lives here because it must survive the death of the loop: a pass
+-- names, and that are relevant to the run directory, tells the loop when the
+-- next pass runs. The record lives here because it must survive the death of
+-- the loop: a pass
 -- that a Ctrl-C kills records nothing, and the next run of the loop reviews
 -- the same commits.
 --

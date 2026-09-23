@@ -77,8 +77,11 @@ through `CB-MIG-6` replace it.
 - **Reviewed commit**: a commit of the repository that the table of reviewed
   commits names. The loop records one after a review pass, as
   `docs/converge-requirements.md` gives.
-- **Unreviewed commit**: a commit that the table of reviewed commits does not
-  name, and that git reaches from the HEAD of the repository.
+- **Relevant commit**: a commit that git reaches from the repository HEAD and
+  that changes one or more paths in the run directory. Every reachable commit
+  is relevant when the run directory is the repository root.
+- **Unreviewed commit**: a relevant commit that the table of reviewed commits
+  does not name.
 - **Human user**: the person who runs the project. An agent is not a human
   user.
 - **Caller**: the loop, an agent, or the operator that runs the command.
@@ -422,10 +425,13 @@ sections of `docs/converge-requirements.md` for the loop behavior.
   An operator who runs the command by hand may record commits. The command
   must apply this test to `reviewed add` only: `reviewed pending` changes
   nothing, and every caller may run it.
-- **CB-RVW-8**: `cbugs reviewed pending` must print the commits that no row
-  names and that git reaches from the HEAD of the repository, the newest
-  first. The command must read the repository at the time of the call. When
-  the repository holds no commit, and when no commit is unreviewed, the
+- **CB-RVW-8**: `cbugs reviewed pending` must print the unreviewed commits, the
+  newest first. The command must use the run directory to select relevant
+  commits from the history that the repository HEAD reaches. A commit is
+  relevant when it changes one or more paths in the run directory. Every
+  reachable commit is relevant when the run directory is the repository root.
+  The command must read the repository at the time of the call. When the
+  repository holds no relevant commit, and when no commit is unreviewed, the
   command must print nothing and exit with the status 0.
 - **CB-RVW-9**: The human form of `reviewed pending` must give one line for
   each commit, with the hash and the subject of the commit. The `--json` form
@@ -752,7 +758,8 @@ These are recorded decisions, not oversights.
 - **CB-OOS-25** — **A removal of a reviewed commit**: rejected. A commit that
   the history drops can come back, as a cherry-pick brings one back, and the
   row does no harm while the commit is away. The count of the unreviewed
-  commits reads the history that HEAD reaches, and no other.
+  commits reads only relevant commits from the history that the repository
+  HEAD reaches.
 - **CB-OOS-26** — **A separate review pass table or finding record**: rejected.
   Review history records commit coverage, including the profile and completion
   time. It holds no findings. Coverage records may exist even when a pass finds
