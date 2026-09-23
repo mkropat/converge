@@ -926,12 +926,23 @@ attach() {
   # An attach shows the last screen of earlier output, then a rule, then the
   # new output, in that order. The replay must finish printing before the
   # rule appears, so it runs without -f, ahead of the follow below.
+  local replay_end=0
   if [[ $mode == again ]]; then
     lines=$(tput lines 2>/dev/null) || lines=24
     is_number "$lines" || lines=24
     replay=$((lines - 4))
     ((replay < 5)) && replay=5
     tail -n "$replay" "$out"
+    # CV-BG-5.2: the follow must show the new output, so it must start at a
+    # line number that no line lives below. Count the lines right after the
+    # replay, and start the follow one line after the count: every line the
+    # loop appends from here on, before or while the follow starts, is at
+    # or after that number, and tail re-reads the count when it opens. The
+    # count and the follow are two reads, so one line can in principle
+    # still fall between them; without the count, a whole heading's worth
+    # of lines fell under every attach.
+    replay_end=$(wc -l <"$out" 2>/dev/null)
+    is_number "$replay_end" || replay_end=0
     heading "$BLUE" "attached to the loop from $(session_start "$session")" \
       "$(grep -aoE 'iteration [0-9]+' "$out" | tail -n 1)"
   fi
@@ -940,7 +951,7 @@ attach() {
   # transcript must survive it, to show how the loop ends. A process that
   # ignores a signal keeps that choice through exec, so tail ignores Ctrl-C.
   if [[ $mode == again ]]; then
-    ( trap '' INT TERM; exec tail -n 0 -f --pid="$pid" "$out" ) &
+    ( trap '' INT TERM; exec tail -n +"$((replay_end + 1))" -f --pid="$pid" "$out" ) &
   else
     ( trap '' INT TERM; exec tail -n +1 -f --pid="$pid" "$out" ) &
   fi
