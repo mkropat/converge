@@ -1225,7 +1225,7 @@ WHERE r.bug_id = $id ORDER BY c.id ASC;
   printf '\n%srevisions%s\n' "$BOLD" "$OFF"
   local rid rstatus rtitle rnote rrole riter rcommit rcreated meta rcite
   local rpanelrun rpanelprofile rpanelinv
-  while IFS=$'\t' read -r rid rstatus rtitle rrole riter rcommit rcreated rpanelrun rpanelprofile rpanelinv; do
+  while IFS=$'\t' read -r rid rstatus rtitle rnote rrole riter rcommit rcreated rpanelrun rpanelprofile rpanelinv; do
     # A field that is null in the data comes through as "-", a placeholder
     # that no real role, iteration, or commit id ever equals. IFS-tab
     # splitting collapses a genuinely empty field, which would misalign
