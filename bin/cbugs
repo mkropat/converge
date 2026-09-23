@@ -1280,27 +1280,40 @@ verb_search() {
   for s in ${kinds[@]+"${kinds[@]}"}; do validate_kind "$s"; done
   for s in ${statuses[@]+"${statuses[@]}"}; do validate_status "$s"; done
 
-  local where pattern rows panel_extra=""
+  local where rows panel_extra=""
   [[ -z $panel_run ]] || panel_extra=" AND $(panel_clause "$panel_run")"
   where=$(where_clause ${kinds[@]+"${kinds[@]}"} -- ${statuses[@]+"${statuses[@]}"})
-  pattern="%$(like_escape "$text")%"
   rows=$(sqlite3_run json "
-SELECT id, kind, status, title FROM bug_current bc
-WHERE ${where:+$where AND }EXISTS (
-  SELECT 1 FROM revision rv
-  WHERE rv.bug_id = bc.id
-    AND (LOWER(rv.title) LIKE LOWER('$pattern') ESCAPE '\\'
-      OR LOWER(rv.note) LIKE LOWER('$pattern') ESCAPE '\\'
-      OR EXISTS (
-        SELECT 1 FROM citation c
-        WHERE c.revision_id = rv.id
-          AND (LOWER(c.path) LIKE LOWER('$pattern') ESCAPE '\\'
-            OR LOWER(COALESCE(c.req, '')) LIKE LOWER('$pattern') ESCAPE '\\')
-      ))
-)$panel_extra
-ORDER BY revision_id DESC;
-") || exit 1
+ SELECT json_object(
+   'id', bc.id, 'kind', bc.kind, 'status', bc.status, 'title', bc.title,
+   'revisions', (SELECT json_group_array(json_object(
+     'title', rv.title, 'note', rv.note,
+     'citations', (SELECT json_group_array(json_object(
+       'path', c.path, 'req', c.req
+     )) FROM citation c WHERE c.revision_id = rv.id)
+   )) FROM revision rv WHERE rv.bug_id = bc.id)
+ ) AS value
+ FROM bug_current bc
+ WHERE $where$panel_extra
+ ORDER BY revision_id DESC;
+ ") || exit 1
+  rows=$(python3 -c '
+import json, sys
+needle = sys.argv[1].casefold()
+result = []
+for record in json.load(sys.stdin):
+    bug = json.loads(record["value"])
+    texts = []
+    for revision in bug.pop("revisions"):
+        texts.extend((revision.get("title") or "", revision.get("note") or ""))
+        for citation in revision.get("citations") or []:
+            texts.extend((citation.get("path") or "", citation.get("req") or ""))
+    if needle in "\\n".join(texts).casefold():
+        result.append(bug)
+print(json.dumps(result, ensure_ascii=False))
+' "$text" <<<"$rows")
   print_listing "$rows" "$json"
+
 }
 
 # ------------------------------------------------------------- reviewed verbs
