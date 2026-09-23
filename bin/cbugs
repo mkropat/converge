@@ -1445,6 +1445,18 @@ verb_reviewed_add() {
       echo "cbugs reviewed add: --profile '$profile' must be claude:model[:effort] or opencode:model[:effort], with nonempty fields and no colon, comma, or whitespace" >&2
       exit 2
     }
+    local profile_harness profile_effort effort_supported
+    IFS=':' read -r profile_harness _ profile_effort <<<"$profile"
+    if [[ $profile_harness == claude && -n $profile_effort ]]; then
+      effort_supported=0
+      for effort in low medium high xhigh max; do
+        [[ $effort == "$profile_effort" ]] && effort_supported=1
+      done
+      ((effort_supported)) || {
+        echo "cbugs reviewed add: --profile '$profile' has an effort claude does not support; use one of: low medium high xhigh max" >&2
+        exit 2
+      }
+    fi
   fi
   # A supplied completion time must be a valid UTC date and time in
   # YYYY-MM-DDTHH:MM:SSZ form (CB-RVW-15). Re-formatting the parsed value and
