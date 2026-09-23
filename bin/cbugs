@@ -1312,7 +1312,14 @@ for record in json.load(sys.stdin):
     if needle in "\\n".join(texts).casefold():
         result.append(bug)
 print(json.dumps(result, ensure_ascii=False))
-' "$text" <<<"${rows:-[]}")
+' "$text" <<<"${rows:-[]}") || {
+    # A python3 that exits non-zero -- absent-but-shimmed, a broken
+    # interpreter, or a crash on the input -- names no answer. An empty
+    # listing would read as the normal empty answer of CB-OUT-6, so stop
+    # and say why; the interpreter's own stderr already reached the caller.
+    echo "cbugs: search failed: python3 exited with status $?" >&2
+    exit 1
+  }
   print_listing "$rows" "$json"
 
 }
