@@ -832,8 +832,13 @@ say_final() {
 }
 
 # say_stats <turns> <seconds> <cost>   Writes the totals of an invocation.
+# An empty <cost> means the agent reported no cost, so the line shows nothing
+# where it cannot show a cost (CV-COST-1: absent is not a recorded zero).
 say_stats() {
-  gutter "$DIM" "" "$DIM$(plural "$1" turn) $G_DOT $(duration "$2") $G_DOT $(printf '$%.2f' "$3")$OFF" "stats"
+  local text
+  text="$(plural "$1" turn) $G_DOT $(duration "$2")"
+  [[ -n $3 ]] && text="$text $G_DOT $(printf '$%.2f' "$3")"
+  gutter "$DIM" "" "$DIM$text$OFF" "stats"
 }
 
 # render_tool <name> <argument> <lines>   Writes one line for a tool call.
@@ -912,6 +917,11 @@ add() {
   awk -v a="$1" -v b="$2" 'BEGIN { printf "%.10f", a + b }'
 }
 
+# DECIMAL_RE   The shape of a recorded cost. An absent cost stays absent:
+# a value that is not a decimal names no cost, and never shows as zero,
+# the same way converge treats a harness that reports none (CV-COST-1).
+DECIMAL_RE='^-?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$'
+
 CLAUDE_FILTER='
 def clean: gsub("[\\t\\r]"; " ");
 def firstline: split("\n")[0] // "";
@@ -942,7 +952,9 @@ fromjson? // empty
   elif .type == "result" then
     ((if (.result // "") == "" then empty
       else (.result | split("\n")[] | "final\t" + clean) end),
-     "stats\t\(.num_turns // 0)\t\(.duration_ms // 0)\t\(.total_cost_usd // 0)")
+     (if .total_cost_usd == null
+      then "stats\t\(.num_turns // 0)\t\(.duration_ms // 0)"
+      else "stats\t\(.num_turns // 0)\t\(.duration_ms // 0)\t\(.total_cost_usd)" end))
   else empty end
 '
 
@@ -975,7 +987,7 @@ fromjson? // empty
        | (($state.error // "tool error") | tostring | firstline
           | "hold\tfail\t" + clean))
   elif .type == "step_finish" then
-    "tally\t\(.part.cost // 0)",
+    "tally\t\(.part.cost // "")",
     (if (.part.reason // "") == "stop" then "release\tfinal"
      else "release\ttext" end)
   else empty end
@@ -995,7 +1007,7 @@ format_stream() {
   local accent=$1
   jq --unbuffered -R -r "$(stream_filter)" 2>/dev/null | {
     local record kind rest rest2 name arg lines line turns ms cost
-    local as_final started=-1 first=1 counted=0 sum=0 reported=0
+    local as_final started=-1 first=1 counted=0 sum=0 reported=0 stream_cost=0
     local -a hold=()
     while IFS= read -r record; do
       ((started < 0)) && started=$SECONDS
@@ -1024,9 +1036,12 @@ format_stream() {
           hold=()
           ;;
         tally)
-          [[ $rest =~ ^[0-9.eE+-]+$ ]] || rest=0
           ((++counted))
-          sum=$(add "$sum" "$rest")
+          # A step that carries no cost leaves the sum alone (CV-COST-1).
+          if [[ $rest =~ $DECIMAL_RE ]]; then
+            stream_cost=1
+            sum=$(add "$sum" "$rest")
+          fi
           ;;
         tool)
           name=${rest%%$'\t'*}
@@ -1051,8 +1066,10 @@ format_stream() {
           IFS=$'\t' read -r turns ms cost <<<"$rest"
           is_number "$ms" || ms=0
           is_number "$turns" || turns=0
-          [[ $cost =~ ^[0-9.eE+-]+$ ]] || cost=0
           reported=1
+          # A cost column that is absent, empty, or not a decimal names no
+          # harness total, and shows nothing (CV-COST-1).
+          [[ $cost =~ $DECIMAL_RE ]] || cost=""
           say_stats "$turns" $((ms / 1000)) "$cost"
           ;;
       esac
@@ -1063,7 +1080,12 @@ format_stream() {
       dispatch_held "$line" 0
     done
     if ((reported == 0 && counted > 0)); then
-      say_stats "$counted" $((SECONDS - started)) "$sum"
+      # The sum is a recorded cost only if at least one step carried one.
+      if ((stream_cost)); then
+        say_stats "$counted" $((SECONDS - started)) "$sum"
+      else
+        say_stats "$counted" $((SECONDS - started)) ""
+      fi
     fi
   }
 }
