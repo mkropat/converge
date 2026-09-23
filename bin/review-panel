@@ -20,6 +20,7 @@ if ((BASH_VERSINFO[0] < 4)) || \
 fi
 
 TIMEOUT=3600
+HELP_REQUESTED=0
 SELF="$(cd "$(dirname "$0")" && pwd)/${0##*/}"
 # bin/cbugs lives beside this script. Every agent needs it on its PATH, and
 # the controller calls it by path, so that no PATH change of the operator
@@ -84,8 +85,8 @@ while (($#)); do
     --timeout) need_value "$1" $#; TIMEOUT=$2; shift 2 ;;
     --timeout=*) TIMEOUT=${1#*=}; shift ;;
     -h|--help)
-      usage
-      exit 0
+      HELP_REQUESTED=1
+      shift
       ;;
     # An option this script does not know is a typo: there is no passthrough
     # left for it to reach (RP-INV-5).
@@ -1432,6 +1433,11 @@ if ((${#MERGE_PROFILES[@]} != 1)); then
   exit 2
 fi
 MERGE_PROFILE=${MERGE_PROFILES[0]}
+
+if ((HELP_REQUESTED)); then
+  usage
+  exit 0
+fi
 
 # The message stream of the merge agent travels through a named pipe in the
 # temporary directory. Test once, here, that the directory supports one: a
