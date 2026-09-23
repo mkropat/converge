@@ -1323,11 +1323,11 @@ run_agent() {
     reviewer) accent=$BLUE ;;
   esac
   local fifo="$RUNTIME_DIR/stream.$$" fifo_ok=0
-  # The recorded cost of this invocation lands here when the stream ends
-  # (format_stream). Removed first, so that a stale file of the invocation
-  # before cannot be read twice, and never read when no stream ran.
-  local cost_file="$RUNTIME_DIR/stream-cost.$$"
-  rm -f "$cost_file"
+  # The recorded cost travels through the invocation log: format_stream
+  # appends the one converge_event "cost_record" line when the stream ends,
+  # and run_agent reads it back below, when that reader has ended. Nothing
+  # but locks, process ids, and harness-output pipes lives in the runtime
+  # directory (CV-RUN-1), so the cost needs no file beside the stream pipe.
   for _ in 1 2 3; do
     rm -f "$fifo"
     if mkfifo "$fifo" 2>/dev/null; then
@@ -1337,7 +1337,7 @@ run_agent() {
     sleep 1
   done
   if ((fifo_ok)); then
-    ( trap '' INT; tee -a "$LOG_FILE" <"$fifo" | format_stream "$accent" "$cost_file" ) &
+    ( trap '' INT; tee -a "$LOG_FILE" <"$fifo" | format_stream "$accent" "$LOG_FILE" ) &
     FORMATTER=$!
 
     harness_argv "$INVOCATION_HARNESS" "$model" "$effort" "$prompt"
@@ -1378,11 +1378,14 @@ run_agent() {
   fi
   RUN_SECONDS=$((SECONDS - started))
 
-  # The recorded cost of this invocation, as format_stream wrote it. A value
-  # of "absent" or a missing file means the harness total and the message
-  # stream both carried no cost data (CV-COST-1).
-  cost_record=$(first_line "$cost_file")
-  rm -f "$cost_file"
+  # The recorded cost of this invocation, as format_stream appended it to
+  # the invocation log. A record that is missing, unreadable, or not a
+  # decimal means the harness total and the message stream both carried no
+  # cost data (CV-COST-1): never a recorded zero.
+  cost_record=$(jq -Rsr 'split("\n") | map(fromjson? // empty)
+    | map(select(.type == "converge_event" and .event == "cost_record")
+      | (.record // ""))
+    | last // ""' "$LOG_FILE" 2>/dev/null)
   [[ ! $cost_record =~ $DECIMAL_RE ]] && cost_record=""
   # CV-COST-1, CV-COST-2, CV-COST-9: one ledger line per started
   # invocation, appended once, when the invocation ends. Every graceful
@@ -1755,16 +1758,19 @@ fmt_usd() {
 # match it, so a stray text field can never count as a recorded zero.
 DECIMAL_RE='^-?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$'
 
-# format_stream <color> [cost file]
+# format_stream <color> [invocation log]
 # Reads a message stream on stdin. Writes a transcript for the operator. When
-# a cost file is named, the recorded cost of the invocation is written there
-# as one line when the stream ends: the harness total when the harness
-# reported one, else the cost that the message stream carried, else "absent"
-# (CV-COST-1). Neither a "stats" record without a cost column nor a stream
-# whose steps report no cost makes a recorded cost, and absent cost is never
-# treated as a recorded zero (CV-COST-1).
+# an invocation log is named, the recorded cost of the invocation is appended
+# to it as the one-line converge_event "cost_record" when the stream ends:
+# the harness total when the harness reported one, else the cost that the
+# message stream carried, else an empty record (CV-COST-1). Neither a "stats"
+# record without a cost column nor a stream whose steps report no cost makes
+# a recorded cost, and absent cost is never treated as a recorded zero
+# (CV-COST-1). The log takes the append after every other writer has ended:
+# tee holds the log, and the stream this reader drinks is tee's output, so
+# tee has exited before this line can run.
 format_stream() {
-  local accent=$1 cost_file=${2:-}
+  local accent=$1 cost_log=${2:-}
   jq --unbuffered -R -r "$(stream_filter)" 2>/dev/null | {
     local record kind rest rest2 name arg lines final=0 turns ms cost line held as_final
     local started=-1 first=1 counted=0 sum=0 reported=0
@@ -1854,9 +1860,15 @@ format_stream() {
     elif ((stream_cost)); then
       cost_out=$sum
     else
-      cost_out=absent
+      cost_out=""
     fi
-    [[ -n $cost_file ]] && printf '%s\n' "$cost_out" >"$cost_file"
+    # A value that is not a decimal lands as an empty record: absent cost is
+    # a record with no cost data, and never a recorded zero (CV-COST-1).
+    if [[ -n ${cost_log:-} ]]; then
+      [[ $cost_out =~ $DECIMAL_RE ]] || cost_out=""
+      printf '{"type":"converge_event","event":"cost_record","record":"%s"}\n' \
+        "$cost_out" >>"$cost_log" 2>/dev/null
+    fi
   }
 }
 
