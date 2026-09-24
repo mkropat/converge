@@ -1335,20 +1335,24 @@ print(json.dumps(result, ensure_ascii=False))
 
 # count_pending <json>   One shared reader for both forms: prints one line
 # per unreviewed commit -- "<hash>\t<subject>" -- or nothing, and exits 0,
-# when no commit is unreviewed and the repository holds no relevant commit
-# (CB-RVW-8). A relevant commit changes one or more paths in the run
+# when no commit is unreviewed and the considered history holds no relevant
+# commit (CB-RVW-8). A relevant commit changes one or more paths in the run
 # directory, and every commit that the repository HEAD reaches is relevant
-# when the run directory is the root of the repository. The command reads
-# the repository at the time of the call: git rev-list walks HEAD now, and
-# the rows of the reviewed table are the names that no pass recorded yet.
+# when the run directory is the root of the repository. The considered
+# history holds the 1,000 newest relevant commits, and not the older ones,
+# whatever rows exist for them (CB-RVW-8). The command reads the repository
+# at the time of the call: git rev-list walks HEAD now, and the rows of the
+# reviewed table are the names that no pass recorded yet.
 count_pending() {
   local -a pending=()
   local reachable="" row hash subject rel
   # The commits of a run directory that sits beside the root are the ones
   # that change a path under it. A commit that touches no such path is not
-  # pending, however near the root of the repository it sits.
+  # pending, however near the root of the repository it sits. --max-count
+  # cuts the walk at the 1,000 newest relevant commits, older than the
+  # 1,000th relevant commit nothing is considered.
   if [[ $REPO == "$RUN_DIR" ]]; then
-    if ! reachable=$(git -C "$REPO" rev-list HEAD 2>"$ERRFILE"); then
+    if ! reachable=$(git -C "$REPO" rev-list --max-count=1000 HEAD 2>"$ERRFILE"); then
       echo "cbugs: cannot read repository history" >&2
       while IFS= read -r row; do
         [[ -n $row ]] && echo "cbugs: $row" >&2
@@ -1357,7 +1361,7 @@ count_pending() {
     fi
   else
     rel=${RUN_DIR#"$REPO"/}
-    if ! reachable=$(git -C "$REPO" rev-list HEAD -- ":(top,literal)$rel" 2>"$ERRFILE"); then
+    if ! reachable=$(git -C "$REPO" rev-list --max-count=1000 HEAD -- ":(top,literal)$rel" 2>"$ERRFILE"); then
       echo "cbugs: cannot read repository history" >&2
       while IFS= read -r row; do
         [[ -n $row ]] && echo "cbugs: $row" >&2

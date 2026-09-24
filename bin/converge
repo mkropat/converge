@@ -565,6 +565,20 @@ relevant_count() {
   fi
 }
 
+# considered_count   Prints the size of the history that cbugs reviewed
+# pending considers: the 1,000 newest relevant commits (CB-RVW-8). The loop
+# names the range of a cadence pass by this history, so the count that
+# stands in for "no relevant commit is recorded" must be the same bounded
+# count, or a first pass with more than 1,000 relevant commits would name
+# itself wrongly (CV-REV-17). A git failure still reads as 0, exactly as
+# relevant_count reads.
+considered_count() {
+  local n
+  n=$(relevant_count)
+  if ((n > 1000)); then n=1000; fi
+  printf '%s' "$n"
+}
+
 # DIR_HEAD_NONE   The key that names a run directory with no directory HEAD,
 # which by CV-INV-9 is a run directory with no relevant commit. No git hash
 # can hold this shape, so one key covers both cases of CV-CONV-15, and an
@@ -2151,17 +2165,17 @@ EOF
 
 # cadence_focus <pending lines> <pending count>   Prints the text that names
 # what a cadence pass reads. When the bug database holds no record of a
-# relevant commit, the range is every relevant commit in the repository
-# history, and the reviewer must judge how far back to read (CV-REV-17).
-# Otherwise the range is every unreviewed commit, however many there are
-# (CV-REV-16): the loop lists them, so the reviewer needs no query to learn
-# what it has not read yet.
+# commit that cbugs reviewed pending considers, the range is every relevant
+# commit in the considered history, and the reviewer must judge how far back
+# to read (CV-REV-17). Otherwise the range is every unreviewed commit in the
+# considered history (CV-REV-16): the loop lists them, so the reviewer needs
+# no query to learn what it has not read yet.
 cadence_focus() {
   # No count verb reports the rows of the reviewed table, so the equality of
-  # the pending and the relevant counts stands in for "no relevant commit is
-  # recorded": nothing that the history reaches is covered, whatever rows
-  # older history may hold.
-  if (($2 == $(relevant_count))); then
+  # the pending and the considered counts stands in for "no considered
+  # commit is recorded": nothing that the considered history reaches is
+  # covered, whatever rows the older history that it ignores may hold.
+  if (($2 == $(considered_count))); then
     printf 'every relevant commit in the repository history (first pass: judge
 how far back to read; the most recent commits matter most)'
     return
