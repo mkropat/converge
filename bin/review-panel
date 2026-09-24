@@ -868,7 +868,7 @@ say_final() {
 say_stats() {
   local text
   text="$(plural "$1" turn) $G_DOT $(duration "$2")"
-  [[ -n $3 ]] && text="$text $G_DOT $(printf '$%.2f' "$3")"
+  [[ -n $3 ]] && text="$text $G_DOT $(fmt_usd "$3")"
   gutter "$DIM" "" "$DIM$text$OFF" "stats"
 }
 
@@ -946,6 +946,13 @@ dispatch_held() {
 # add <a> <b>   Adds two costs. The shell has no arithmetic for fractions.
 add() {
   awk -v a="$1" -v b="$2" 'BEGIN { printf "%.10f", a + b }'
+}
+
+# fmt_usd <cost>   Prints a cost in USD. Six decimals, so that a small
+# nonzero cost stays distinct from zero (CV-COST-8), the way converge
+# renders every recorded cost (RP-REL-4).
+fmt_usd() {
+  printf '$%.6f' "$1"
 }
 
 # DECIMAL_RE   The shape of a recorded cost. An absent cost stays absent:
