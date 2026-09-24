@@ -172,7 +172,35 @@ if [[ -z ${XDG_STATE_HOME:-} && -z ${HOME:-} ]]; then
   echo "review-panel: set HOME or XDG_STATE_HOME; review-panel keeps its state there" >&2
   exit 2
 fi
-STATE_DIR="${XDG_STATE_HOME:-${HOME:-}/.local/state}/converge/$SLUG"
+OWN_STATE_DIR="${XDG_STATE_HOME:-${HOME:-}/.local/state}/converge/$SLUG"
+if [[ $RUN_DIR == "$REPO" ]]; then
+  STATE_DIR=$OWN_STATE_DIR
+  WALK_ANCESTORS=0
+  STATE_LIMIT=$RUN_DIR
+else
+  WALK_ANCESTORS=1
+  STATE_LIMIT=$REPO
+  STATE_DIR=""
+  ancestor=${RUN_DIR%/*}
+  [[ -n $ancestor ]] || ancestor=/
+  while ((WALK_ANCESTORS)); do
+    candidate_repo=$(git -C "$ancestor" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$ancestor")
+    candidate_subpath=""
+    [[ $ancestor == "$candidate_repo" ]] || candidate_subpath="${ancestor#"$candidate_repo"/}"
+    candidate_slug="${candidate_repo##*/}${candidate_subpath:+-${candidate_subpath//\//-}}-$(hash_path "$ancestor")"
+    candidate_state="${XDG_STATE_HOME:-${HOME:-}/.local/state}/converge/$candidate_slug"
+    if [[ -d $candidate_state ]]; then
+      STATE_DIR=$candidate_state
+      break
+    fi
+    [[ $ancestor == "$STATE_LIMIT" ]] && break
+    parent=${ancestor%/*}
+    [[ -n $parent ]] || parent=/
+    [[ $parent == "$ancestor" ]] && break
+    ancestor=$parent
+  done
+  [[ -n $STATE_DIR ]] || STATE_DIR=$OWN_STATE_DIR
+fi
 LOG_DIR="$STATE_DIR/logs"
 # The panel keeps its own event log, so that its lines and a running
 # converge loop's lines never overwrite one another (RP-RUN-4).
