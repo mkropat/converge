@@ -430,9 +430,12 @@ sections of `docs/converge-requirements.md` for the loop behavior.
   commits from the history that the repository HEAD reaches. A commit is
   relevant when it changes one or more paths in the run directory. Every
   reachable commit is relevant when the run directory is the repository root.
-  The command must read the repository at the time of the call. When the
-  repository holds no relevant commit, and when no commit is unreviewed, the
-  command must print nothing and exit with the status 0.
+  The command must consider only the 1,000 newest relevant commits. It must
+  ignore all older commits, whether or not a review record exists for them.
+  This limit applies before the command selects the unreviewed commits. The
+  command must read the repository at the time of the call. When the considered
+  history holds no relevant commit, and when no considered commit is
+  unreviewed, the command must print nothing and exit with the status 0.
 - **CB-RVW-9**: The human form of `reviewed pending` must give one line for
   each commit, with the hash and the subject of the commit. The `--json` form
   must give the same information as JSON.
