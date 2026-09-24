@@ -1388,11 +1388,28 @@ count_pending() {
     [[ -n ${named[$row]:-} ]] || unseen+=("$row")
   done
   ((${#unseen[@]} > 0)) || return 0
+  # One batched git call reads every subject, so the pending list stops
+  # meaning one git process per commit. The call names the same records the
+  # rev-list above named, and a failed read stops the verb as a repository
+  # read failure rather than printing rows with empty subjects.
+  local -A subject_of=()
+  local batch_out
+  if ! batch_out=$(
+      printf '%s\n' "${unseen[@]}" |
+        git -C "$REPO" log --stdin --no-walk=unsorted --format='%H%x09%s' 2>"$ERRFILE"); then
+    echo "cbugs: cannot read repository history" >&2
+    while IFS= read -r row; do
+      [[ -n $row ]] && echo "cbugs: $row" >&2
+    done <"$ERRFILE"
+    return 1
+  fi
+  while IFS= read -r row; do
+    [[ -n $row ]] || continue
+    hash=${row%%$'\t'*}
+    subject_of[$hash]=${row#*$'\t'}
+  done <<<"$batch_out"
   for hash in ${unseen[@]+"${unseen[@]}"}; do
-    # Read the subject now, so the two columns describe the repository at
-    # the same moment for every one of the lines.
-    subject=$(git -C "$REPO" show -s --format=%s "$hash" 2>/dev/null || true)
-    printf '%s\t%s\n' "$hash" "$subject"
+    printf '%s\t%s\n' "$hash" "${subject_of[$hash]:-}"
   done
 }
 
