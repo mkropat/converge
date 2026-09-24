@@ -2171,11 +2171,11 @@ EOF
 # considered history (CV-REV-16): the loop lists them, so the reviewer needs
 # no query to learn what it has not read yet.
 cadence_focus() {
-  # No count verb reports the rows of the reviewed table, so the equality of
-  # the pending and the considered counts stands in for "no considered
-  # commit is recorded": nothing that the considered history reaches is
-  # covered, whatever rows the older history that it ignores may hold.
-  if (($2 == $(considered_count))); then
+  local reviewed_count=0
+  if [[ -f $STATE_DIR/cbugs.db ]]; then
+    reviewed_count=$(sqlite3 "$STATE_DIR/cbugs.db" 'SELECT COUNT(*) FROM reviewed;' 2>/dev/null) || reviewed_count=0
+  fi
+  if ((reviewed_count == 0)); then
     printf 'every relevant commit in the repository history (first pass: judge
 how far back to read; the most recent commits matter most)'
     return
