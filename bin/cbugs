@@ -1513,7 +1513,7 @@ verb_reviewed_add() {
       exit 2
     fi
     while IFS= read -r value || [[ -n $value ]]; do
-      [[ -n $value ]] && commits+=("$value")
+      commits+=("$value")
     done
   fi
   # One commit is one value: the same value twice, or two values that name
