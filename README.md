@@ -146,3 +146,4 @@ Ralph's source.
 | Agent selection | Supports Claude and OpenCode, with separate model rotation for each role. | Documents six agent backends, with operator-selected agents and models. |
 | Run limits and human decisions | No worker-iteration limit by default. No dedicated signal to stop for a human decision. | Defaults to 10 iterations. Separate signals stop for a blocker or a human decision. |
 root note from iteration 1
+root note from iteration 1
