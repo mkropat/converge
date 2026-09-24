@@ -1225,9 +1225,19 @@ WHERE r.bug_id = $id ORDER BY c.id ASC;
   IFS=$'\t' read -r bid kind status title < <(jq -r '.[0] | [.id, .kind, .status, .title] | @tsv' <<<"$bug")
   printf '%s#%s%s  %s%s%s  %s  %s\n' "$BOLD" "$bid" "$OFF" "$DIM" "$kind" "$OFF" "$status" "$title"
   printf '\n%srevisions%s\n' "$BOLD" "$OFF"
-  local rid rstatus rtitle rnote rrole riter rcommit rcreated meta rcite
+  local rid rstatus rtitle rnote rrole riter rcommit rcreated meta rcite revision
   local rpanelrun rpanelprofile rpanelinv
-  while IFS=$'\t' read -r rid rstatus rtitle rrole riter rcommit rcreated rpanelrun rpanelprofile rpanelinv; do
+  while IFS= read -r revision; do
+    rid=$(jq -r '.id' <<<"$revision")
+    rstatus=$(jq -r '.status' <<<"$revision")
+    rtitle=$(jq -r '.title' <<<"$revision")
+    rrole=$(jq -r '.role // "-"' <<<"$revision")
+    riter=$(jq -r '.iteration // "-"' <<<"$revision")
+    rcommit=$(jq -r '.commit_id // "-"' <<<"$revision")
+    rcreated=$(jq -r '.created_at' <<<"$revision")
+    rpanelrun=$(jq -r '.panel_run // "-"' <<<"$revision")
+    rpanelprofile=$(jq -r '.panel_profile // "-"' <<<"$revision")
+    rpanelinv=$(jq -r '.panel_invocation // "-"' <<<"$revision")
     meta="?"
     [[ $rrole == "-" ]] || meta="$rrole"
     [[ $riter == "-" ]] || meta+=" iter $riter"
@@ -1237,7 +1247,7 @@ WHERE r.bug_id = $id ORDER BY c.id ASC;
     [[ $rpanelinv == "-" ]] || meta+=" invocation $rpanelinv"
     printf '  %s%s%s  %s  %s%s%s\n' "$DIM" "$rcreated" "$OFF" "$rstatus" "$DIM" "$meta" "$OFF"
     printf '    %s\n' "$rtitle"
-    rnote=$(jq -r --argjson i "$rid" '.[] | select(.id == $i) | .note' <<<"$revs")
+    rnote=$(jq -r '.note' <<<"$revision")
     if [[ -n $rnote ]]; then
       while IFS= read -r line; do
         printf '      %s%s%s\n' "$DIM" "$line" "$OFF"
@@ -1245,10 +1255,8 @@ WHERE r.bug_id = $id ORDER BY c.id ASC;
     fi
     while IFS= read -r rcite; do
       [[ -n $rcite ]] && printf '      %scite%s %s\n' "$DIM" "$OFF" "$rcite"
-    done < <(jq -r --argjson i "$rid" \
-      '.[] | select(.id == $i) | .citations[] | .path + (if .req then ":" + .req else "" end)' \
-      <<<"$revs")
-  done < <(jq -r '.[] | [.id, .status, .title, (.role // "-"), (.iteration // "-"), (.commit_id // "-"), .created_at, (.panel_run // "-"), (.panel_profile // "-"), (.panel_invocation // "-")] | @tsv' <<<"$revs")
+    done < <(jq -r '.citations[] | .path + (if .req then ":" + .req else "" end)' <<<"$revision")
+  done < <(jq -c '.[]' <<<"$revs")
 }
 
 verb_search() {
