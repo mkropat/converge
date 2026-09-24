@@ -2170,10 +2170,17 @@ EOF
 # to read (CV-REV-17). Otherwise the range is every unreviewed commit in the
 # considered history (CV-REV-16): the loop lists them, so the reviewer needs
 # no query to learn what it has not read yet.
+# The count read gives a bounded wait on a busy database, the same bound the
+# calls through cbugs hold for their writes (CB-CONC-5), and fails this call
+# rather than answering nothing: a failed read carries no information about
+# the records, so CV-REV-17's first-pass license, granted when the bug
+# database records no reviewed commit, must not print from it. The -f guard
+# above covers absence of the file, which reads correctly as no record.
 cadence_focus() {
   local reviewed_count=0
   if [[ -f $STATE_DIR/cbugs.db ]]; then
-    reviewed_count=$(sqlite3 "$STATE_DIR/cbugs.db" 'SELECT COUNT(*) FROM reviewed;' 2>/dev/null) || reviewed_count=0
+    reviewed_count=$(sqlite3 -bail -cmd '.timeout 10000' \
+      "$STATE_DIR/cbugs.db" 'SELECT COUNT(*) FROM reviewed;' 2>/dev/null) || return 1
   fi
   if ((reviewed_count == 0)); then
     printf 'every relevant commit in the repository history (first pass: judge
@@ -2323,7 +2330,15 @@ only the commits that no review pass has recorded. Judge how much of the
 code to read; the integration of the recent work with the old code matters
 most."
   else
-    focus=$(cadence_focus "$pending_list" "$pending_count")
+    if ! focus=$(cadence_focus "$pending_list" "$pending_count"); then
+      # A failed reviewed-count read is not a first pass (CV-REV-17): the
+      # first-pass range would be a false claim, so the pass is skipped
+      # rather than run on a range that answers nothing, as the failed
+      # pending read above does.
+      warn "cbugs.db read failed; no cadence pass to run"
+      CONVERGED_VOTES=0
+      return 0
+    fi
   fi
   prompt=$(reviewer_prompt "$focus")
 
