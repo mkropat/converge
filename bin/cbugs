@@ -1227,26 +1227,17 @@ WHERE r.bug_id = $id ORDER BY c.id ASC;
   printf '\n%srevisions%s\n' "$BOLD" "$OFF"
   local rid rstatus rtitle rnote rrole riter rcommit rcreated meta rcite
   local rpanelrun rpanelprofile rpanelinv
-  while IFS=$'\t' read -r rid rstatus rtitle rnote rrole riter rcommit rcreated rpanelrun rpanelprofile rpanelinv; do
-    # A field that is null in the data comes through as "-", a placeholder
-    # that no real role, iteration, or commit id ever equals. IFS-tab
-    # splitting collapses a genuinely empty field, which would misalign
-    # every field after it, so an empty placeholder is not an option here.
+  while IFS=$'\t' read -r rid rstatus rtitle rrole riter rcommit rcreated rpanelrun rpanelprofile rpanelinv; do
     meta="?"
     [[ $rrole == "-" ]] || meta="$rrole"
     [[ $riter == "-" ]] || meta+=" iter $riter"
     [[ $rcommit == "-" ]] || meta+=" @${rcommit:0:8}"
-    # The panel fields name the panel run, the canonical profile of the
-    # agent, and the one invocation of the run that wrote the revision
-    # (RP-RUN-2). A plain caller wrote none of them, and shows none of
-    # them.
     [[ $rpanelrun == "-" ]] || meta+=" panel run $rpanelrun"
     [[ $rpanelprofile == "-" ]] || meta+=" profile $rpanelprofile"
     [[ $rpanelinv == "-" ]] || meta+=" invocation $rpanelinv"
     printf '  %s%s%s  %s  %s%s%s\n' "$DIM" "$rcreated" "$OFF" "$rstatus" "$DIM" "$meta" "$OFF"
     printf '    %s\n' "$rtitle"
     rnote=$(jq -r --argjson i "$rid" '.[] | select(.id == $i) | .note' <<<"$revs")
-    [[ $rnote == '__EMPTY_NOTE__' ]] && rnote=""
     if [[ -n $rnote ]]; then
       while IFS= read -r line; do
         printf '      %s%s%s\n' "$DIM" "$line" "$OFF"
@@ -1257,7 +1248,7 @@ WHERE r.bug_id = $id ORDER BY c.id ASC;
     done < <(jq -r --argjson i "$rid" \
       '.[] | select(.id == $i) | .citations[] | .path + (if .req then ":" + .req else "" end)' \
       <<<"$revs")
-  done < <(jq -r '.[] | [.id, .status, .title, (if (.note // "") == "" then "__EMPTY_NOTE__" else .note end), (.role // "-"), (.iteration // "-"), (.commit_id // "-"), .created_at, (.panel_run // "-"), (.panel_profile // "-"), (.panel_invocation // "-")] | @tsv' <<<"$revs")
+  done < <(jq -r '.[] | [.id, .status, .title, (.role // "-"), (.iteration // "-"), (.commit_id // "-"), .created_at, (.panel_run // "-"), (.panel_profile // "-"), (.panel_invocation // "-")] | @tsv' <<<"$revs")
 }
 
 verb_search() {
