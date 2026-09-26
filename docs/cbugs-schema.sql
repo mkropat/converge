@@ -5,15 +5,16 @@
 -- for the behavior of the command.
 --
 -- The model is event sourced. A bug is a stable identifier and a kind. Every
--- other value of the bug lives in the revisions, and the newest revision of a
--- bug is the current state. Nothing is ever changed, and nothing is ever
--- removed. The history is therefore true by construction, and no stored value
--- can disagree with it.
+-- other value of the bug lives in the revisions. At a repository HEAD, the
+-- newest visible revision of a bug is the current state. A revision is visible
+-- when it has no commit or HEAD reaches its commit. Nothing is ever changed,
+-- and nothing is ever removed. The history is therefore true by construction,
+-- and no stored value can disagree with it.
 --
 -- The reviewed commits form a history of coverage. Multiple rows can name
 -- one commit, and each row is immutable.
 
-PRAGMA user_version = 7;
+PRAGMA user_version = 8;
 
 -- The identity of a defect.
 --
@@ -35,17 +36,18 @@ CREATE TABLE bug (
 --
 -- Each revision carries the full state of the bug, and not only the part that
 -- the caller changed. A caller that writes a revision copies the values of the
--- previous revision forward, and changes the ones it means to change. The
--- newest revision is therefore the truth, with nothing to fold and no null to
--- read as "unchanged".
+-- newest revision visible at the resolved write commit, and changes the ones it
+-- means to change. The newest visible revision is therefore the truth at that
+-- HEAD, with nothing to fold and no null to read as "unchanged".
 --
 -- The first revision of a bug is the report of the defect. A later revision
 -- closes the bug, dismisses it, reopens it, corrects the title, or only adds a
 -- note.
 --
--- `commit_id` is the commit that the caller examined. It is the HEAD of the
--- repository, unless the caller names another commit. For a close, it is
--- therefore the commit that holds the fix.
+-- `commit_id` is the full object id of the commit that the caller examined. It
+-- is the HEAD of the repository, unless the caller names another commit. The
+-- command resolves either value before it writes. For a close, it is therefore
+-- the commit that holds the fix. A null commit is visible at every HEAD.
 --
 -- `role` and `iteration` come from the environment that the loop exports. Both
 -- are null when a person runs the command.
@@ -100,23 +102,19 @@ CREATE TABLE citation (
 
 CREATE INDEX citation_revision ON citation (revision_id, id);
 
--- The current state of each bug.
+-- Current state is a read-time relation, not a persistent view.
 --
--- `created_at` is the time of the first revision. `updated_at` is the time of
--- the newest one, and `list` puts the newest first. There is no closed time:
--- the history says when a bug closed, by whom, and at which commit.
-CREATE VIEW bug_current AS
-SELECT
-  b.id                                                              AS id,
-  b.kind                                                            AS kind,
-  r.status                                                          AS status,
-  r.title                                                           AS title,
-  r.id                                                              AS revision_id,
-  (SELECT MIN(created_at) FROM revision WHERE bug_id = b.id)        AS created_at,
-  r.created_at                                                      AS updated_at
-FROM bug AS b
-JOIN revision AS r
-  ON r.id = (SELECT MAX(id) FROM revision WHERE bug_id = b.id);
+-- SQLite cannot ask Git whether HEAD reaches a commit. For each command that
+-- needs visibility, the command resolves HEAD once and supplies the visible
+-- commit ids to its query. The query also selects every revision whose
+-- commit_id is null. For each bug that has a selected revision, the selected
+-- revision with the greatest id supplies status, title, revision_id, and
+-- updated_at. created_at remains the time of the first stored revision.
+--
+-- A bug with no selected revision is hidden. Normal summary, list, and search
+-- queries omit it. Audit list queries can select it and use its newest stored
+-- revision as historical display data. The database stores no visibility,
+-- current-state, branch, HEAD, or reachability value.
 
 -- One commit that a review pass covered.
 --
@@ -177,6 +175,8 @@ CREATE INDEX reviewed_commit ON reviewed (commit_id);
 -- review id, hash, iteration, and timestamp, with null for each old profile.
 -- Version 5 to version 6 adds the two panel columns of the revision table,
 -- with null for each old revision. Version 6 to version 7 adds
--- `panel_invocation`, with null for each old revision. All steps preserve
--- bugs, revisions, and citations except the kind rename. Unsupported
--- versions cause an error that names both versions.
+-- `panel_invocation`, with null for each old revision. Version 7 to version 8
+-- removes the global `bug_current` view. Current state now depends on Git HEAD
+-- and is a read-time relation. All steps preserve bugs, revisions, citations,
+-- and reviewed records except the kind rename. Unsupported versions cause an
+-- error that names both versions.

@@ -36,6 +36,7 @@ These are the section codes.
 | `MIG` | Migration |
 | `BUG` | Bugs |
 | `REV` | Revisions |
+| `VIS` | Visibility at HEAD |
 | `CITE` | Citations |
 | `PROV` | Provenance |
 | `RVW` | Reviewed commits |
@@ -72,6 +73,13 @@ through `CB-MIG-6` replace it.
 - **Kind**: `code`, `spec`, or `task`. See "Kinds of bug".
 - **Revision**: one assertion about a bug, by one role, at one commit. A
   revision carries the full state of the bug and a note.
+- **Visible revision**: a revision with no commit, or a revision whose commit
+  the current repository `HEAD` reaches. In a shallow repository, a revision
+  is also visible when missing history prevents Git from deciding reachability.
+- **Visible bug**: a bug that has one or more visible revisions.
+- **Hidden bug**: a stored bug that has no visible revision.
+- **Current revision**: the visible revision of a bug with the greatest revision
+  id. A hidden bug has no current revision at the current `HEAD`.
 - **Citation**: a reference from a revision to a documented requirement. It
   names a requirements document, and can also name an identifier inside it.
 - **Reviewed commit**: a commit of the repository that the table of reviewed
@@ -114,9 +122,8 @@ Apply these when a requirement is ambiguous.
 - **CB-PRIN-1**: The primary caller is an agent with no memory of prior
   iterations. Every command must be easy to call correctly on the first attempt,
   and its output must be easy to read without a parser.
-- **CB-PRIN-2**: The history is the record. The command adds revisions. It never
-  changes a revision, and it never removes one. The current state of a bug is the
-  newest revision of that bug, so no stored value can disagree with the history.
+- **CB-PRIN-2**: Retired. Defined one global current revision. **CB-PRIN-6**
+  replaces it with current state at repository `HEAD`.
 - **CB-PRIN-3**: A defect and an assertion about a defect are different things.
   The bug holds the identity. A revision holds what a role said, when, and at
   which commit.
@@ -124,6 +131,10 @@ Apply these when a requirement is ambiguous.
   only when a role needs it to do its work.
 - **CB-PRIN-5**: The command holds no policy. It does not judge which bug
   matters, and it does not stop a loop. The prompts hold the policy.
+- **CB-PRIN-6**: The history is the record. The command adds revisions. It never
+  changes a revision, and it never removes one. At a repository `HEAD`, the
+  current state of a visible bug is its newest visible revision. The command
+  stores neither visibility nor current state.
 
 ## Kinds of bug
 
@@ -288,8 +299,8 @@ migrates it, and the history carries over.
   reviewed commits, and nothing else. Every bug, every revision, and every
   citation must be the same after the migration as before it.
 
-- **CB-MIG-9**: The database must record the version of its model in `PRAGMA
-  user_version`. The current version is 5.
+- **CB-MIG-9**: Retired. Named model version 5 as current. **CB-MIG-12**
+  replaces it.
 - **CB-MIG-10**: The command must migrate version 4 to the current version
   before it answers any verb. The supported paths from versions 2 and 3 must
   remain available, as CB-MIG-2 and CB-MIG-7 require.
@@ -299,6 +310,22 @@ migrates it, and the history carries over.
   change. Each existing record must have a NULL profile, which means unknown.
   Every bug, revision, and citation must remain unchanged. The transaction and
   concurrency rules of CB-MIG-4 and CB-MIG-5 apply.
+- **CB-MIG-12**: The database must record the version of its model in `PRAGMA
+  user_version`. The current version is 8.
+- **CB-MIG-13**: The command must know how to migrate versions 5, 6, and 7 to the
+  current version before it answers any verb. The supported paths from versions
+  2, 3, and 4 must remain available.
+- **CB-MIG-14**: The migration from version 5 to version 6 must add the optional
+  `panel_run` and `panel_profile` fields to revisions. It must preserve every
+  stored value and give each old revision null panel fields.
+- **CB-MIG-15**: The migration from version 6 to version 7 must add the optional
+  `panel_invocation` field to revisions. It must preserve every stored value and
+  give each old revision a null panel invocation.
+- **CB-MIG-16**: The migration from version 7 to version 8 must remove the global
+  `bug_current` view. Current state becomes the read-time relation that
+  **CB-VIS-1** through **CB-VIS-8** define. The migration must preserve every
+  bug, revision, citation, reviewed record, panel value, id, commit, and time.
+  The transaction and concurrency rules of **CB-MIG-4** and **CB-MIG-5** apply.
 
 ## Bugs
 
@@ -327,12 +354,10 @@ A bug carries one or more revisions, in the order that callers wrote them.
 
 These rules govern every revision.
 
-- **CB-REV-2**: The newest revision of a bug gives the current status and the
-  current title.
-- **CB-REV-3**: Each revision carries the full state, and not only the part that
-  the caller changed. A verb that writes a revision must copy the status and the
-  title of the previous revision forward, and must change only what the caller
-  asked it to change.
+- **CB-REV-2**: Retired. Defined one global current revision. **CB-REV-9**
+  replaces it.
+- **CB-REV-3**: Retired. Required a write to copy the newest stored revision.
+  **CB-REV-10** defines the source at the write commit.
 - **CB-REV-4**: The citations are the one value that a revision does not copy
   forward. They are what this caller cited, and a revision with no citation
   cites nothing. See "Citations".
@@ -342,12 +367,54 @@ These rules govern every revision.
   a defect. The worker writes one when it closes a defect, and the commit of that
   revision is the commit that holds the fix. The coach and the operator write one
   when they comment.
-- **CB-REV-7**: The created time of the first revision is the time the bug was
-  logged. The created time of the newest revision is the time the bug last
-  changed.
+- **CB-REV-7**: Retired. Defined the newest stored revision as the last change.
+  **CB-REV-11** replaces it.
 - **CB-REV-8**: A revision does not name what it did. A reader sees a close by
   the change of the status, and a correction by the change of the title. The note
   says the rest, in prose.
+- **CB-REV-9**: At a repository `HEAD`, the newest visible revision of a bug
+  gives its current status and title. Revision id gives revision order. A newer
+  revision that is not visible must not supply current state.
+- **CB-REV-10**: Each revision carries the full state, and not only the part that
+  the caller changed. A verb that writes a revision must copy status and title
+  from the newest revision visible at the resolved write commit. It must change
+  only what the caller asks it to change. When no revision of the bug is visible
+  at that commit, the command must copy from the newest stored revision. The new
+  revision re-anchors the bug at the write commit.
+- **CB-REV-11**: The created time of the first stored revision is the time the bug
+  was logged. For a visible bug, the created time of its current revision is the
+  time the bug last changed at the current repository `HEAD`.
+
+## Visibility at HEAD
+
+Visibility gives one bug database a correct view for each checked-out history.
+It uses commits, not branch names. A branch name can move. A commit names the
+history that the caller examined.
+
+- **CB-VIS-1**: A revision with no commit must be visible at every repository
+  `HEAD`. This includes a revision written before the repository had its first
+  commit and a revision written in a directory that is not a repository.
+- **CB-VIS-2**: A revision with a commit must be visible when the current
+  repository `HEAD` reaches that commit.
+- **CB-VIS-3**: A bug must be visible when it has one or more visible revisions.
+  It must be hidden when it has no visible revision.
+- **CB-VIS-4**: The command must resolve repository `HEAD` once for each call
+  that reads visibility. It must use that value for the whole call. A concurrent
+  change of `HEAD` must not give one call a mixed view.
+- **CB-VIS-5**: The command must derive visibility at read time. It must not
+  store a branch name, a visible flag, a current flag, or the set of commits that
+  `HEAD` reaches. A history rewrite can therefore make a revision hidden, and a
+  later write at the new `HEAD` can make the bug visible again.
+- **CB-VIS-6**: In a shallow repository, absent ancestry must not by itself hide
+  a revision. When Git cannot decide reachability because the clone lacks an
+  ancestor or commit object, the command must treat the revision as visible. It
+  may hide the revision only when the available history proves that `HEAD` does
+  not reach its commit.
+- **CB-VIS-7**: The visibility rules must apply to code bugs, spec bugs, and tasks
+  in the same way.
+- **CB-VIS-8**: When the repository has no `HEAD`, revisions with no commit must
+  remain visible. A revision with a commit must also remain visible when the
+  current repository cannot decide its reachability.
 
 ## Citations
 
@@ -395,9 +462,16 @@ it means.
   it and must continue. An operator who runs the command by hand gets a revision
   with no role and no iteration.
 - **CB-PROV-4**: The command must read the commit from the repository. The commit
-  is the HEAD of the repository at the time of the call.
+  is the `HEAD` of the repository at the time of the call. The command must store
+  its full object id in the hash format of that repository.
 - **CB-PROV-5**: When the repository has no commit, the command must record no
   commit and must continue.
+- **CB-PROV-6**: When a write uses `--commit <id>`, the command must resolve the
+  value to one commit in the repository before it writes. It must store the full
+  object id. A value that does not resolve to exactly one commit must fail and
+  write nothing.
+- **CB-PROV-7**: An explicit `--commit` value must replace `HEAD` for both the
+  stored provenance and the visible source revision that **CB-REV-10** uses.
 
 ## Reviewed commits
 
@@ -500,13 +574,12 @@ sections of `docs/converge-requirements.md` for the loop behavior.
 bugs. A caller that runs the command with no argument does not know what to do
 next, and the help text does not tell it which bugs are open.
 
-- **CB-SUM-1**: The summary must print the ten open bugs whose newest revision
-  is the newest, in that order. It must show every kind.
+- **CB-SUM-1**: Retired. Selected open state from the newest stored revision.
+  **CB-SUM-8** replaces it.
 - **CB-SUM-2**: Each bug must use the same line form as `list`, so that the two
   listings read the same way.
-- **CB-SUM-3**: After the bugs, the summary must print a footer of at most three
-  lines. The footer must name the other verbs and must point to `cbugs --help`.
-  The bugs are the point of the output, so the footer must stay short.
+- **CB-SUM-3**: Retired. Allowed three footer lines before the hidden-bug audit
+  line existed. **CB-SUM-10** replaces it.
 - **CB-SUM-4**: When more than ten bugs are open, the footer must give the number
   of open bugs that the summary did not show, and must name the command that
   shows them all.
@@ -515,6 +588,17 @@ next, and the help text does not tell it which bugs are open.
 - **CB-SUM-6**: The summary must exit with the status 0.
 - **CB-SUM-7**: The summary takes no option, and it has no `--json` form. It is
   for a person who is looking around. An agent that wants a listing runs `list`.
+- **CB-SUM-8**: The summary must consider only visible bugs. It must read open
+  state from each bug's current revision. It must print the ten open bugs whose
+  current revisions are newest, in that order. It must show every kind. All
+  summary counts must exclude hidden bugs.
+- **CB-SUM-9**: When the database holds one or more hidden bugs, the footer must
+  give their number and must name `cbugs list --visibility hidden` as the audit
+  command.
+- **CB-SUM-10**: After the bugs, the summary must print a footer of at most four
+  lines. The footer must name the other verbs and must point to `cbugs --help`.
+  When hidden bugs exist, one line must meet **CB-SUM-9**. The bugs are the point
+  of the output, so the footer must stay short.
 
 ## Verbs
 
@@ -530,7 +614,8 @@ next, and the help text does not tell it which bugs are open.
     keeps the title of the previous revision. This lets a worker correct the
     wording of a defect it understands better, in the same call as the note it
     was already writing.
-  - **CB-WRITE-1.4**: `--commit <id>`: the commit, in place of HEAD.
+  - **CB-WRITE-1.4**: `--commit <id>`: the commit, in place of `HEAD`. The command
+    resolves and stores it as **CB-PROV-6** gives.
 - **CB-WRITE-2**: When `--note` is absent, the command must read the note from
   standard input. This lets an agent give a long report with a here-document, and
   it avoids a shell quoting problem.
@@ -581,7 +666,8 @@ next, and the help text does not tell it which bugs are open.
 
 ### list
 
-- **CB-LIST-1**: `cbugs list` must print the bugs of the run directory.
+- **CB-LIST-1**: Retired. Required one list without visibility selection.
+  **CB-LIST-6** replaces it.
 - **CB-LIST-2**: Options:
   - **CB-LIST-2.1**: `--kind code|spec|task`: show only that kind. The option
     must be repeatable, and several values mean the union, so that a worker can
@@ -589,17 +675,32 @@ next, and the help text does not tell it which bugs are open.
   - **CB-LIST-2.2**: `--status open|closed|wontfix`: show only that status. The
     option must be repeatable, so that a caller can ask for the closed bugs and
     the dismissed bugs together.
-- **CB-LIST-3**: With no option, `cbugs list` must show every bug, in every kind
-  and every status.
-- **CB-LIST-4**: The order must put the bug with the newest revision first. A bug
-  that a role reviewed or closed recently therefore comes before an older one.
-- **CB-LIST-5**: The listing must show, for each bug, the id, the kind, the
-  current status, and the current title. It must not show the revisions.
+  - **CB-LIST-2.3**: `--visibility visible|hidden|all`: select bugs by visibility.
+    The option must occur at most once. Without it, the value is `visible`.
+- **CB-LIST-3**: Retired. Required all stored bugs without an audit option.
+  **CB-LIST-6** and **CB-LIST-7** replace it.
+- **CB-LIST-4**: Retired. Ordered by the newest stored revision. **CB-LIST-8**
+  replaces it.
+- **CB-LIST-5**: Retired. Required a current state for a hidden bug.
+  **CB-LIST-9** replaces it.
+- **CB-LIST-6**: By default, `cbugs list` must print only visible bugs of the run
+  directory, in every kind and every status.
+- **CB-LIST-7**: `--visibility hidden` must print only hidden bugs.
+  `--visibility all` must print visible and hidden bugs. These audit selections
+  must not make a hidden revision current.
+- **CB-LIST-8**: A visible result must use its current revision for order, newest
+  first. A hidden result must use its newest stored revision for order, newest
+  first. In `all` mode, the command must order all rows by the revision that
+  supplies that row.
+- **CB-LIST-9**: A visible row must show the id, kind, current status, and current
+  title. A hidden row must show the id, kind, newest stored status, newest stored
+  title, and a `hidden` mark. It must not present the stored status or title as
+  current at repository `HEAD`. A listing must not show revisions.
 
 ### show
 
-- **CB-SHOW-1**: `cbugs show <id>` must print one bug in full: the id, the kind,
-  the current status, the current title, and every revision in order.
+- **CB-SHOW-1**: Retired. Required current state for every stored bug.
+  **CB-SHOW-5** replaces it.
 - **CB-SHOW-2**: Each revision must show its citations, with the revision that
   wrote them. A reader sees which requirement each role named, and when.
 - **CB-SHOW-3**: The history must show a title that a later revision replaced. A
@@ -607,18 +708,34 @@ next, and the help text does not tell it which bugs are open.
 - **CB-SHOW-4**: `cbugs <id>` must be the same command as `cbugs show <id>`. See
   "Invocation". The two forms accept the same options, print the same output, and
   give the same error for an id that names no bug.
+- **CB-SHOW-5**: `cbugs show <id>` must remain available for every stored bug,
+  including a hidden bug. It must print the id, kind, and every stored revision in
+  revision order. For a visible bug, it must identify the current revision and
+  print its status and title as current. For a hidden bug, it must mark the bug as
+  hidden and must not present any revision as current at repository `HEAD`.
+- **CB-SHOW-6**: A hidden bug id is not a missing bug id. `show` and the numeric
+  shorthand must succeed for it.
+- **CB-SHOW-7**: `show` must identify whether each revision is visible at the
+  current repository `HEAD`. This lets a reader see why an older revision gives
+  current state.
 
 ### search
 
-- **CB-SEARCH-1**: `cbugs search <text>` must print the bugs whose title, in any
-  revision, whose notes, or whose citations contain the text. A caller that
-  searches for a requirement identifier therefore finds every bug that cites it.
+- **CB-SEARCH-1**: Retired. Searched hidden bugs without a visibility rule.
+  **CB-SEARCH-5** replaces it.
 - **CB-SEARCH-2**: The search must ignore the difference between capital letters
   and small letters.
-- **CB-SEARCH-3**: `search` must accept the same options as `list`, and must use
-  the same order and the same listing form.
+- **CB-SEARCH-3**: Retired. Imported list behavior before list had audit
+  visibility. **CB-SEARCH-6** replaces it.
 - **CB-SEARCH-4**: The reviewer uses `search` to find an existing bug before it
-  logs a new one. The coach uses it to find a theme across the history.
+  logs a new one. The coach uses normal search for the current history and uses
+  the audit list when it needs hidden history.
+- **CB-SEARCH-5**: `cbugs search <text>` must print visible bugs whose title,
+  notes, or citations in a visible revision contain the text. A match in a
+  hidden revision must not make a bug match. A hidden bug must not match.
+- **CB-SEARCH-6**: `search` must accept the kind and status options of `list`.
+  It must use the visible-list order and row form. It must not accept
+  `--visibility`: the audit interface is `list --visibility hidden|all`.
 
 ## Status changes
 
@@ -665,9 +782,10 @@ next, and the help text does not tell it which bugs are open.
   accept, a missing required option, an id that names no bug, a citation whose
   path names no file, a value of `CONVERGE_RUN_DIR` that names no directory,
   and a creation call that fails or that finds no `converge` command on PATH.
-  `add --kind task` from an agent of the loop is also a failure. `reviewed add`
-  that names no commit of the repository is also a failure. `reviewed add`
-  from an agent of the loop is also a failure.
+  `add --kind task` from an agent of the loop is also a failure. A revision write
+  whose explicit `--commit` does not resolve to exactly one repository commit is
+  also a failure. `reviewed add` that names no commit of the repository is also a
+  failure. `reviewed add` from an agent of the loop is also a failure.
 - **CB-ERR-4**: The command specifies no further exit statuses. A caller reads
   the message.
 
@@ -694,10 +812,8 @@ These are recorded decisions, not oversights.
 - **CB-OOS-1**: Retired. CB-OOS-26 replaces the pass-record exclusion.
 - **CB-OOS-2** — **A change of the kind of a bug**: rejected. The kind decides
   who acts. The caller dismisses the bug and logs a new one.
-- **CB-OOS-3** — **A revision that gives only what changed**: rejected. A full
-  state on each revision costs a few repeated values, and it makes the newest
-  revision the answer to every question about the present. Nothing has to fold
-  the history.
+- **CB-OOS-3**: Retired. Assumed one global newest revision. **CB-OOS-27**
+  retains full-state revisions under the visibility rules.
 - **CB-OOS-4** — **A name for what a revision did**: rejected. The change of the
   status and of the title says it, and the note gives the reason. A name would be
   a second fact to keep true.
@@ -767,3 +883,7 @@ These are recorded decisions, not oversights.
   Review history records commit coverage, including the profile and completion
   time. It holds no findings. Coverage records may exist even when a pass finds
   no defect. The logs of the loop record the pass itself.
+- **CB-OOS-27** — **A revision that gives only what changed**: rejected. Each
+  revision carries full state. At repository `HEAD`, the command selects the
+  newest visible revision. It does not fold status or title changes across
+  revisions.

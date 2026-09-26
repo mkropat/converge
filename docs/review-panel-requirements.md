@@ -56,6 +56,12 @@ An identifier must not change its meaning. Removed requirements leave their iden
 - **RP-REV-5**: Reviewers must read the live working tree. The command must not require a clean tree or create a fixed review snapshot. Changes to code, requirements, or HEAD during the run must not by themselves fail the run. The result must not claim that every reviewer examined identical content.
 - **RP-REV-6**: A failed or timed-out reviewer must not cause a retry or fallback invocation. Other reviewers must be allowed to finish. The run must remain incomplete even if later steps succeed.
 - **RP-REV-7**: The command must not repeat review to seek agreement, fix findings, or reach convergence. The merge pass is a separate role, not another code review.
+- **RP-REV-8**: Reviewer searches must use normal cbugs visibility at repository
+  `HEAD`. A hidden historical bug must not suppress a finding in the live
+  working tree.
+- **RP-REV-9**: Each cbugs read during a panel run must use repository `HEAD` at
+  the time of that read. The panel must not assume that visibility stays fixed
+  from startup.
 
 ## Concurrent runs and attribution
 
@@ -64,6 +70,9 @@ An identifier must not change its meaning. Removed requirements leave their iden
 - **RP-RUN-3**: The command must use run attribution to select findings for its merge pass and summary. A database-wide count difference or time interval alone must not define the run's findings.
 - **RP-RUN-4**: Concurrent runs must not overwrite each other's logs, output, or result records. Stopping a panel must not stop agents from another run.
 - **RP-RUN-5**: Reviewers must retain the normal cbugs agent authorship rules. Panel identity and profile attribution must supplement those rules, not impersonate a human caller. The required attribution is a shared cbugs integration contract; this document does not prescribe its storage format.
+- **RP-RUN-6**: Run attribution and new-bug selection must include every bug that
+  this panel created, even when that bug is hidden at a later query `HEAD`. The
+  controller must use attribution or direct ids, not a normal visible-only list.
 
 ## Duplicate merge pass
 
@@ -74,6 +83,12 @@ An identifier must not change its meaning. Removed requirements leave their iden
 - **RP-MERGE-5**: Combining duplicates must preserve useful details and revision history. The merge agent must not delete bugs, fix code or requirements, create tasks, file unrelated findings, or close a bug as fixed. Combining spec duplicates does not resolve the underlying spec issue.
 - **RP-MERGE-6**: The merge agent must account for current bug state before changing it. Concurrent merging must not leave a duplicate set with no retained bug or with circular duplicate references. It must not discard changes made by other writers.
 - **RP-MERGE-7**: A failed or timed-out merge pass must make the run incomplete. The command must not retry it automatically. It must preserve findings and completed revisions and identify the summary as incomplete.
+- **RP-MERGE-8**: The merge agent must use cbugs visibility and current state at
+  repository `HEAD` when it selects an existing bug as a current duplicate. It
+  may inspect hidden bugs as audit history. It must not leave a current finding
+  represented only by a bug that remains hidden.
+- **RP-MERGE-9**: When the merge agent writes a revision, cbugs must copy status
+  and title from the newest revision visible at the resolved write commit.
 
 ## Review coverage
 
@@ -95,6 +110,11 @@ An identifier must not change its meaning. Removed requirements leave their iden
 - **RP-OUT-7**: Exit status must be `0` for a complete run with no retained new code bugs, `1` for a complete run with retained new code bugs, and `2` for an invalid or incomplete run. Errors take priority over finding counts. Existing bugs and new spec bugs alone must not cause status `1`.
 - **RP-OUT-8**: Signal handling must follow the applicable converge stop conventions, including status `130` for an operator Ctrl-C stop. An interrupted panel must not claim completion. Any cleanup must be limited to this panel's processes.
 - **RP-OUT-9**: The closing report must include total run duration. Logs must identify the panel run, each agent profile, and each invocation result under the applicable converge log conventions.
+- **RP-OUT-10**: The closing report must include every retained new bug of the
+  panel, even when it is hidden at the closing query `HEAD`. The command must
+  retrieve it by attribution or id. It must mark the bug as hidden and use the
+  title from the revision that created it. It must not present an unreachable
+  revision as current.
 
 ## Out of scope
 

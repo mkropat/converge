@@ -242,6 +242,9 @@ The operator starts a run over a connection that can break, and the run survives
 - **CV-ITER-5**: The worker prompt must instruct the worker to cite the requirement that a bug it logs is about, with `cbugs add --cite <path>[:<id>]`.
 - **CV-ITER-6**: If the guidance file exists and is not empty, the loop must include its content in the worker prompt.
 - **CV-ITER-7**: The loop must not change git state. Workers own all commits. The loop may read git state to report what an iteration changed.
+- **CV-ITER-8**: Every worker instruction that reads or acts on open bugs must use
+  the cbugs visibility and current-state rules at repository `HEAD`. A hidden bug
+  must not count as current worker work.
 
 ## The environment of an agent
 
@@ -281,6 +284,9 @@ The operator starts a run over a connection that can break, and the run survives
 - **CV-OUT-12**: After each review pass, the loop must report the number of commits that the pass recorded. The report of a final pass must say that the pass read the whole code in the run directory.
 
 - **CV-OUT-13**: The loop must find the bugs of a pass by comparing the bug lists before and after the pass. It must also check blocking-bug counts under **CV-CONV-17**.
+- **CV-OUT-14**: Both pass-report lists must use cbugs visibility at the
+  repository `HEAD` of their read. A change of visibility caused only by a change
+  of `HEAD` must not be reported as a bug that the pass logged.
 
 ## Cost tracking
 
@@ -322,6 +328,13 @@ The operator starts a run over a connection that can break, and the run survives
   3. If not stopped, run a due final pass or, if none is due, a due cadence pass. Apply the review result, blocking-bug checks, and directory-HEAD checks. Apply the stop checks from step 2 again. Stop if convergence now holds, before any coach run.
   4. If not stopped, run a due coach, then proceed to the next worker.
   The loop must check signals and the iteration limit before every new agent invocation, including a startup review. SIGINT must forbid every new invocation. The iteration limit must never allow an extra final pass, even if the last worker completes the vote count. At the limit, only votes and approval already obtained can permit convergence. Review failure must not skip a due coach unless a stop condition holds.
+- **CV-CONV-19**: Every blocking-bug count must use bugs that are visible at the
+  repository `HEAD` at the time of the check. It must use the status from each
+  bug's current visible revision. Hidden bugs must not block votes, approval, or
+  convergence. Only visible open code bugs and visible open tasks block.
+- **CV-CONV-20**: A change of directory `HEAD` must cause the next blocking-bug
+  check to recompute visibility and current state. The loop must not reuse a bug
+  count from another `HEAD`.
 
 ## Reviewer
 
@@ -358,6 +371,9 @@ The worker builds. The reviewer reads what the worker built. One agent cannot do
 
 - **CV-REV-19**: With review enabled, the loop must count pending commits before the first worker and after each worker. A cadence pass is due when the count is at least `--review-after`. It must run synchronously under **CV-CONV-18**. A startup pass follows iteration 0. Each commit in the history that `cbugs reviewed pending` considers is pending when it has no review record, regardless of its author. A commit that changes no path in the run directory is not pending. A commit outside the considered history is not pending. A new hash after a rebase or amendment is a new commit when it is in the considered history. Any review record is sufficient coverage; no profile-specific or multiple-review count is required. No pending commits means no cadence pass, but does not prevent a final pass.
 - **CV-REV-20**: For each successful pass, the loop must supply its selected canonical reviewer profile and one successful completion timestamp to the bug tracker's review-record operation. It must use that same profile and timestamp for all commits covered by the pass. Both pass types must record only commits pending at pass start, as **CV-REV-15** gives. Final approval remains separate under **CV-CONV-15**. The record interface accepts profile and timestamp inputs as `docs/cbugs-requirements.md` defines. This adds no profile or timestamp provenance to bug revisions.
+- **CV-REV-21**: Reviewer duplicate searches must use normal cbugs visibility at
+  repository `HEAD`. A hidden historical bug must not prevent the reviewer from
+  recording a defect that exists in the current code.
 
 ## Coach
 
@@ -376,6 +392,9 @@ The worker builds. The reviewer reads what the worker built. One agent cannot do
 - **CV-COACH-7**: The loop must log coach output the same way it logs worker output.
 
 - **CV-COACH-8**: The coach cadence must start at zero each session. Every started worker iteration must count toward the iteration limit and coach cadence, including failures and timeouts. After every `K` iterations, an enabled coach is due. When `K` is `0`, the coach is due on every check, including before the first worker iteration. It must run synchronously under **CV-CONV-18**, after any due review, even if the worker or reviewer failed or timed out. A stop condition takes priority.
+- **CV-COACH-9**: Normal cbugs list and search commands show the history visible
+  at repository `HEAD`. The coach may use `cbugs list --visibility hidden` or
+  `cbugs list --visibility all` when it needs to inspect hidden history.
 
 ## State and logs
 
@@ -390,7 +409,8 @@ The loop keeps its files in two directories. The state directory is durable. The
 - **CV-STATE-3**: `<name>` must derive from the path of the run directory and must be stable. A new run in the same run directory must find the state of prior runs. This makes a restart seamless: the guidance file and the journal carry over.
 - **CV-STATE-4**: `<name>` must also contain the name of the repository and the path of the run directory within it, so that an operator can read the directory listing and tell the run directories of one repository apart.
 - **CV-STATE-5**: The guidance file is `guidance.md`. The journal is `journal.md`. `docs/cbugs-requirements.md` names the bug database, which lives beside them.
-- **CV-STATE-6**: The bugs carry over from one run to the next, as the guidance and the journal do. An open code bug that a run did not fix is the first work of the next run.
+- **CV-STATE-6**: Retired. Required every stored open bug to become work in the
+  next run. **CV-STATE-14** replaces it.
 - **CV-STATE-7**: Retired. Stored harness selection across runs. **CV-HARN-12** forbids new selection state.
 - **CV-STATE-8**: The loop must write the full output of each worker, reviewer, and coach invocation to one log file per invocation, in a format that includes every message, tool call, and tool result. Name the files so that the order of invocations is obvious, and so that files from different runs do not collide.
 - **CV-STATE-9**: The loop must write its output to one file per session. The client reads that file. Beside it, the loop must record, at the end of the session, the exit status. The loop must record which session is the newest.
@@ -398,6 +418,10 @@ The loop keeps its files in two directories. The state directory is durable. The
 - **CV-STATE-11**: The logs must be sufficient for another agent to diagnose problems with the loop after the fact.
 - **CV-STATE-12**: Retired. Included stored harness selection in durable state. **CV-STATE-13** replaces this list.
 - **CV-STATE-13**: The state directory must hold the guidance file, the journal, the bug database, the logs, and each session's output and status. The bug database holds reviewed-commit records. Logs and review records may identify profiles, but must not select profiles for a later session. Final approval and profile sequence positions must not survive a session.
+- **CV-STATE-14**: Bugs carry over between runs. At the new run's repository
+  `HEAD`, a carried bug is current work only when it is visible and its current
+  revision is open. A hidden bug remains in the database but does not enter the
+  normal work list.
 
 ### The runtime directory
 
