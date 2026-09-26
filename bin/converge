@@ -2342,7 +2342,15 @@ most."
   fi
   prompt=$(reviewer_prompt "$focus")
 
-  bugs_before=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" list --json 2>/dev/null) || bugs_before_ok=0
+  # CV-OUT-14: the two lists that a pass report compares must use cbugs
+  # visibility at the repository HEAD of their read, and a change of
+  # visibility caused only by a change of HEAD must not read as a bug that
+  # the pass logged. The comparison reads both lists in 'all' mode and
+  # counts a bug as pass-logged only when a revision of it became stored
+  # between the reads: the row that supplies each listing carries its
+  # supplying revision (revision_key). A bug that only flipped visibility
+  # keeps its revision_key, so it drops out of the diff.
+  bugs_before=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" list --visibility all --json 2>/dev/null) || bugs_before_ok=0
   [[ -n $bugs_before ]] || bugs_before='[]'
   head_before=$(dir_head_key)
 
@@ -2378,11 +2386,20 @@ most."
     CONVERGED_VOTES=0
   fi
 
-  bugs_after=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" list --json 2>/dev/null) || bugs_after_ok=0
+  bugs_after=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" list --visibility all --json 2>/dev/null) || bugs_after_ok=0
   [[ -n $bugs_after ]] || bugs_after='[]'
   if ((bugs_before_ok)) && ((bugs_after_ok)); then
+    # Pass-logged: a bug whose supplying revision now names a revision that
+    # did not exist at the first read. A bug that only flipped visibility
+    # between the two HEADs keeps its revision_key and drops out
+    # (CV-OUT-14); a bug the pass logged carries a new revision and stays.
     new_bugs=$(jq --argjson before "$bugs_before" \
-      '[.[] | select(.id as $i | ([$before[].id] | index($i)) == null)]' \
+      '[
+        .[]
+        | select(. as $r
+            | (($before | map(select(.id == $r.id)) | (.[0].revision_key // -1))
+               < (($r.revision_key // -1))))
+      ]' \
       <<<"$bugs_after" 2>/dev/null)
     count=$(jq 'length' <<<"$new_bugs" 2>/dev/null)
   else

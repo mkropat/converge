@@ -777,9 +777,20 @@ per bug in the form id, kind, status, title.
    \`cbugs note <retained-id> <text> --cite <path>[:<id>]\`
    on the retained bug, so that the unique part of the duplicate survives
    where readers look.
-6. Before you change a bug, read it again with \`cbugs show <id>\`. Other
-   agents write the same database at the same time. Judge the bug as it is
-   now, and write your revision below whatever a concurrent writer wrote.
+ 6. Before you change a bug, read it again with \`cbugs show <id>\`. Other
+    agents write the same database at the same time. Judge the bug as it is
+    now, and write your revision below whatever a concurrent writer wrote.
+
+Visibility: the normal \`cbugs list\` and \`cbugs search\` output shows
+the bugs that are visible at the repository HEAD, and each row holds the
+bug's current state. The command \`cbugs list --panel-run $PANEL_ID\`
+returns every bug of this panel run and marks the hidden ones with a
+hidden mark. You may inspect hidden history with \`cbugs list
+--visibility all\` and \`cbugs show <id>\`, but a bug that is hidden now
+does not read as a current duplicate. If the retained bug of a duplicate
+set is hidden, move the retained finding onto a bug that is visible, or
+leave the finding on a visible bug of your own choosing; do not leave
+this panel run's finding represented only by a bug that remains hidden.
 
 Rules: change bug records and nothing else. Do not fix code, do not edit
 requirements or guidance files, do not file a new bug, do not run
@@ -817,9 +828,20 @@ $findings
    \`cbugs note <retained-id> <text> --cite <path>[:<id>]\`
    on the retained bug, so that the unique part of the duplicate survives
    where readers look.
-5. Before you change a bug, read it again with \`cbugs show <id>\`. Other
-   agents write the same database at the same time. Judge the bug as it is
-   now, and write your revision below whatever a concurrent writer wrote.
+ 5. Before you change a bug, read it again with \`cbugs show <id>\`. Other
+    agents write the same database at the same time. Judge the bug as it is
+    now, and write your revision below whatever a concurrent writer wrote.
+
+Visibility: the normal \`cbugs list\` and \`cbugs search\` output shows
+the bugs that are visible at the repository HEAD, and each row holds the
+bug's current state. The command \`cbugs list --panel-run $PANEL_ID\`
+returns every bug of this panel run and marks the hidden ones with a
+hidden mark. You may inspect hidden history with \`cbugs list
+--visibility all\` and \`cbugs show <id>\`, but a bug that is hidden now
+does not read as a current duplicate. If the retained bug of a duplicate
+set is hidden, move the retained finding onto a bug that is visible, or
+leave the finding on a visible bug of your own choosing; do not leave
+this panel run's finding represented only by a bug that remains hidden.
 
 Rules: change bug records and nothing else. Do not fix code, do not edit
 requirements or guidance files, do not file a new bug, do not run
@@ -1767,12 +1789,25 @@ done
 ((RETAINED_FAILED)) && FAILED_ROWS+=("findings: cbugs list --panel-run failed after the merge")
 
 findings_block() {
-  local json=$1 word=${2:-retained new} id kind status title
-  while IFS=$'\t' read -r id kind status title; do
-    printf '  %s%s%s %s\n' "$YELLOW" "$G_WARN" "$OFF" \
-      "new $kind bug #$id: $title"
-    note "$word bug #$id ($kind): $title"
-  done < <(jq -r '.[] | [.id, .kind, .status, .title] | @tsv' <<<"$json")
+  local json=$1 word=${2:-retained new} id kind status title hidden shown_title
+  while IFS=$'\t' read -r id kind status title hidden; do
+    # RP-OUT-10: every retained new bug of the panel reaches the closing
+    # report, even when it is hidden at the closing query HEAD. A hidden
+    # row names itself, and borrows the title of the revision that created
+    # the bug; the panel never presents an unreachable revision as current.
+    if [[ $hidden == 1 || $hidden == true ]]; then
+      shown_title=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" show "$id" --json 2>/dev/null \
+        | jq -r '.revisions[0].title // empty' 2>/dev/null)
+      shown_title=${shown_title:-$title}
+      printf '  %s%s%s %s\n' "$YELLOW" "$G_WARN" "$OFF" \
+        "new $kind bug #$id (hidden): $shown_title"
+      note "$word bug #$id ($kind, hidden): $shown_title"
+    else
+      printf '  %s%s%s %s\n' "$YELLOW" "$G_WARN" "$OFF" \
+        "new $kind bug #$id: $title"
+      note "$word bug #$id ($kind): $title"
+    fi
+  done < <(jq -r '.[] | [.id, .kind, .status, .title, (.hidden // false)] | @tsv' <<<"$json")
 }
 
 # The findings the panel gathered: FINDINGS_JSON holds the list that a read
