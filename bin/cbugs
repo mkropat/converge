@@ -82,15 +82,23 @@ EOF
 usage_list() {
   cat >&2 <<'EOF'
 Usage: cbugs list [--kind code|spec|task]... [--status open|closed|wontfix]...
-                  [--panel-run <id>] [--json]
+                  [--visibility visible|hidden|all] [--panel-run <id>] [--json]
 
 Prints the bugs of the project, newest revision first. Repeat --kind or
 --status to show more than one value; several values of one option mean
-their union. With no option, list shows every bug.
+their union. With no option, list shows every visible bug, and each row
+holds the bug's current state: the newest revision that the current
+repository HEAD reaches.
 
---panel-run <id> shows only the bugs that the named panel run created: the
-run id of a review-panel agent is in the first revision of each bug it
-logged.
+--visibility hidden shows only the bugs that no visible revision supplies;
+it shows each one's newest stored values with a hidden mark, and does not
+read them as current. --visibility all shows both, each row ordered by the
+revision that supplies it.
+
+--panel-run <id> shows only the bugs that the named panel run created; it
+returns every bug of that run and marks the hidden ones, so a run's own
+finding selection cannot lose a bug at a later HEAD. The run id of a
+review-panel agent is in the first revision of each bug it logged.
 EOF
 }
 
@@ -98,20 +106,25 @@ usage_show() {
   cat >&2 <<'EOF'
 Usage: cbugs show <id> [--json]
 
-Prints one bug in full: its id, kind, current status, current title, and
-every revision in order, with the citations that each revision wrote.
+Prints one bug in full: its id, kind, current status and title, and every
+revision in order, with the citations that each revision wrote. The
+current revision is the newest one that the current repository HEAD can
+reach, and each revision names whether it is visible at that HEAD. A bug
+whose revisions the HEAD cannot reach reads as hidden, and no revision of
+it reads as current.
 EOF
 }
 
 usage_search() {
   cat >&2 <<'EOF'
 Usage: cbugs search <text> [--kind code|spec|task]... [--status open|closed|wontfix]...
-                           [--panel-run <id>] [--json]
+                            [--panel-run <id>] [--json]
 
-Prints the bugs whose title, in any revision, whose notes, or whose
-citations contain the text. The search ignores the difference between
-capital and small letters. Accepts the same options as list, in the same
-order and form.
+Prints the visible bugs whose title, notes, or citations, in a visible
+revision, contain the text. The search ignores the difference between
+capital and small letters. Accepts the kind and status options and the
+same order and row form as list. It takes no --visibility option: the
+audit interface is 'cbugs list --visibility hidden|all'.
 EOF
 }
 
@@ -445,7 +458,10 @@ sqlite3_run() {
   local mode=$1 sql=$2 out status
   local -a flags=(-bail -cmd ".timeout 10000")
   [[ $mode == json ]] && flags+=(-json)
-  out=$(sqlite3 "${flags[@]}" "$DB" "$sql" 2>"$ERRFILE")
+  # The script rides standard input, not an argument: a query that carries
+  # the visible commits of a long history in a temporary table would outgrow
+  # the single-argument size that the kernel accepts.
+  out=$(sqlite3 "${flags[@]}" "$DB" 2>"$ERRFILE" <<<"$sql")
   status=$?
   if ((status != 0)); then
     echo "cbugs: database error" >&2
@@ -474,26 +490,10 @@ like_escape() {
 }
 
 # The data model. This mirrors docs/cbugs-schema.sql. Nothing here is ever
-# changed or removed: the newest revision of a bug is its current state, and
-# a row of reviewed commits never changes.
-DB_VERSION=7
-
-# The current-state view, which both the schema and the migration rebuild.
-BUG_CURRENT_VIEW_SQL=$(cat <<'SQL'
-CREATE VIEW IF NOT EXISTS bug_current AS
-SELECT
-  b.id                                                              AS id,
-  b.kind                                                            AS kind,
-  r.status                                                          AS status,
-  r.title                                                           AS title,
-  r.id                                                              AS revision_id,
-  (SELECT MIN(created_at) FROM revision WHERE bug_id = b.id)        AS created_at,
-  r.created_at                                                      AS updated_at
-FROM bug AS b
-JOIN revision AS r
-  ON r.id = (SELECT MAX(id) FROM revision WHERE bug_id = b.id);
-SQL
-)
+# changed or removed: current state comes from the revisions through the
+# visibility rules at the repository HEAD of the call (CB-PRIN-6, CB-VIS-1
+# through CB-VIS-8), and a row of reviewed commits never changes.
+DB_VERSION=8
 
 SCHEMA_SQL=$(cat <<SQL
 BEGIN IMMEDIATE;
@@ -539,7 +539,6 @@ CREATE TABLE IF NOT EXISTS reviewed (
 
 CREATE INDEX IF NOT EXISTS reviewed_commit ON reviewed (commit_id);
 
-$BUG_CURRENT_VIEW_SQL
 PRAGMA user_version = $DB_VERSION;
 COMMIT;
 SQL
@@ -564,7 +563,6 @@ INSERT INTO bug_migrate (id, kind)
   SELECT id, CASE kind WHEN 'user' THEN 'task' ELSE kind END FROM bug;
 DROP TABLE bug;
 ALTER TABLE bug_migrate RENAME TO bug;
-$BUG_CURRENT_VIEW_SQL
 PRAGMA user_version = 3;
 COMMIT;
 SQL
@@ -646,8 +644,23 @@ COMMIT;
 SQL
 )
 
+# The migration from version 7 to version 8. It removes the global
+# bug_current view, and nothing else (CB-MIG-16): current state becomes the
+# read-time relation of CB-VIS-1 through CB-VIS-8, which the queries of the
+# command compute per call from the repository HEAD. The view is a
+# definition, and no bug, revision, citation, reviewed record, panel value,
+# id, commit, or time lives in it, so every stored row survives unchanged.
+# One transaction, like the previous steps.
+MIGRATE_V7_8_SQL=$(cat <<SQL
+BEGIN IMMEDIATE;
+DROP VIEW IF EXISTS bug_current;
+PRAGMA user_version = 8;
+COMMIT;
+SQL
+)
+
 # init_db   Prepares the database before the command answers the call. It
-# creates the database on first use, migrates a version 2, 3, 4, 5, or 6
+# creates the database on first use, migrates a version 2, 3, 4, 5, 6, or 7
 # database one step at a time -- one transaction per step -- and stops
 # with an error when the version is one that this command does not know.
 #
@@ -684,8 +697,9 @@ init_db() {
         4) sqlite3_run raw "$MIGRATE_V4_5_SQL" >/dev/null ;;
         5) sqlite3_run raw "$MIGRATE_V5_6_SQL" >/dev/null ;;
         6) sqlite3_run raw "$MIGRATE_V6_7_SQL" >/dev/null ;;
+        7) sqlite3_run raw "$MIGRATE_V7_8_SQL" >/dev/null ;;
         *)
-          echo "cbugs: $DB is database version $ver, but this command knows version $DB_VERSION and migrates only versions 2, 3, 4, 5, and 6" >&2
+          echo "cbugs: $DB is database version $ver, but this command knows version $DB_VERSION and migrates only versions 2, 3, 4, 5, 6, and 7" >&2
           exit 1
           ;;
     esac
@@ -709,6 +723,135 @@ PANEL_RUN_SQL="NULL"
 PANEL_PROFILE_SQL="NULL"
 PANEL_INVOCATION_SQL="NULL"
 CREATED_AT=""
+
+# ------------------------------------------------------- visibility at a commit
+#
+# Current state is a read-time relation (CB-PRIN-6, CB-VIS-1 through
+# CB-VIS-8). A revision is visible when it has no commit, or when the
+# commit that the call resolves reaches its stored commit. Each call
+# resolves the repository HEAD once and the write commit once, and every
+# visibility query of the call derives its answer from those two sets.
+#
+# CB-VIS-4 holds the resolution to one per call: git rev-list walks the
+# history once for the HEAD set, at the start of the call, and not again.
+# The write verbs resolve --commit once in provenance, and the version 4
+# to 5 rule of CB-PROV-7 gives the source: that resolution replaces HEAD
+# for both the stored provenance and the visible source revision.
+#
+# A failed read, an empty history, and a repository with no commit cannot
+# decide reachability, so every revision stays visible (CB-VIS-1,
+# CB-VIS-6, CB-VIS-8). The command hides a revision only when the
+# available history that walks cleanly proves that the resolved commit
+# does not reach it.
+
+HEAD_ID=""
+declare -a HEAD_VIS=()
+VIS_HEAD=all
+declare -a WRITE_VIS=()
+VIS_WRITE=all
+WRITE_ID=""
+
+# fill_vis <set array name> <flag variable name> <commit>
+#   One rev-list walk. Fills the array with the full hashes that the commit
+#   reaches, and the flag with 'set'; a commit with no history, a failed
+#   walk, and a commit with no history to walk leave the flag at 'all'.
+#   The sets are module arrays, so the name arguments pass through eval --
+#   bash 4 parsers must take this file, and namerefs are a bash 4.3 syntax.
+fill_vis() {
+  local setname=$1 flagname=$2 commit=$3 reachable status h
+  [[ -n $commit ]] || { eval "$setname=(); $flagname=all"; return 0; }
+  # CB-VIS-6: in a shallow repository the walk cannot prove that a commit
+  # stays beyond the boundary: the clone holds no ancestor, and absent
+  # ancestry must not by itself hide a revision. Every revision stays
+  # visible.
+  if [[ $(git -C "$REPO" rev-parse --is-shallow-repository 2>/dev/null || echo false) == true ]]; then
+    eval "$setname=(); $flagname=all"
+    return 0
+  fi
+  reachable=$(git -C "$REPO" rev-list "$commit" 2>/dev/null)
+  status=$?
+  if ((status != 0)) || [[ -z $reachable ]]; then
+    eval "$setname=(); $flagname=all"
+    return 0
+  fi
+  local -a hashes=()
+  while IFS= read -r h; do
+    [[ -n $h ]] && hashes+=("$h")
+  done <<<"$reachable"
+  eval "$setname=(\"\${hashes[@]}\"); $flagname=set"
+}
+
+# vis_capture_head   Resolves the repository HEAD once for the call and
+# captures the commits that it reaches. A call that reads visibility uses
+# this set for every read (CB-VIS-4). Called once, at load, for every call
+# that answers.
+vis_capture_head() {
+  HEAD_ID=$(git -C "$REPO" rev-parse --verify -q HEAD 2>/dev/null) || HEAD_ID=""
+  fill_vis HEAD_VIS VIS_HEAD "$HEAD_ID"
+}
+
+# vis_capture_write <resolved write commit>   Captures the commits that the
+# write commit reaches (CB-PROV-7). Called once per call, from provenance.
+vis_capture_write() {
+  WRITE_ID=$1
+  fill_vis WRITE_VIS VIS_WRITE "$WRITE_ID"
+}
+
+# vis_prelude <head|write>   SQL that fills a temporary table with the
+# resolved hashes of one set. The caller prefixes one query with this
+# prelude; the table then lives for that one query in its own connection.
+vis_prelude() {
+  local which=$1 h chunk="" out count=0 table
+  case $which in
+    head) table=temp.visible_head ;;
+    write) table=temp.visible_write ;;
+    *) return 0 ;;
+  esac
+  out="CREATE TEMP TABLE $table (c TEXT PRIMARY KEY);"
+  local -a ids=()
+  [[ $which == head ]] && ids=(${HEAD_VIS[@]+"${HEAD_VIS[@]}"})
+  [[ $which == write ]] && ids=(${WRITE_VIS[@]+"${WRITE_VIS[@]}"})
+  if ((${#ids[@]} > 0)); then
+    for h in "${ids[@]}"; do
+      chunk+="${chunk:+,}('$h')"
+      if ((++count == 500)); then
+        out+="
+INSERT OR IGNORE INTO $table VALUES $chunk;"
+        chunk=""
+        count=0
+      fi
+    done
+    if [[ -n $chunk ]]; then
+      out+="
+INSERT OR IGNORE INTO $table VALUES $chunk;"
+    fi
+  fi
+  printf '%s' "$out"
+}
+
+# vis_pred <head|write> <column reference>   The SQL predicate that matches
+# the visible revisions of one set: a revision with no commit is visible
+# everywhere (CB-VIS-1), and a revision with a commit is visible when the
+# set names it (CB-VIS-2). When the set could not decide reachability, the
+# predicate accepts every revision (CB-VIS-6, CB-VIS-8).
+vis_pred() {
+  local which=$1 colref=$2 table
+  case $which in
+    head)
+      [[ $VIS_HEAD == all ]] && { printf '1'; return; }
+      table=temp.visible_head ;;
+    write)
+      [[ $VIS_WRITE == all ]] && { printf '1'; return; }
+      table=temp.visible_write ;;
+    *) printf '1'; return ;;
+  esac
+  printf '(%s.commit_id IS NULL OR %s.commit_id IN (SELECT c FROM %s))' "$colref" "$colref" "$table"
+}
+
+# One resolution of the repository HEAD per call (CB-VIS-4): every
+# visibility-aware read of this call runs against the same set, captured
+# once, here, for every call that answers.
+(( HELP_REQUESTED )) || vis_capture_head
 
 # provenance <commit override, or "">
 #
@@ -750,16 +893,30 @@ provenance() {
   else
     PANEL_INVOCATION_SQL="NULL"
   fi
+  # The write commit (CB-PROV-4 through CB-PROV-7). An explicit --commit
+  # value must resolve to exactly one commit of the repository before the
+  # verb writes anything (CB-PROV-6, CB-ERR-3), and the command stores its
+  # full object id. A call whose write commit resolves elsewhere than HEAD
+  # carries its own visibility set for the source revision (CB-PROV-7,
+  # CB-REV-10); a call with no HEAD records none and cannot decide
+  # reachability (CB-PROV-5, CB-VIS-8).
   if [[ -n $override ]]; then
-    commit=$override
-  else
-    commit=$(git -C "$REPO" rev-parse --verify -q HEAD 2>/dev/null || true)
-  fi
-  if [[ -n $commit ]]; then
+    if ! commit=$(git -C "$REPO" rev-parse --verify -q "$override^{commit}" 2>/dev/null); then
+      echo "cbugs: --commit '${override}' does not name exactly one commit of the repository" >&2
+      exit 1
+    fi
+    WRITE_ID=$commit
     COMMIT_SQL="'$(sql_quote "$commit")'"
   else
-    COMMIT_SQL="NULL"
+    commit=$(git -C "$REPO" rev-parse --verify -q HEAD 2>/dev/null || true)
+    WRITE_ID=$commit
+    if [[ -n $commit ]]; then
+      COMMIT_SQL="'$(sql_quote "$commit")'"
+    else
+      COMMIT_SQL="NULL"
+    fi
   fi
+  vis_capture_write "$WRITE_ID"
   CREATED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 }
 
@@ -806,9 +963,12 @@ resolve_note() {
 
 # ------------------------------------------------------------------- output
 
-# row_line <id> <kind> <status> <title>   One aligned, colored listing line.
+# row_line <id> <kind> <status> <title> [hidden]   One aligned, colored
+# listing line. A fifth argument marks the row with 'hidden': an audit row
+# whose stored values must not read as current at repository HEAD
+# (CB-LIST-9, CB-SHOW-5).
 row_line() {
-  local id=$1 kind=$2 status=$3 title=$4 color=$DIM kind_color=$DIM
+  local id=$1 kind=$2 status=$3 title=$4 hidden=${5:-} color=$DIM kind_color=$DIM mark=""
   case $status in
     open) color=$YELLOW ;;
     closed) color=$GREEN ;;
@@ -823,8 +983,13 @@ row_line() {
     task) kind_color=$CYAN ;;
     code) kind_color=$DIM ;;
   esac
-  printf '%4s  %s%-4s%s  %s%-7s%s  %s\n' \
-    "$id" "$kind_color" "$kind" "$OFF" "$color" "$status" "$OFF" "$title"
+  # A hidden row shows stored values that may not read as current (CB-LIST-9):
+  # the trailing mark says that the row is an audit row.
+  case $hidden in
+    1|true) mark="  ${DIM}hidden${OFF}" ;;
+  esac
+  printf '%4s  %s%-4s%s  %s%-7s%s  %s%s\n' \
+    "$id" "$kind_color" "$kind" "$OFF" "$color" "$status" "$OFF" "$title" "$mark"
 }
 
 # print_listing <rows json array> <json flag>
@@ -837,22 +1002,86 @@ print_listing() {
     printf '%s\n' "$rows"
     return
   fi
-  local id kind status title
-  while IFS=$'\t' read -r id kind status title; do
-    row_line "$id" "$kind" "$status" "$title"
-  done < <(jq -r '.[] | [.id, .kind, .status, .title] | @tsv' <<<"$rows")
+  local id kind status title hidden
+  while IFS=$'\t' read -r id kind status title hidden; do
+    row_line "$id" "$kind" "$status" "$title" "$hidden"
+  done < <(jq -r '.[] | [.id, .kind, .status, .title, (.hidden // false)] | @tsv' <<<"$rows")
 }
 
-# print_bug <id> <json flag>   Prints one bug's current state, after a write.
+# current_rows_sql <visible|hidden|all> <extra where> [limit]   The shared
+# current-state query. Current state is a read-time relation (CB-PRIN-6):
+# for each bug, the newest revision visible at the captured HEAD supplies
+# status and title (CB-VIS-1 through CB-VIS-4); a bug with no visible
+# revision is hidden, and its newest stored revision supplies the audit
+# values with the hidden mark (CB-LIST-7 through CB-LIST-9). Rows are
+# ordered by the revision that supplies each row, newest first (CB-LIST-8).
+# <extra> filters the wrapped row columns: id, kind, status, title, hidden.
+# <limit> caps the result after the order. The caller prefixes the query
+# with the captured-head prelude that this function writes first.
+current_rows_sql() {
+  local vis=$1 extra=$2 limit=${3:-}
+  [[ $VIS_HEAD == all ]] || printf '%s\n' "$(vis_prelude head)"
+  printf '%s;' "$(current_inner_sql "$vis" "$extra" "$limit")"
+}
+
+# current_inner_sql <visible|hidden|all> <extra where> [limit]   The
+# current-state query without the prelude. A caller that wraps the query in
+# another one, such as a COUNT, embeds the prelude first, outside the wrap.
+current_inner_sql() {
+  local vis=$1 extra=$2 limit=${3:-} headpred
+  headpred=$(vis_pred head r2)
+  local inner="FROM bug b
+LEFT JOIN revision c ON c.id = (SELECT MAX(r2.id) FROM revision r2 WHERE r2.bug_id = b.id AND ($headpred))
+LEFT JOIN revision s ON s.id = (SELECT MAX(r3.id) FROM revision r3 WHERE r3.bug_id = b.id)"
+  case $vis in
+    visible) inner+="
+WHERE c.id IS NOT NULL" ;;
+    hidden) inner+="
+WHERE c.id IS NULL" ;;
+  esac
+  local wrapped="SELECT id, kind, status, title, hidden, revision_key
+FROM (
+  SELECT b.id AS id, b.kind AS kind,
+       CASE WHEN c.id IS NOT NULL THEN c.status ELSE s.status END AS status,
+       CASE WHEN c.id IS NOT NULL THEN c.title ELSE s.title END AS title,
+       (c.id IS NULL) AS hidden,
+       COALESCE(c.id, s.id) AS revision_key
+  $inner
+) AS t
+${extra:+WHERE $extra
+}ORDER BY revision_key DESC${limit:+ LIMIT $limit}"
+  printf '%s' "$wrapped"
+}
+
+# print_bug <id> <json flag>   Prints one bug's current state after a write.
 print_bug() {
-  local id=$1 json=$2 row
-  row=$(sqlite3_run json "SELECT id, kind, status, title FROM bug_current WHERE id = $id;") || exit 1
-  if ((json)); then
-    jq -M '.[0]' <<<"$row"
+  local id=$1 json=$2 rows row
+  rows=$(sqlite3_run json "$(vis_prelude head)
+SELECT b.id, b.kind,
+       CASE WHEN c.id IS NOT NULL THEN c.status ELSE s.status END AS status,
+       CASE WHEN c.id IS NOT NULL THEN c.title ELSE s.title END AS title,
+       (c.id IS NULL) AS hidden
+FROM bug b
+LEFT JOIN revision c ON c.id = (SELECT MAX(r2.id) FROM revision r2 WHERE r2.bug_id = b.id AND ($(vis_pred head r2)))
+LEFT JOIN revision s ON s.id = (SELECT MAX(r3.id) FROM revision r3 WHERE r3.bug_id = b.id)
+WHERE b.id = $id;") || exit 1
+  case $json in
+    0) ;;
+    *) jq -M '.[0]' <<<"$rows"; return ;;
+  esac
+  # A numeric 0 is truthy to jq, so the comparison must name the value,
+  # and not lean on jq's exit status of a bare read.
+  if (( $(jq -r '.[0].hidden' <<<"$rows") )); then
+    local kind stored_status stored_title
+    id=$(jq -r '.[0].id' <<<"$rows")
+    kind=$(jq -r '.[0].kind' <<<"$rows")
+    # A hidden bug earns no current status or title: print the mark alone,
+    # so no stored value reads as current (CB-SHOW-5).
+    printf '%4s  %s%-4s%s  %s%-7s%s  %s%s\n' "$id" "$DIM" "$kind" "$OFF" "$DIM" "hidden" "$OFF" "" ""
     return
   fi
-  local kind status title
-  IFS=$'\t' read -r id kind status title < <(jq -r '.[0] | [.id, .kind, .status, .title] | @tsv' <<<"$row")
+  local id kind status title
+  IFS=$'\t' read -r id kind status title < <(jq -r '.[0] | [.id, .kind, .status, .title] | @tsv' <<<"$rows")
   row_line "$id" "$kind" "$status" "$title"
 }
 
@@ -895,12 +1124,13 @@ where_clause() {
   printf '%s' "$out"
 }
 
-# panel_clause <panel run id>   SQL that selects the bugs whose first revision
-# the given panel run wrote: the first revision of a bug is its report, so
-# its panel fields name the panel run that created the bug (RP-RUN-2). The
-# caller embeds the id with sql_quote.
+# panel_clause <bug id expression> <panel run id>   SQL that selects the bugs
+# whose first revision the given panel run wrote: the first revision of a
+# bug is its report, so its panel fields name the panel run that created
+# the bug (RP-RUN-2). The caller embeds the id expression that the
+# surrounding query defines for the bug id.
 panel_clause() {
-  printf '%s' "EXISTS (SELECT 1 FROM revision fp WHERE fp.bug_id = bc.id AND fp.id = (SELECT MIN(f2.id) FROM revision f2 WHERE f2.bug_id = bc.id) AND fp.panel_run = '$(sql_quote "$1")')"
+  printf '%s' "EXISTS (SELECT 1 FROM revision fp WHERE fp.bug_id = $1 AND fp.id = (SELECT MIN(f2.id) FROM revision f2 WHERE f2.bug_id = $1) AND fp.panel_run = '$(sql_quote "$2")')"
 }
 
 # parse_panel_run <value>   Stops when the value is empty; a panel run id is
@@ -1061,18 +1291,41 @@ COMMIT;
 
 # ------------------------------------------------------ note and the status verbs
 
-# write_revision <id> <status expr> <note>   Writes one revision, keeping the
-# title of the previous revision unless the caller gave a new one.
+# write_revision <id> <status expr> <note>   Writes one revision. The caller
+# changes only what it asks to change: a status verb gives the status
+# literal, a note gives 'r.status' to keep the source status. Every other
+# full-state value of the new revision comes from the newest revision
+# visible at the resolved write commit (CB-REV-10, CB-PROV-7); when no
+# revision of the bug is visible at that commit, from the newest stored
+# revision. The new revision re-anchors the bug at the write commit.
 write_revision() {
-  local id=$1 status_expr=$2 note=$3 title_expr="r.title"
+  local id=$1 status_expr=$2 note=$3
+  local status_val title_val
+  # The copy source. temp.visible_write holds the commits that the write
+  # commit reaches (provenance), so the source revision is the newest
+  # revision of this bug whose commit it reaches, seen when the verb began
+  # the transaction and no caller can insert a newer one inside it.
+  local source_pred
+  source_pred=$(vis_pred write r)
+  local source_where
+  source_where="r.bug_id = $id AND ($source_pred)"
   if [[ -n ${TITLE_OVERRIDE:-} ]]; then
-    title_expr="'$(sql_quote "$TITLE_OVERRIDE")'"
+    title_val="'$(sql_quote "$TITLE_OVERRIDE")'"
+  else
+    title_val="COALESCE((SELECT r.title FROM revision r WHERE $source_where ORDER BY r.id DESC LIMIT 1), (SELECT r.title FROM revision r WHERE r.bug_id = $id ORDER BY r.id DESC LIMIT 1))"
   fi
-  sqlite3_run raw "
+  if [[ $status_expr == 'r.status' ]]; then
+    status_val="COALESCE((SELECT r.status FROM revision r WHERE $source_where ORDER BY r.id DESC LIMIT 1), (SELECT r.status FROM revision r WHERE r.bug_id = $id ORDER BY r.id DESC LIMIT 1))"
+  else
+    status_val="$status_expr"
+  fi
+  local prelude=""
+  [[ $VIS_WRITE == all ]] || prelude="$(vis_prelude write)
+"
+  sqlite3_run raw "${prelude}
 BEGIN IMMEDIATE;
 INSERT INTO revision (bug_id, status, title, note, role, iteration, commit_id, created_at, panel_run, panel_profile, panel_invocation)
-SELECT $id, $status_expr, $title_expr, '$(sql_quote "$note")', $ROLE_SQL, $ITERATION_SQL, $COMMIT_SQL, '$CREATED_AT', $PANEL_RUN_SQL, $PANEL_PROFILE_SQL, $PANEL_INVOCATION_SQL
-FROM revision r WHERE r.bug_id = $id ORDER BY r.id DESC LIMIT 1;
+VALUES ($id, $status_val, $title_val, '$(sql_quote "$note")', $ROLE_SQL, $ITERATION_SQL, $COMMIT_SQL, '$CREATED_AT', $PANEL_RUN_SQL, $PANEL_PROFILE_SQL, $PANEL_INVOCATION_SQL);
 $(citation_sql)
 COMMIT;
 " >/dev/null
@@ -1148,7 +1401,7 @@ verb_status_change() {
 # --------------------------------------------------------------- list, show, search
 
 verb_list() {
-  local json=0 panel_run=""
+  local json=0 panel_run="" visibility=visible visibility_set=0
   local -a kinds=() statuses=()
   while (($#)); do
     case $1 in
@@ -1156,6 +1409,12 @@ verb_list() {
       --kind=*) kinds+=("${1#*=}"); shift ;;
       --status) need_value "$1" $#; statuses+=("$2"); shift 2 ;;
       --status=*) statuses+=("${1#*=}"); shift ;;
+      --visibility)
+        ((visibility_set)) && { echo "cbugs list: --visibility occurs more than once" >&2; exit 2; }
+        need_value "$1" $#; visibility=$2; visibility_set=1; shift 2 ;;
+      --visibility=*)
+        ((visibility_set)) && { echo "cbugs list: --visibility occurs more than once" >&2; exit 2; }
+        visibility=${1#*=}; visibility_set=1; shift ;;
       --panel-run) need_value "$1" $#; panel_run=$(parse_panel_run "$2"); shift 2 ;;
       --panel-run=*) panel_run=$(parse_panel_run "${1#*=}"); shift ;;
       --json) json=1; shift ;;
@@ -1166,15 +1425,22 @@ verb_list() {
   local s
   for s in ${kinds[@]+"${kinds[@]}"}; do validate_kind "$s"; done
   for s in ${statuses[@]+"${statuses[@]}"}; do validate_status "$s"; done
-
-  local where rows
-  where=$(where_clause ${kinds[@]+"${kinds[@]}"} -- ${statuses[@]+"${statuses[@]}"})
-  [[ -z $panel_run ]] || where+="${where:+ AND }$(panel_clause "$panel_run")"
-  rows=$(sqlite3_run json "
-SELECT id, kind, status, title FROM bug_current bc
-${where:+WHERE $where}
-ORDER BY revision_id DESC;
-") || exit 1
+  # CB-LIST-2.3: at most one --visibility, whose value selects the audit
+  # interface. The normal listing is the visible one.
+  case $visibility in
+    visible|hidden|all) ;;
+    *) echo "cbugs: --visibility must be 'visible', 'hidden', or 'all', got '$visibility'" >&2; exit 2 ;;
+  esac
+  # A --panel-run selection is the attribution list of one panel run
+  # (RP-RUN-6): every bug that the run created, hidden ones included and
+  # marked, so the controller selects new bugs by ids and not by a
+  # visible-only list. A visible-only selection would drop a panel bug at
+  # a later HEAD and break RP-OUT-10.
+  [[ -n $panel_run && $visibility == visible ]] && visibility=all
+  local rows extra
+  extra=$(where_clause ${kinds[@]+"${kinds[@]}"} -- ${statuses[@]+"${statuses[@]}"})
+  [[ -z $panel_run ]] || extra="${extra:+$extra AND }$(panel_clause t.id "$panel_run")"
+  rows=$(sqlite3_run json "$(current_rows_sql "$visibility" "$extra")") || exit 1
   print_listing "$rows" "$json"
 }
 
@@ -1193,12 +1459,27 @@ verb_show() {
   local id; id=$(parse_id "$id_arg") || exit $?
   require_bug "$id"
 
-  local bug revs cites
-  bug=$(sqlite3_run json "SELECT id, kind, status, title FROM bug_current WHERE id = $id;") || exit 1
-  revs=$(sqlite3_run json "
-SELECT id, status, title, note, role, iteration, commit_id, created_at, panel_run, panel_profile, panel_invocation
-FROM revision WHERE bug_id = $id ORDER BY id ASC;
-") || exit 1
+  local bug revs cites prelude=""
+  [[ $VIS_HEAD == all ]] || prelude="$(vis_prelude head)
+"
+  # The bug's current state at the captured HEAD (CB-SHOW-5): the newest
+  # visible revision, with the current revision id to mark it, and the
+  # hidden flag when no revision is visible.
+  bug=$(sqlite3_run json "${prelude}SELECT b.id, b.kind,
+       CASE WHEN c.id IS NOT NULL THEN c.status ELSE NULL END AS status,
+       CASE WHEN c.id IS NOT NULL THEN c.title ELSE NULL END AS title,
+       (c.id IS NULL) AS hidden,
+       c.id AS current_revision
+FROM bug b
+LEFT JOIN revision c ON c.id = (SELECT MAX(r2.id) FROM revision r2 WHERE r2.bug_id = b.id AND ($(vis_pred head r2)))
+WHERE b.id = $id;") || exit 1
+  # Every stored revision in order, each with its own visibility at the
+  # captured HEAD (CB-SHOW-7): a revision with no commit is visible at
+  # every HEAD, and a revision with a commit is visible when the set of
+  # HEAD names it.
+  revs=$(sqlite3_run json "${prelude}SELECT r.id, r.status, r.title, r.note, r.role, r.iteration, r.commit_id, r.created_at, r.panel_run, r.panel_profile, r.panel_invocation,
+       ($(vis_pred head r)) AS visible
+FROM revision r WHERE r.bug_id = $id ORDER BY r.id ASC;") || exit 1
   cites=$(sqlite3_run json "
 SELECT c.revision_id, c.path, c.req
 FROM citation c JOIN revision r ON r.id = c.revision_id
@@ -1210,10 +1491,13 @@ WHERE r.bug_id = $id ORDER BY c.id ASC;
   [[ -n $cites ]] || cites='[]'
   # Every revision carries the citations that it wrote, so a reader of the
   # JSON sees which requirement each role named, and when, the same way the
-  # human form does.
-  revs=$(jq --argjson cites "$cites" '
+  # human form does. The current flag rides along: the reader sees which
+  # revision gives the current state at repository HEAD (CB-SHOW-5), and
+  # every revision names why (CB-SHOW-7).
+  revs=$(jq -M --argjson cites "$cites" --argjson current_revision "$(jq -r '.[0].current_revision' <<<"$bug")" '
     map(. as $r | $r + {
-      citations: [$cites[] | select(.revision_id == $r.id) | {path, req}]
+      citations: [$cites[] | select(.revision_id == $r.id) | {path, req}],
+      current: ($r.id == $current_revision)
     })
   ' <<<"$revs")
   if ((json)); then
@@ -1221,12 +1505,26 @@ WHERE r.bug_id = $id ORDER BY c.id ASC;
     return
   fi
 
-  local bid kind status title
-  IFS=$'\t' read -r bid kind status title < <(jq -r '.[0] | [.id, .kind, .status, .title] | @tsv' <<<"$bug")
-  printf '%s#%s%s  %s%s%s  %s  %s\n' "$BOLD" "$bid" "$OFF" "$DIM" "$kind" "$OFF" "$status" "$title"
+  local bid kind status title hidden
+  # Individual jq reads, not one @tsv row: bash read treats consecutive
+  # separators of a single-character IFS as one, so the empty status and
+  # title of a hidden bug's row would shift every later field.
+  bid=$(jq -r '.[0].id' <<<"$bug")
+  kind=$(jq -r '.[0].kind' <<<"$bug")
+  status=$(jq -r '.[0].status // empty' <<<"$bug")
+  title=$(jq -r '.[0].title // empty' <<<"$bug")
+  hidden=$(jq -r '.[0].hidden' <<<"$bug")
+  if [[ $hidden == 1 || $hidden == true ]]; then
+    # A hidden bug shows no revision as current at repository HEAD
+    # (CB-SHOW-5): the header carries the hidden mark, and no status or
+    # title rides with it.
+    printf '%s#%s%s  %s%s%s  %shidden%s\n' "$BOLD" "$bid" "$OFF" "$DIM" "$kind" "$OFF" "$DIM" "$OFF"
+  else
+    printf '%s#%s%s  %s%s%s  %s  %s\n' "$BOLD" "$bid" "$OFF" "$DIM" "$kind" "$OFF" "$status" "$title"
+  fi
   printf '\n%srevisions%s\n' "$BOLD" "$OFF"
-  local rid rstatus rtitle rnote rrole riter rcommit rcreated meta rcite revision
-  local rpanelrun rpanelprofile rpanelinv
+  local rid rstatus rtitle rnote rrole riter rcommit rcreated meta rcite revision rtag
+  local rpanelrun rpanelprofile rpanelinv rvisible
   while IFS= read -r revision; do
     rid=$(jq -r '.id' <<<"$revision")
     rstatus=$(jq -r '.status' <<<"$revision")
@@ -1238,6 +1536,7 @@ WHERE r.bug_id = $id ORDER BY c.id ASC;
     rpanelrun=$(jq -r '.panel_run // "-"' <<<"$revision")
     rpanelprofile=$(jq -r '.panel_profile // "-"' <<<"$revision")
     rpanelinv=$(jq -r '.panel_invocation // "-"' <<<"$revision")
+    rvisible=$(jq -r '.visible' <<<"$revision")
     meta="?"
     [[ $rrole == "-" ]] || meta="$rrole"
     [[ $riter == "-" ]] || meta+=" iter $riter"
@@ -1245,7 +1544,19 @@ WHERE r.bug_id = $id ORDER BY c.id ASC;
     [[ $rpanelrun == "-" ]] || meta+=" panel run $rpanelrun"
     [[ $rpanelprofile == "-" ]] || meta+=" profile $rpanelprofile"
     [[ $rpanelinv == "-" ]] || meta+=" invocation $rpanelinv"
-    printf '  %s%s%s  %s  %s%s%s\n' "$DIM" "$rcreated" "$OFF" "$rstatus" "$DIM" "$meta" "$OFF"
+    # The visibility tag says why a revision does or does not give the
+    # current state (CB-SHOW-7), and the current mark names the one that
+    # does (CB-SHOW-5).
+    if [[ $rvisible == 1 || $rvisible == true ]]; then
+      if [[ $(jq -r '.current' <<<"$revision") == 1 || $(jq -r '.current' <<<"$revision") == true ]]; then
+        rtag="${DIM} [current]${OFF}"
+      else
+        rtag="${DIM} [visible]${OFF}"
+      fi
+    else
+      rtag="${DIM} [hidden]${OFF}"
+    fi
+    printf '  %s%s%s  %s  %s%s%s%s\n' "$DIM" "$rcreated" "$OFF" "$rstatus" "$DIM" "$meta" "$OFF" "$rtag"
     printf '    %s\n' "$rtitle"
     rnote=$(jq -r '.note' <<<"$revision")
     if [[ -n $rnote ]]; then
@@ -1272,6 +1583,9 @@ verb_search() {
       --kind=*) kinds+=("${1#*=}"); shift ;;
       --status) need_value "$1" $#; statuses+=("$2"); shift 2 ;;
       --status=*) statuses+=("${1#*=}"); shift ;;
+      --visibility|--visibility=*)
+        echo "cbugs search: --visibility is not a search option; audit history is 'cbugs list --visibility hidden|all'" >&2
+        exit 2 ;;
       --panel-run) need_value "$1" $#; panel_run=$(parse_panel_run "$2"); shift 2 ;;
       --panel-run=*) panel_run=$(parse_panel_run "${1#*=}"); shift ;;
       --json) json=1; shift ;;
@@ -1283,22 +1597,39 @@ verb_search() {
   for s in ${kinds[@]+"${kinds[@]}"}; do validate_kind "$s"; done
   for s in ${statuses[@]+"${statuses[@]}"}; do validate_status "$s"; done
 
-  local where rows panel_extra=""
-  [[ -z $panel_run ]] || panel_extra=" AND $(panel_clause "$panel_run")"
+  # CB-SEARCH-5: the matched bugs are the visible ones, and only the text of
+  # a visible revision can match; a match in a hidden revision makes no bug
+  # match. The rows keep the visible-list row form: each row holds the
+  # current state of the bug, in the order of the current revisions
+  # (CB-SEARCH-6). CB-SEARCH-2: the casefold comparison happens in the
+  # matcher below, on the visible revisions only.
+  local prelude="" visrv
+  [[ $VIS_HEAD == all ]] || prelude="$(vis_prelude head)
+"
+  visrv=$(vis_pred head rv)
+  local where extra panel_extra=""
+  [[ -z $panel_run ]] || panel_extra=" AND $(panel_clause b.id "$panel_run")"
   where=$(where_clause ${kinds[@]+"${kinds[@]}"} -- ${statuses[@]+"${statuses[@]}"})
-  rows=$(sqlite3_run json "
- SELECT json_object(
-   'id', bc.id, 'kind', bc.kind, 'status', bc.status, 'title', bc.title,
+  rows=$(sqlite3_run json "${prelude} SELECT json_object(
+   'id', t.id, 'kind', t.kind, 'status', t.status, 'title', t.title,
    'revisions', (SELECT json_group_array(json_object(
      'title', rv.title, 'note', rv.note,
      'citations', (SELECT json_group_array(json_object(
-       'path', c.path, 'req', c.req
-     )) FROM citation c WHERE c.revision_id = rv.id)
-   )) FROM revision rv WHERE rv.bug_id = bc.id)
+       'path', cx.path, 'req', cx.req
+     )) FROM citation cx WHERE cx.revision_id = rv.id)
+   )) FROM revision rv WHERE rv.bug_id = t.id AND ($visrv))
  ) AS value
- FROM bug_current bc
- WHERE ${where:-1}$panel_extra
- ORDER BY revision_id DESC;
+ FROM (
+   SELECT b.id AS id, b.kind AS kind,
+       CASE WHEN c.id IS NOT NULL THEN c.status ELSE s.status END AS status,
+       CASE WHEN c.id IS NOT NULL THEN c.title ELSE s.title END AS title,
+       c.id AS cur_id
+   FROM bug b
+   LEFT JOIN revision c ON c.id = (SELECT MAX(r2.id) FROM revision r2 WHERE r2.bug_id = b.id AND ($(vis_pred head r2)))
+   LEFT JOIN revision s ON s.id = (SELECT MAX(r3.id) FROM revision r3 WHERE r3.bug_id = b.id)
+   WHERE c.id IS NOT NULL${where:+ AND $where}$panel_extra
+ ) AS t
+ ORDER BY t.cur_id DESC;
  ") || exit 1
   rows=$(python3 -c '
 import json, sys
@@ -1619,25 +1950,41 @@ COMMIT;
 }
 
 # verb_summary   Prints what a caller most probably wants when it runs cbugs
-# with no argument: the ten open bugs with the newest revision, in every
-# kind, then a short footer naming the other verbs. Takes no option, has no
-# --json form, and always exits 0.
+# with no argument: the ten open visible bugs with the newest current
+# revision, in every kind, then a short footer naming the other verbs and,
+# when hidden bugs exist, the audit line (CB-SUM-8, CB-SUM-9). Current
+# state comes from the newest revision visible at the captured HEAD
+# (CB-VIS-1 through CB-VIS-8); all counts exclude hidden bugs. Takes no
+# option, has no --json form, and always exits 0.
 verb_summary() {
-  local rows total n
-  rows=$(sqlite3_run json "
-SELECT id, kind, status, title FROM bug_current
-WHERE status = 'open' ORDER BY revision_id DESC LIMIT 10;
-") || exit 1
+  local rows total hidden_pre hidden_total n
+  rows=$(sqlite3_run json "$(current_rows_sql visible "status = 'open'" 10)") || exit 1
   [[ -n $rows ]] || rows='[]'
   n=$(jq 'length' <<<"$rows")
-  total=$(sqlite3_run raw "SELECT COUNT(*) FROM bug_current WHERE status = 'open';") || exit 1
+  # "status = 'open'" filtered the last LIMIT of the wrapped rows: the total
+  # count must run over every open visible bug, not just the shown ones.
+  local count_pre=""
+  [[ $VIS_HEAD == all ]] || count_pre="$(vis_prelude head)
+"
+  total=$(sqlite3_run raw "${count_pre}SELECT COUNT(*) FROM ($(current_inner_sql visible "status = 'open'"));") || exit 1
+  total=${total:-0}
   is_number "$total" || total=0
+  # A hidden bug stays out of every count above (CB-SUM-8), but the footer
+  # must name it and its audit command when one exists (CB-SUM-9).
+  hidden_pre=""
+  [[ $VIS_HEAD == all ]] || hidden_pre="$(vis_prelude head)
+"
+  hidden_total=$(sqlite3_run raw "${hidden_pre}SELECT COUNT(*) FROM bug b
+LEFT JOIN revision c ON c.id = (SELECT MAX(r2.id) FROM revision r2 WHERE r2.bug_id = b.id AND ($(vis_pred head r2)))
+WHERE c.id IS NULL;") || exit 1
+  hidden_total=${hidden_total:-0}
+  is_number "$hidden_total" || hidden_total=0
 
   if ((n > 0)); then
-    local id kind status title
-    while IFS=$'\t' read -r id kind status title; do
-      row_line "$id" "$kind" "$status" "$title"
-    done < <(jq -r '.[] | [.id, .kind, .status, .title] | @tsv' <<<"$rows")
+    local id kind status title hidden
+    while IFS=$'\t' read -r id kind status title hidden; do
+      row_line "$id" "$kind" "$status" "$title" "$hidden"
+    done < <(jq -r '.[] | [.id, .kind, .status, .title, (.hidden // false)] | @tsv' <<<"$rows")
   else
     printf '%sno bug is open%s\n' "$DIM" "$OFF"
   fi
@@ -1647,6 +1994,12 @@ WHERE status = 'open' ORDER BY revision_id DESC LIMIT 10;
     ((rest == 1)) && word=bug
     printf '%s%s more open %s; see cbugs list --status open%s\n' \
       "$DIM" "$rest" "$word" "$OFF"
+  fi
+  if ((hidden_total > 0)); then
+    local hword=bugs
+    ((hidden_total == 1)) && hword=bug
+    printf '%s%s hidden %s stored without a visible revision; see cbugs list --visibility hidden%s\n' \
+      "$DIM" "$hidden_total" "$hword" "$OFF"
   fi
   printf '%sVerbs: add, list, show, search, note, close, dismiss, reopen, reviewed add, reviewed pending.%s\n' "$DIM" "$OFF"
   printf '%sRun %scbugs --help%s%s for the options of each.%s\n' "$DIM" "$BOLD" "$OFF" "$DIM" "$OFF"
