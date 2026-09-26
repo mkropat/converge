@@ -867,7 +867,7 @@ vis_pred() {
 # NULL, and the command refuses nothing (CB-PROV-1 through CB-PROV-5 hold
 # as before). An empty value counts as an absent one.
 provenance() {
-  local override=$1 commit=""
+  local override=$1 explicit=${2:-0} commit=""
   if [[ -n ${CONVERGE_ROLE:-} ]]; then
     ROLE_SQL="'$(sql_quote "$CONVERGE_ROLE")'"
   else
@@ -900,8 +900,8 @@ provenance() {
   # carries its own visibility set for the source revision (CB-PROV-7,
   # CB-REV-10); a call with no HEAD records none and cannot decide
   # reachability (CB-PROV-5, CB-VIS-8).
-  if [[ -n $override ]]; then
-    if ! commit=$(git -C "$REPO" rev-parse --verify -q "$override^{commit}" 2>/dev/null); then
+  if ((explicit)); then
+    if [[ -z $override ]] || ! commit=$(git -C "$REPO" rev-parse --verify -q "$override^{commit}" 2>/dev/null); then
       echo "cbugs: --commit '${override}' does not name exactly one commit of the repository" >&2
       exit 1
     fi
@@ -1235,7 +1235,7 @@ SELECT id, '$(sql_quote "${CITE_PATHS[$i]}")', $req_sql FROM revision ORDER BY i
 # ---------------------------------------------------------------------- add
 
 verb_add() {
-  local title="" title_set=0 kind="" note="" note_set=0 commit="" json=0
+  local title="" title_set=0 kind="" note="" note_set=0 commit="" commit_set=0 json=0
   while (($#)); do
     case $1 in
       --title) need_value "$1" $#; title=$2; title_set=1; shift 2 ;;
@@ -1246,8 +1246,8 @@ verb_add() {
       --note=*) note=${1#*=}; note_set=1; shift ;;
       --cite) need_value "$1" $#; add_citation "$2"; shift 2 ;;
       --cite=*) add_citation "${1#*=}"; shift ;;
-      --commit) need_value "$1" $#; commit=$2; shift 2 ;;
-      --commit=*) commit=${1#*=}; shift ;;
+      --commit) need_value "$1" $#; commit=$2; commit_set=1; shift 2 ;;
+      --commit=*) commit=${1#*=}; commit_set=1; shift ;;
       --json) json=1; shift ;;
       -h|--help) usage_add; exit 0 ;;
       *) echo "cbugs add: unexpected argument '$1'" >&2; exit 2 ;;
@@ -1264,7 +1264,7 @@ verb_add() {
   fi
 
   note=$(resolve_note add "$note_set" "$note") || exit $?
-  provenance "$commit"
+  provenance "$commit" "$commit_set"
 
   # The citation inserts that citation_sql adds below run after the revision
   # insert, so last_insert_rowid() no longer names the revision once they have
@@ -1332,7 +1332,7 @@ COMMIT;
 }
 
 verb_note() {
-  local id_arg="" note="" note_set=0 pos_note_set=0 commit="" json=0 title_set=0
+  local id_arg="" note="" note_set=0 pos_note_set=0 commit="" commit_set=0 json=0 title_set=0
   TITLE_OVERRIDE=""
   [[ ${1:-} == -h || ${1:-} == --help ]] && { usage_note; exit 0; }
   [[ $# -ge 1 && $1 != -* ]] || { usage_note; exit 2; }
@@ -1348,8 +1348,8 @@ verb_note() {
       --title=*) TITLE_OVERRIDE=${1#*=}; title_set=1; shift ;;
       --cite) need_value "$1" $#; add_citation "$2"; shift 2 ;;
       --cite=*) add_citation "${1#*=}"; shift ;;
-      --commit) need_value "$1" $#; commit=$2; shift 2 ;;
-      --commit=*) commit=${1#*=}; shift ;;
+      --commit) need_value "$1" $#; commit=$2; commit_set=1; shift 2 ;;
+      --commit=*) commit=${1#*=}; commit_set=1; shift ;;
       --json) json=1; shift ;;
       -h|--help) usage_note; exit 0 ;;
       *) echo "cbugs note: unexpected argument '$1'" >&2; exit 2 ;;
@@ -1360,7 +1360,7 @@ verb_note() {
   local id; id=$(parse_id "$id_arg") || exit $?
   require_bug "$id"
   note=$(resolve_note note "$note_set" "$note") || exit $?
-  provenance "$commit"
+  provenance "$commit" "$commit_set"
   write_revision "$id" "r.status" "$note"
   print_bug "$id" "$json"
 }
@@ -1368,7 +1368,7 @@ verb_note() {
 # verb_status_change <verb> <status> <args...>
 verb_status_change() {
   local verb=$1 status=$2; shift 2
-  local id_arg="" note="" note_set=0 commit="" json=0 title_set=0
+  local id_arg="" note="" note_set=0 commit="" commit_set=0 json=0 title_set=0
   TITLE_OVERRIDE=""
   [[ ${1:-} == -h || ${1:-} == --help ]] && { usage_status_verb "$verb" "$status"; exit 0; }
   [[ $# -ge 1 && $1 != -* ]] || { usage_status_verb "$verb" "$status"; exit 2; }
@@ -1381,8 +1381,8 @@ verb_status_change() {
       --title=*) TITLE_OVERRIDE=${1#*=}; title_set=1; shift ;;
       --cite) need_value "$1" $#; add_citation "$2"; shift 2 ;;
       --cite=*) add_citation "${1#*=}"; shift ;;
-      --commit) need_value "$1" $#; commit=$2; shift 2 ;;
-      --commit=*) commit=${1#*=}; shift ;;
+      --commit) need_value "$1" $#; commit=$2; commit_set=1; shift 2 ;;
+      --commit=*) commit=${1#*=}; commit_set=1; shift ;;
       --json) json=1; shift ;;
       -h|--help) usage_status_verb "$verb" "$status"; exit 0 ;;
       *) echo "cbugs $verb: unexpected argument '$1'" >&2; exit 2 ;;
@@ -1393,7 +1393,7 @@ verb_status_change() {
   local id; id=$(parse_id "$id_arg") || exit $?
   require_bug "$id"
   note=$(resolve_note "$verb" "$note_set" "$note") || exit $?
-  provenance "$commit"
+  provenance "$commit" "$commit_set"
   write_revision "$id" "'$status'" "$note"
   print_bug "$id" "$json"
 }
