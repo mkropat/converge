@@ -15,7 +15,8 @@ if ((BASH_VERSINFO[0] < 4)) || \
 fi
 
 CONSENSUS=2
-COACH_EVERY=5
+COACH_FIRST=5
+COACH_EVERY=10
 COACH_ENABLED=1
 REVIEW_AFTER=5
 REVIEW_ENABLED=1
@@ -39,7 +40,11 @@ Usage: converge [options] [scope ...]
 
 Options:
   --consensus <N>         Consecutive converged votes that stop the loop. Default: 2.
-  --coach-every <K>       Worker iterations between coach runs. Default: 5.
+  --coach-first <F>       Worker iterations before the first coach run of a
+                          session. F can be 0: the coach runs before the
+                          first worker. Default: 5.
+  --coach-every <K>       Worker iterations between one coach run and the
+                          next. K must be a positive integer. Default: 10.
   --no-coach              Disable the coach.
   --review-after <N>      Unreviewed commits that a cadence pass waits for:
                           the loop runs the reviewer when at least N
@@ -101,6 +106,8 @@ while (($#)); do
       ;;
     --consensus) need_value "$1" $#; CONSENSUS=$2; shift 2 ;;
     --consensus=*) CONSENSUS=${1#*=}; shift ;;
+    --coach-first) need_value "$1" $#; COACH_FIRST=$2; shift 2 ;;
+    --coach-first=*) COACH_FIRST=${1#*=}; shift ;;
     --coach-every) need_value "$1" $#; COACH_EVERY=$2; shift 2 ;;
     --coach-every=*) COACH_EVERY=${1#*=}; shift ;;
     --no-coach) COACH_ENABLED=0; shift ;;
@@ -179,7 +186,7 @@ validate_start_options() {
       exit 2
     fi
   done
-  for pair in "consensus:$CONSENSUS" "coach-every:$COACH_EVERY" "review-after:$REVIEW_AFTER" "timeout:$TIMEOUT"; do
+  for pair in "consensus:$CONSENSUS" "coach-first:$COACH_FIRST" "coach-every:$COACH_EVERY" "review-after:$REVIEW_AFTER" "timeout:$TIMEOUT"; do
     if ! is_number "${pair#*:}"; then
       echo "converge: --${pair%%:*} needs a whole number, got '${pair#*:}'" >&2
       exit 2
@@ -190,6 +197,7 @@ validate_start_options() {
   # values without a base. Normalize here, the one place every start path
   # runs through, so no leading zero ever reaches an arithmetic context.
   CONSENSUS=$((10#$CONSENSUS))
+  COACH_FIRST=$((10#$COACH_FIRST))
   COACH_EVERY=$((10#$COACH_EVERY))
   REVIEW_AFTER=$((10#$REVIEW_AFTER))
   TIMEOUT=$((10#$TIMEOUT))
@@ -197,6 +205,12 @@ validate_start_options() {
   # must be a positive integer; zero would fire a pass on an empty backlog.
   if ((REVIEW_AFTER == 0)); then
     echo "converge: --review-after needs a positive integer, got '$REVIEW_AFTER'" >&2
+    exit 2
+  fi
+  # CV-INV-3.17: K is the period after the first coach run, so it must be a
+  # positive integer. A coach on every check is --coach-first 0 --coach-every 1.
+  if ((COACH_EVERY == 0)); then
+    echo "converge: --coach-every needs a positive integer, got '$COACH_EVERY'" >&2
     exit 2
   fi
   if [[ -n $MAX_ITERATIONS ]]; then
@@ -1200,7 +1214,7 @@ trap 'printf "%s\n" "$?" >"$SESSION_STATUS"' EXIT
 
 note "=== run start ==="
 note "command: $0 $ORIGINAL_ARGS"
-note "options: worker-profile=${WORKER_PROFILES[*]} reviewer-profile=${REVIEWER_PROFILES[*]} coach-profile=${COACH_PROFILES[*]} consensus=$CONSENSUS coach-every=$COACH_EVERY coach=$COACH_ENABLED review-after=$REVIEW_AFTER review=$REVIEW_ENABLED timeout=$TIMEOUT max-iterations=${MAX_ITERATIONS:-unbounded}"
+note "options: worker-profile=${WORKER_PROFILES[*]} reviewer-profile=${REVIEWER_PROFILES[*]} coach-profile=${COACH_PROFILES[*]} consensus=$CONSENSUS coach-first=$COACH_FIRST coach-every=$COACH_EVERY coach=$COACH_ENABLED review-after=$REVIEW_AFTER review=$REVIEW_ENABLED timeout=$TIMEOUT max-iterations=${MAX_ITERATIONS:-unbounded}"
 if ((${#SCOPE[@]})); then
   SCOPE_SUMMARY=$(scope_list)
 else
@@ -1217,7 +1231,12 @@ fi
 # whether the role is disabled.
 WORKER_SUMMARY="$(join_list "${WORKER_PROFILES[@]}"), $LIMIT_SUMMARY"
 if ((COACH_ENABLED)); then
-  COACH_SUMMARY="$(join_list "${COACH_PROFILES[@]}"), every $(plural "$COACH_EVERY" iteration)"
+  # CV-COACH-10: the first run has its own threshold, so the panel names both.
+  if ((COACH_FIRST == 0)); then
+    COACH_SUMMARY="$(join_list "${COACH_PROFILES[@]}"), before the first iteration, then every $(plural "$COACH_EVERY" iteration)"
+  else
+    COACH_SUMMARY="$(join_list "${COACH_PROFILES[@]}"), after $(plural "$COACH_FIRST" iteration), then every $(plural "$COACH_EVERY" iteration)"
+  fi
 else
   COACH_SUMMARY="disabled ($(join_list "${COACH_PROFILES[@]}"))"
 fi
@@ -2621,7 +2640,11 @@ FINAL_DUE=0
 ((CONSENSUS == 0 && REVIEW_ENABLED)) && FINAL_DUE=1
 FAIL_WAIT=0
 PENDING_LOGS=()
+# CV-COACH-10: the cadence starts at zero each session. The first coach run
+# of a session waits for --coach-first iterations; every later run waits for
+# --coach-every iterations since the run before it.
 SINCE_COACH=0
+COACH_DUE_AT=$COACH_FIRST
 EXIT_STATUS=1
 
 # stop_due   True when a signal, standing convergence, or the iteration
@@ -2656,7 +2679,7 @@ while true; do
   stop_due && break
 
   # Step 4: a due coach.
-  if ((COACH_ENABLED && SINCE_COACH >= COACH_EVERY)) && ((! STOP_REQUESTED)); then
+  if ((COACH_ENABLED && SINCE_COACH >= COACH_DUE_AT)) && ((! STOP_REQUESTED)); then
     heading "$MAGENTA" "coach" "$(date '+%H:%M:%S')"
     note "coach run at $(date '+%Y-%m-%d %H:%M:%S')"
     note "coach reviews: ${PENDING_LOGS[*]:-none}"
@@ -2668,12 +2691,14 @@ while true; do
     run_agent coach "$(coach_prompt "$PENDING_LOGS_TEXT")"
     ((STOP_REQUESTED)) || handle_invocation_wait "$LOG_FILE" "$INVOCATION_HARNESS"
     show_guidance "$GUIDANCE_BEFORE"
-    # CV-COACH-8's cadence counts worker iterations, not a backlog: the coach
+    # CV-COACH-10's cadence counts worker iterations, not a backlog: the coach
     # was due and ran, so the cadence resets whether or not the run itself
-    # succeeded. PENDING_LOGS is different -- it is the backlog of logs the
-    # coach has not yet reviewed -- so it clears only on success, letting a
-    # retry still see the unprocessed logs.
+    # succeeded, and every run after the first waits for the period.
+    # PENDING_LOGS is different -- it is the backlog of logs the coach has not
+    # yet reviewed -- so it clears only on success, letting a retry still see
+    # the unprocessed logs.
     SINCE_COACH=0
+    COACH_DUE_AT=$COACH_EVERY
     if ((RUN_STATUS == 0)); then
       PENDING_LOGS=()
     fi
