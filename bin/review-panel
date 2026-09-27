@@ -1272,10 +1272,11 @@ record_reviewed() {
 }
 
 # record_invocation_cost <role> <profile> <log>   Appends one line for one
-# reviewer or merge invocation to the shared cost ledger (CV-COST-10). The
+# reviewer or merge invocation to the cost ledger (CV-COST-10). The
 # parent loop passes its existing CONVERGE_SESSION and an explicit absolute
-# CONVERGE_COST_LEDGER path; with either absent, a standalone panel
-# records nothing and keeps its own cost identity. The row uses the
+# CONVERGE_COST_LEDGER path; with no parent context, a standalone panel
+# records under its own cost session and state-directory ledger
+# (RP-COST-4), which the startup cost-context setup provides. The row uses the
 # converge ledger fields: session, role, canonical profile, cost. Panel
 # reviewers use the reviewer cost role, and merge calls use the distinct
 # merge cost role. The append holds the shared ledger lock. An absent cost
@@ -1581,10 +1582,31 @@ MERGE_PROFILE=${MERGE_PROFILES[0]}
 # CV-COST-10: the parent loop passes its existing CONVERGE_SESSION and an
 # explicit absolute CONVERGE_COST_LEDGER path. With both present, the
 # controller records one ledger line per reviewer and merge invocation,
-# under the shared ledger lock. A standalone panel sets neither, records
-# nothing, and keeps its own cost session and path.
-COST_SESSION=${CONVERGE_SESSION:-}
-COST_LEDGER=${CONVERGE_COST_LEDGER:-}
+# under the shared ledger lock, and creates neither a new cost session
+# nor another ledger path. With no parent context, a standalone panel
+# creates its own cost session and its own absolute ledger path, beside
+# the bug database in the state directory (RP-COST-4). A partial context
+# — one variable set without the other — or a relative ledger path is an
+# error that the startup rejects before any agent starts (RP-COST-4). An
+# explicitly empty pair is no parent cost context: then the panel stands
+# alone.
+if [[ -n ${CONVERGE_SESSION:-} && -n ${CONVERGE_COST_LEDGER:-} ]]; then
+  COST_SESSION=$CONVERGE_SESSION
+  case $CONVERGE_COST_LEDGER in
+    /*) COST_LEDGER=$CONVERGE_COST_LEDGER ;;
+    *)
+      echo "review-panel: CONVERGE_COST_LEDGER must be an absolute path, not '$CONVERGE_COST_LEDGER'" >&2
+      exit 2
+      ;;
+  esac
+elif [[ -n ${CONVERGE_SESSION:-} || -n ${CONVERGE_COST_LEDGER:-} ]]; then
+  echo "review-panel: partial cost context: CONVERGE_SESSION and CONVERGE_COST_LEDGER must be set together" >&2
+  exit 2
+else
+  COST_SESSION=$PANEL_ID
+  COST_LEDGER="$STATE_DIR/cost-history.tsv"
+  [[ $COST_LEDGER == /* ]] || COST_LEDGER="$(pwd -P)/$COST_LEDGER"
+fi
 
 if ((HELP_REQUESTED)); then
   usage
