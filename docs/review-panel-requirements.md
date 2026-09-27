@@ -40,12 +40,16 @@ An identifier must not change its meaning. Removed requirements leave their iden
 
 ## Profiles
 
-- **RP-PROF-1**: `REVIEW_PANEL_PROFILES` must select an ordered, comma-separated list of reviewer profiles. If it is unset, the command must use `CONVERGE_REVIEWER_PROFILE`. If both are unset, it must use the converge reviewer default, currently `claude:opus`.
+- **RP-PROF-1**: Retired. Selected reviewers with `REVIEW_PANEL_PROFILES`. **RP-PROF-7** replaces this variable.
 - **RP-PROF-2**: An explicitly empty selected variable must be an error, not a request for fallback.
 - **RP-PROF-3**: Profiles must follow the syntax, canonical form, supported harnesses, and effort rules of `docs/converge-requirements.md:CV-HARN-9` and `CV-HARN-10`. Duplicate canonical reviewer profiles must be rejected.
-- **RP-PROF-4**: `REVIEW_PANEL_MERGE_PROFILE` must select exactly one merge profile. If it is unset, the command must use the first resolved reviewer profile. An empty or invalid value must be an error.
+- **RP-PROF-4**: Retired. Selected the merge agent with `REVIEW_PANEL_MERGE_PROFILE`. **RP-PROF-8** replaces this variable.
 - **RP-PROF-5**: The command must validate the resolved reviewer list and merge profile before it starts any agent. It must not require valid worker or coach profiles. A missing harness must fail its invocation under the converge harness convention.
 - **RP-PROF-6**: The command must resolve profiles once at startup. It must not rotate profiles between runs or store a profile selection for later runs.
+
+- **RP-PROF-7**: `CONVERGE_REVIEW_PANEL_PROFILE` must select an ordered, comma-separated reviewer list. If unset, the command must use `CONVERGE_REVIEWER_PROFILE`. If both are unset, it must use `claude:opus`.
+- **RP-PROF-8**: `CONVERGE_REVIEW_PANEL_MERGE_PROFILE` must select exactly one merge profile. If unset, it must use the first resolved panel profile. An empty or invalid value must be an error.
+- **RP-PROF-9**: The command must reject set `REVIEW_PANEL_PROFILES` and `REVIEW_PANEL_MERGE_PROFILE`, including empty values. The error must name the replacement variable.
 
 ## Reviewer execution
 
@@ -97,7 +101,7 @@ An identifier must not change its meaning. Removed requirements leave their iden
 - **RP-COV-3**: Coverage records must identify the successful reviewer profiles under the cbugs profile-record rules. The merge profile must not count as a reviewer. Coverage must not imply that defects were absent.
 - **RP-COV-4**: The controller must record only commits captured at startup. It must record them even if HEAD changed during the run. Commits added after startup must not receive coverage from this run.
 - **RP-COV-5**: A reviewer failure, merge failure, or interrupted run must prevent coverage recording. Failure to record required coverage must make the run incomplete.
-- **RP-COV-6**: Coverage must not grant converge final approval, supply a done vote, or claim convergence. It records completion of this live-tree review, not approval of a fixed snapshot.
+- **RP-COV-6**: Coverage must not supply a done vote or claim convergence. It records completion of this live-tree review, not approval of a HEAD or fixed snapshot. Panel findings, invocation failures, and coverage failures must not reset parent votes or block parent convergence.
 
 ## Output and result
 
@@ -115,6 +119,19 @@ An identifier must not change its meaning. Removed requirements leave their iden
   retrieve it by attribution or id. It must mark the bug as hidden and use the
   title from the revision that created it. It must not present an unreachable
   revision as current.
+
+## Stops
+
+- **RP-STOP-1**: The first Ctrl-C or a parent `SIGUSR1` request must stop new invocations. Active reviewers or an active merge must be allowed to finish. A merge that has not started must not start, even if findings exist. This stop rule takes priority over **RP-MERGE-1** and **RP-MERGE-2**.
+- **RP-STOP-2**: A second Ctrl-C must interrupt all owned descendants. SIGTERM must stop them immediately. Cleanup must include owned agents in separate process groups and exclude other runs.
+- **RP-STOP-3**: A stopped run must remain distinct from a failed run. A graceful parent stop or Ctrl-C stop must return status `130`, not error status `2`. The command must report available findings without claiming completion.
+
+## Cost tracking
+
+- **RP-COST-1**: When converge starts a panel, it must pass its existing `CONVERGE_SESSION` and an explicit absolute `CONVERGE_COST_LEDGER` path. The panel must use both values without creating a new cost session or deriving another ledger path. Panel attribution must remain distinct from cost-session identity.
+- **RP-COST-2**: The panel must record each reviewer and merge invocation once in the shared ledger. All writers must use the same lock. Each TSV record must use the existing session, role, canonical profile, and cost fields. Reviewers must use the reviewer cost role. The merge agent must use a distinct merge cost role. The parent must include these records in its totals and must not add a panel total as another cost.
+- **RP-COST-3**: Cost handling must follow `docs/converge-requirements.md:CV-COST-1` through `CV-COST-8`. Unknown cost must not become zero. Failed or timed-out calls must retain available costs. A graceful stop must record available costs from completed calls. A hard stop may omit unfinished calls.
+- **RP-COST-4**: A standalone panel must create its own cost session and absolute ledger path when no parent cost context is supplied. It must reject a partial context or a relative ledger path before it starts agents.
 
 ## Out of scope
 

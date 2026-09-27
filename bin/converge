@@ -553,11 +553,6 @@ unreviewed_hashes() {
   [[ -z $out ]] || printf '%s\n' "$out" | awk '{print $1}'
 }
 
-# unreviewed_count   Prints the number of the unreviewed commits.
-# CV-CONV-13 gives the loop leave to read this count, which is not a bug,
-# to schedule its review passes. A cbugs failure fails this call (a
-# non-zero status, no output): the caller must treat that as a failed read,
-# not as a count of zero, the same distinction blocking_count draws.
 unreviewed_count() {
   local hashes
   hashes=$(unreviewed_hashes) || return 1
@@ -591,28 +586,6 @@ considered_count() {
   n=$(relevant_count)
   if ((n > 1000)); then n=1000; fi
   printf '%s' "$n"
-}
-
-# DIR_HEAD_NONE   The key that names a run directory with no directory HEAD,
-# which by CV-INV-9 is a run directory with no relevant commit. No git hash
-# can hold this shape, so one key covers both cases of CV-CONV-15, and an
-# approval can never confuse the two.
-DIR_HEAD_NONE='(none)'
-
-# dir_head_key   Prints a key that names the directory HEAD: the newest
-# relevant commit (CV-CONV-15). The sentinel DIR_HEAD_NONE stands in for the
-# empty case, so callers compare keys that cover both cases. The
-# ":(top,literal)" magic anchors the path at the root of the repository, for
-# the same reason relevant_count gives.
-dir_head_key() {
-  local head=""
-  if [[ -z $RUN_SUBPATH ]]; then
-    head=$(git rev-parse HEAD 2>/dev/null) || head=""
-  else
-    head=$(git rev-list -1 HEAD -- ":(top,literal)$RUN_SUBPATH" 2>/dev/null) || head=""
-  fi
-  [[ -n $head ]] || head=$DIR_HEAD_NONE
-  printf '%s' "$head"
 }
 
 # scope_list   Renders the scope paths as the operator wrote them, for a
@@ -2178,10 +2151,6 @@ the command refuses one from you anyway.
 EOF
 }
 
-# unreviewed_list / unreviewed_hashes / unreviewed_count / relevant_count
-# and dir_head_key sit with the other counting helpers, above; the cadence
-# pass and the final pass use them, and the startup panel uses the count.
-
 # cadence_focus <pending lines> <pending count>   Prints the text that names
 # what a cadence pass reads. When the bug database holds no record of a
 # commit that cbugs reviewed pending considers, the range is every relevant
@@ -2212,62 +2181,8 @@ commits, newest first:
 %s' "$2" "$1"
 }
 
-# record_reviewed <pending lines>   Records with cbugs reviewed add the
-# commits that the pass covered: the commits that no pass had recorded when
-# this pass started (CV-REV-15). The loop records, and no agent records one,
-# so the call runs outside the role environment that agents get. The file of
-# the last pass that an earlier version wrote stays where it is and is never
-# read or moved.
-# blocking_count   Prints the number of open code bugs and tasks. Only these
-# kinds gate approval and convergence; a spec bug never blocks (CV-CONV-17).
-# A query failure is not a count of zero (CV-CONV-17): it fails this call, so
-# every caller must treat it as blocking rather than as a clear board.
-blocking_count() {
-  local raw n
-  raw=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" list --kind code --kind task --status open --json 2>/dev/null) || return 1
-  [[ -n $raw ]] || raw='[]'
-  n=$(jq 'length' <<<"$raw" 2>/dev/null) || return 1
-  is_number "$n" || return 1
-  printf '%s' "$n"
-}
-
-# apply_blocking_reset   Any open code bug or task resets the consecutive
-# vote count, wherever it is found: after a worker's vote, and after a
-# review pass (CV-CONV-17). A failed read is treated the same way: it must
-# not be mistaken for a clear board.
-apply_blocking_reset() {
-  local n status=0
-  n=$(blocking_count) || status=$?
-  if ((status == 0)) && ((n == 0)); then
-    return 0
-  fi
-  if ((CONVERGED_VOTES > 0)); then
-    if ((status == 0)); then
-      note "open code bug or task; consecutive vote count reset to 0"
-    else
-      note "cbugs read failed; consecutive vote count reset to 0"
-    fi
-  fi
-  CONVERGED_VOTES=0
-}
-
-# convergence_holds   True exactly when CV-CONV-14 holds right now: enough
-# consecutive done votes, no open code bug or task, and, with review
-# enabled, final approval of the exact current directory HEAD. Approval
-# never applies to a disabled reviewer. A failed blocking-bug read prevents
-# convergence.
 convergence_holds() {
-  ((CONVERGED_VOTES >= CONSENSUS)) || return 1
-  local n
-  n=$(blocking_count) || return 1
-  ((0 == n)) || return 1
-  if ((REVIEW_ENABLED)); then
-    # A commit that changes no path in the run directory moves the
-    # repository HEAD and leaves the directory HEAD alone, so the key, and
-    # not the repository HEAD, decides whether the approval stands.
-    [[ $(dir_head_key) == "$APPROVED_HEAD" ]] || return 1
-  fi
-  return 0
+  ((CONVERGED_VOTES >= CONSENSUS))
 }
 
 # record_reviewed <pending list> <profile> <completed-at>
@@ -2293,28 +2208,9 @@ record_reviewed() {
   fi
 }
 
-# run_review_pass <cadence|final>   Runs the reviewer, then records what the
-# pass covered. A cadence pass reads the range of the pass: the commits that
-# no pass recorded, and every relevant commit of the history when a pass has
-# recorded nothing that the current history reaches (CV-REV-16, CV-REV-17).
-# A final pass reads the whole code in the run directory at the directory
-# HEAD (CV-REV-18), even when no commit is pending (CV-CONV-16). The loop
-# records the commits that no pass had recorded when this pass started
-# (CV-REV-15): a commit that another loop writes while the pass runs stays
-# unreviewed. A pass that fails or times out records nothing, so the next
-# pass covers the same work, and resets the consecutive vote count and
-# grants no approval (CV-CONV-17).
-#
-# A successful final pass grants approval for the exact directory HEAD it
-# reviewed, only when the directory HEAD did not move during the pass, the
-# recording of coverage below did not fail, and no open code bug or task
-# remains (CV-CONV-15). A commit that changes no path in the run directory
-# moves the repository HEAD and leaves the directory HEAD alone, so it
-# invalidates nothing. The caller (run_due_review) still owns whether a
-# final pass is due at all.
 run_review_pass() {
   local kind=$1 pending_list pending_count pending_failed=0 bugs_before bugs_after new_bugs count
-  local recorded=0 head_before head_after record_failed=0 completed_at
+  local recorded=0 completed_at
   local bugs_before_ok=1 bugs_after_ok=1
   if pending_list=$(unreviewed_list); then
     pending_count=$(awk 'NF { c++ } END { print c + 0 }' <<<"$pending_list")
@@ -2330,7 +2226,6 @@ run_review_pass() {
       # running one would give the reviewer a false "nothing is unreviewed"
       # range, so the pass is skipped rather than run on bad data.
       warn "cbugs reviewed pending failed; no cadence pass to run"
-      CONVERGED_VOTES=0
       return 0
     fi
     if ((pending_count == 0)); then
@@ -2355,7 +2250,6 @@ most."
       # rather than run on a range that answers nothing, as the failed
       # pending read above does.
       warn "cbugs.db read failed; no cadence pass to run"
-      CONVERGED_VOTES=0
       return 0
     fi
   fi
@@ -2371,7 +2265,6 @@ most."
   # keeps its revision_key, so it drops out of the diff.
   bugs_before=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" list --visibility all --json 2>/dev/null) || bugs_before_ok=0
   [[ -n $bugs_before ]] || bugs_before='[]'
-  head_before=$(dir_head_key)
 
   run_agent reviewer "$prompt"
   ((STOP_REQUESTED)) || handle_invocation_wait "$LOG_FILE" "$INVOCATION_HARNESS"
@@ -2381,28 +2274,12 @@ most."
     # moment it succeeded, not from a later retry of the record call.
     completed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     if ((pending_failed)); then
-      # Only a final pass reaches here with pending_failed: a cadence pass
-      # already returned above. The pass read the whole code (CV-REV-18),
-      # but a failed 'cbugs reviewed pending' means the commits it should
-      # mark reviewed are unknown, so nothing is recorded and approval is
-      # withheld below, the same as a failed record call (CV-FAIL-11).
       warn "cbugs reviewed pending failed; the pass recorded no commit"
-      record_failed=1
-      CONVERGED_VOTES=0
     elif ((pending_count > 0)); then
       if record_reviewed "$pending_list" "$RUN_PROFILE" "$completed_at"; then
         recorded=$pending_count
-      else
-        # CV-FAIL-11: a failed record call keeps the commits pending, and
-        # counts as a review failure for the vote count and for approval.
-        record_failed=1
-        CONVERGED_VOTES=0
       fi
     fi
-  else
-    # CV-CONV-17: a review failure or timeout resets the consecutive vote
-    # count and grants no approval, whatever kind of pass it was.
-    CONVERGED_VOTES=0
   fi
 
   bugs_after=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" list --visibility all --json 2>/dev/null) || bugs_after_ok=0
@@ -2458,46 +2335,13 @@ most."
       info "the pass failed and recorded no commit"
     fi
   fi
-
-  if [[ $kind == final ]]; then
-    if ((RUN_STATUS == 0)) && ((! record_failed)); then
-      head_after=$(dir_head_key)
-      local blocking
-      if [[ $head_after == "$head_before" ]] && blocking=$(blocking_count) && ((0 == blocking)); then
-        APPROVED_HEAD=$head_after
-        if [[ $head_after == "$DIR_HEAD_NONE" ]]; then
-          info "final approval granted; the run directory holds no relevant commit"
-          note "final approval granted; the run directory holds no relevant commit"
-        else
-          info "final approval granted for directory HEAD $head_after"
-          note "final approval granted for directory HEAD $head_after"
-        fi
-      else
-        info "final approval withheld"
-        note "final approval withheld (the directory HEAD moved during the pass, an open code bug or task remains, or the bug tracker could not be read)"
-      fi
-    else
-      info "final approval withheld; the pass failed"
-      note "final approval withheld; the pass failed"
-    fi
-  fi
 }
 
-# run_due_review   Step 3 of CV-CONV-18: runs a due final pass or, if none is
-# due, a due cadence pass, then applies the blocking-bug reset. A final pass
-# is due after a done vote left the current directory HEAD unapproved
-# (CV-CONV-16), and before the first worker when --consensus is 0: no vote is
-# due then, but convergence still needs approval, so a final pass must run
-# first (CV-CONV-14). It is consumed here whether or not it actually runs, so
-# it is not repeated at an unchanged directory HEAD. One due final pass
-# replaces a due cadence pass.
 run_due_review() {
   local final_was_due=$FINAL_DUE
   FINAL_DUE=0
   if ((REVIEW_ENABLED)) && ((! STOP_REQUESTED)); then
-    local head
-    head=$(dir_head_key)
-    if ((final_was_due)) && [[ $head != "$APPROVED_HEAD" ]]; then
+    if ((final_was_due)); then
       run_review_pass final
     else
       local pending
@@ -2513,7 +2357,6 @@ run_due_review() {
       fi
     fi
   fi
-  apply_blocking_reset
 }
 
 # print_cost_summary
@@ -2631,13 +2474,7 @@ print_cost_summary() {
 
 ITERATION=0
 CONVERGED_VOTES=0
-APPROVED_HEAD=""
 FINAL_DUE=0
-# --consensus 0 needs no vote (CV-INV-3.15), so convergence must be
-# reachable before the first worker invocation. With review enabled, CV-CONV-14
-# still requires final approval of the current directory HEAD, so a final pass
-# is due from the start and CV-CONV-18 step 3 runs it before the first worker.
-((CONSENSUS == 0 && REVIEW_ENABLED)) && FINAL_DUE=1
 FAIL_WAIT=0
 PENDING_LOGS=()
 # CV-COACH-10: the cadence starts at zero each session. The first coach run
@@ -2720,11 +2557,6 @@ while true; do
   # arrived while it ran: the invocation still finished, and the report is
   # about what it did, not about scheduling more work.
   report_changes "$HEAD_BEFORE"
-  # A first SIGINT lets this invocation finish. CV-CONV-18 step 1 (count the
-  # vote, apply the blocking-bug check) must still run for this completed
-  # invocation before the stop check of step 2, so do not break here: the
-  # stop_due call at the top of the loop applies step 2 once step 1 below is
-  # done, before any further invocation is scheduled.
   PENDING_LOGS+=("$LOG_FILE")
   ((++SINCE_COACH))
   # A review pass below overwrites $LOG_FILE and $INVOCATION_HARNESS with
@@ -2733,9 +2565,6 @@ while true; do
   WORKER_LOG=$LOG_FILE
   WORKER_HARNESS=$INVOCATION_HARNESS
 
-  # Step 1 (CV-CONV-18): count the vote, or reset on a failure, timeout, or
-  # non-vote, then apply the blocking-bug check. A done vote marks a final
-  # pass due; run_due_review consumes that at the top of the next cycle.
   if ! produced_output "$LOG_FILE" "$WORKER_HARNESS"; then
     # A failure that produced no output at all is the signature of an
     # exhausted quota: the invocation could not even start. A failure that did
@@ -2766,7 +2595,6 @@ while true; do
       note "no converged vote; consecutive count reset to 0"
     fi
   fi
-  apply_blocking_reset
   # A failure on the last permitted iteration has no next iteration to delay,
   # so skip the wait: CV-FAIL-7 grows it "before it starts the next
   # iteration," and --max-iterations means there is none. Without this, a
