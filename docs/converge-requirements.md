@@ -94,7 +94,7 @@ These principles explain the intent behind the requirements. Apply them when a r
   - **CV-INV-3.3**: Retired. Accepted `--coach-model`. See **CV-INV-11** and **CV-HARN-8**.
   - **CV-INV-3.4**: Retired. Accepted `--review-model`. See **CV-INV-11** and **CV-HARN-8**.
   - **CV-INV-3.5**: Retired. Defined votes alone as the stop condition. **CV-INV-3.15** replaces this behavior.
-  - **CV-INV-3.6**: `--coach-every <K>`: the number of worker iterations between coach runs. The script sets the default. `K` can be `0`: then the coach is due on every check. **CV-COACH-8** gives the details.
+  - **CV-INV-3.6**: Retired. `--coach-every <K>` set one period, and `K` could be `0`. **CV-INV-3.16** and **CV-INV-3.17** replace this behavior.
   - **CV-INV-3.7**: `--no-coach`: disable the coach.
   - **CV-INV-3.8**: Retired. `--review-every <R>` gave the number of worker iterations between review passes. **CV-INV-3.14** replaces this behavior. The count lived in the memory of the loop, and a Ctrl-C that stopped the run threw it away. The count of unreviewed commits is durable, in the bug database.
   - **CV-INV-3.9**: `--no-review`: disable the reviewer.
@@ -104,6 +104,8 @@ These principles explain the intent behind the requirements. Apply them when a r
   - **CV-INV-3.13**: Retired. Required more than `N` unreviewed commits. **CV-INV-3.14** replaces this threshold.
   - **CV-INV-3.14**: `--review-after <N>`: run a cadence pass when at least `N` commits are unreviewed, subject to **CV-CONV-18**. `N` must be a positive integer. Default: `5`.
   - **CV-INV-3.15**: `--consensus <N>`: the required number of consecutive done votes. Default: `2`. `N` can be `0`: then no vote is required, and the loop can converge before the first worker invocation. **CV-CONV-14** gives the other convergence conditions.
+  - **CV-INV-3.16**: `--coach-first <F>`: the number of worker iterations before the first coach run of a session. `F` must be a whole number. `F` can be `0`: then the coach is due before the first worker iteration. Default: `5`. **CV-COACH-10** gives the details.
+  - **CV-INV-3.17**: `--coach-every <K>`: the number of worker iterations between one coach run and the next. `K` must be a positive integer. The script must stop with an error when `K` is `0`; `--coach-first 0 --coach-every 1` gives a coach on every check. Default: `10`. **CV-COACH-10** gives the details.
 - **CV-INV-4**: Retired. Passed unknown options to the harness. **CV-INV-11** rejects harness arguments.
 - **CV-INV-5**: Retired. A run took no positional argument. **CV-INV-8** replaces this behavior.
 - **CV-INV-6**: Retired. Passed arguments after `--` to the harness. **CV-INV-11** replaces this behavior.
@@ -391,10 +393,11 @@ The worker builds. The reviewer reads what the worker built. One agent cannot do
 - **CV-COACH-6**: The coach must write only the guidance file, the journal, and a bug. The coach must not edit code, must not edit requirements documents, and must not stop the loop.
 - **CV-COACH-7**: The loop must log coach output the same way it logs worker output.
 
-- **CV-COACH-8**: The coach cadence must start at zero each session. Every started worker iteration must count toward the iteration limit and coach cadence, including failures and timeouts. After every `K` iterations, an enabled coach is due. When `K` is `0`, the coach is due on every check, including before the first worker iteration. It must run synchronously under **CV-CONV-18**, after any due review, even if the worker or reviewer failed or timed out. A stop condition takes priority.
+- **CV-COACH-8**: Retired. Defined one period `K` for every coach run. **CV-COACH-10** replaces this behavior.
 - **CV-COACH-9**: Normal cbugs list and search commands show the history visible
   at repository `HEAD`. The coach may use `cbugs list --visibility hidden` or
   `cbugs list --visibility all` when it needs to inspect hidden history.
+- **CV-COACH-10**: The coach cadence must start at zero each session. Every started worker iteration must count toward the iteration limit and the coach cadence, including failures and timeouts. An enabled coach is due when no coach has run in the session and `F` iterations have started, where `F` is `--coach-first`. After that, the coach is due when `K` iterations have started since the last coach run of the session, where `K` is `--coach-every`. When `F` is `0`, the coach is due before the first worker iteration. A coach run that fails or times out still resets the cadence. The coach must run synchronously under **CV-CONV-18**, after any due review, even if the worker or reviewer failed or timed out. A stop condition takes priority.
 
 ## State and logs
 
@@ -468,7 +471,7 @@ These are recorded decisions, not oversights.
 - **CV-OOS-9** — **A record of a review pass that found no defect**: rejected. The reviewed commits name the coverage of the passes, and the bug database holds defects. A pass that logs no bug needs no record of its own, and the logs of the loop show that it ran.
 - **CV-OOS-10** — **Coach authority to halt the loop or edit the repository**: rejected for v1. A bad coach judgment must cost at most a few misguided iterations.
 - **CV-OOS-11** — **Cost or token budgets**: rejected for v1. `--max-iterations` and the operator bound the run.
-- **CV-OOS-12** — **Coach-selected cadence**: rejected for v1. A fixed `K` is simpler and easier to reason about. The same holds for the review threshold of **CV-INV-3.14**.
+- **CV-OOS-12** — **Coach-selected cadence**: rejected for v1. A fixed first threshold and a fixed period are simpler and easier to reason about. The same holds for the review threshold of **CV-INV-3.14**. A cadence whose gaps grow, as a backoff factor, is rejected for the same reason.
 - **CV-OOS-13** — **A key that detaches the client but keeps the loop**: rejected for v1. Ctrl-C stops the run. The state directory makes a restart cheap.
 - **CV-OOS-14** — **`--status` and `--stop` commands**: rejected for v1. To see a loop, attach to it.
 - **CV-OOS-15** — **Two clients on one loop**: not a supported case. It does no harm, and either client can stop the loop.
