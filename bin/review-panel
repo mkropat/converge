@@ -48,12 +48,14 @@ not run a converge loop.
 
 Profiles come from the environment only:
 
-  REVIEW_PANEL_PROFILES       Ordered, comma-separated list of reviewer
-                              profiles, of the form harness:model[:effort].
-                              Unset, the command uses CONVERGE_REVIEWER_PROFILE.
-                              Unset, that defaults to claude:opus.
-  REVIEW_PANEL_MERGE_PROFILE  The single merge profile. Unset, the command
-                              uses the first reviewer profile.
+  CONVERGE_REVIEW_PANEL_PROFILE  Ordered, comma-separated list of reviewer
+                                 profiles, of the form harness:model[:effort].
+                                 Unset, the command uses
+                                 CONVERGE_REVIEWER_PROFILE. Unset, that
+                                 defaults to claude:opus.
+  CONVERGE_REVIEW_PANEL_MERGE_PROFILE
+                                 The single merge profile. Unset, the command
+                                 uses the first reviewer profile.
 
 An explicitly empty variable is an error, not a request for the default.
 Duplicate canonical reviewer profiles are rejected. Unknown options are
@@ -546,18 +548,18 @@ parse_profile_list() {
   done
 }
 
-# resolve_reviewer_env   RP-PROF-1 and RP-PROF-2: REVIEW_PANEL_PROFILES
+# resolve_reviewer_env   CV-HARN-16 and RP-PROF-7: CONVERGE_REVIEW_PANEL_PROFILE
 # selects the reviewer list; unset, the command uses CONVERGE_REVIEWER_PROFILE;
-# unset, that defaults to the converge reviewer default, claude:opus. An
-# explicitly empty selected variable is an error, not a request for a
+# unset, that defaults to the converge reviewer default, claude:opus (RP-PROF-2):
+# an explicitly empty selected variable is an error, not a request for a
 # fallback.
 resolve_reviewer_env() {
-  if [[ -n ${REVIEW_PANEL_PROFILES+x} ]]; then
-    if [[ -z $REVIEW_PANEL_PROFILES ]]; then
-      echo "review-panel: REVIEW_PANEL_PROFILES is set but empty; give a comma-separated profile list" >&2
+  if [[ -n ${CONVERGE_REVIEW_PANEL_PROFILE+x} ]]; then
+    if [[ -z $CONVERGE_REVIEW_PANEL_PROFILE ]]; then
+      echo "review-panel: CONVERGE_REVIEW_PANEL_PROFILE is set but empty; give a comma-separated profile list" >&2
       exit 2
     fi
-    REVIEWER_RAW=$REVIEW_PANEL_PROFILES
+    REVIEWER_RAW=$CONVERGE_REVIEW_PANEL_PROFILE
   elif [[ -n ${CONVERGE_REVIEWER_PROFILE+x} ]]; then
     if [[ -z $CONVERGE_REVIEWER_PROFILE ]]; then
       echo "review-panel: CONVERGE_REVIEWER_PROFILE is set but empty; give a comma-separated profile list" >&2
@@ -569,24 +571,39 @@ resolve_reviewer_env() {
   fi
 }
 
-# resolve_merge_env <fallback>   RP-PROF-4: REVIEW_PANEL_MERGE_PROFILE must
-# name exactly one merge profile; unset, the command uses the value given
-# here, which is the first resolved reviewer profile. An empty value is an
-# error, and a value that holds a comma does not name one profile.
+# resolve_merge_env <fallback>   CV-HARN-16 and RP-PROF-8:
+# CONVERGE_REVIEW_PANEL_MERGE_PROFILE must name exactly one merge profile;
+# unset, the command uses the value given here, which is the first resolved
+# reviewer profile. An empty value is an error, and a value that holds a
+# comma does not name one profile.
 resolve_merge_env() {
   local fallback=$1
-  if [[ -z ${REVIEW_PANEL_MERGE_PROFILE+x} ]]; then
+  if [[ -z ${CONVERGE_REVIEW_PANEL_MERGE_PROFILE+x} ]]; then
     MERGE_PROFILE_RAW=$fallback
   else
-    if [[ -z $REVIEW_PANEL_MERGE_PROFILE ]]; then
-      echo "review-panel: REVIEW_PANEL_MERGE_PROFILE is set but empty; give one profile" >&2
+    if [[ -z $CONVERGE_REVIEW_PANEL_MERGE_PROFILE ]]; then
+      echo "review-panel: CONVERGE_REVIEW_PANEL_MERGE_PROFILE is set but empty; give one profile" >&2
       exit 2
     fi
-    if [[ $REVIEW_PANEL_MERGE_PROFILE == *,* ]]; then
-      echo "review-panel: REVIEW_PANEL_MERGE_PROFILE must name exactly one merge profile, not a list" >&2
+    if [[ $CONVERGE_REVIEW_PANEL_MERGE_PROFILE == *,* ]]; then
+      echo "review-panel: CONVERGE_REVIEW_PANEL_MERGE_PROFILE must name exactly one merge profile, not a list" >&2
       exit 2
     fi
-    MERGE_PROFILE_RAW=$REVIEW_PANEL_MERGE_PROFILE
+    MERGE_PROFILE_RAW=$CONVERGE_REVIEW_PANEL_MERGE_PROFILE
+  fi
+}
+
+# reject_retired_panel_env   RP-PROF-9, under CV-HARN-16: the panel takes its
+# profiles from the CONVERGE variables alone. A set retired variable is an
+# error that names its replacement, before any agent starts (RP-PROF-5).
+reject_retired_panel_env() {
+  if [[ -n ${REVIEW_PANEL_PROFILES+x} ]]; then
+    echo "review-panel: REVIEW_PANEL_PROFILES is retired; use CONVERGE_REVIEW_PANEL_PROFILE" >&2
+    exit 2
+  fi
+  if [[ -n ${REVIEW_PANEL_MERGE_PROFILE+x} ]]; then
+    echo "review-panel: REVIEW_PANEL_MERGE_PROFILE is retired; use CONVERGE_REVIEW_PANEL_MERGE_PROFILE" >&2
+    exit 2
   fi
 }
 
@@ -1064,10 +1081,11 @@ stream_filter() {
 # format_stream <color>
 # Reads a message stream on stdin. Writes a transcript for the operator.
 format_stream() {
-  local accent=$1
+  local accent=$1 cost_log=${2:-}
   jq --unbuffered -R -r "$(stream_filter)" 2>/dev/null | {
     local record kind rest rest2 name arg lines line turns ms cost
     local as_final started=-1 first=1 counted=0 sum=0 reported=0 stream_cost=0
+    local reported_cost='' cost_out
     local -a hold=()
     while IFS= read -r record; do
       ((started < 0)) && started=$SECONDS
@@ -1129,8 +1147,12 @@ format_stream() {
           reported=1
           # A cost column that is absent, empty, or not a decimal names no
           # harness total, and shows nothing (CV-COST-1).
-          [[ $cost =~ $DECIMAL_RE ]] || cost=""
-          say_stats "$turns" $((ms / 1000)) "$cost"
+          if [[ $cost =~ $DECIMAL_RE ]]; then
+            reported_cost=$cost
+          else
+            reported_cost=""
+          fi
+          say_stats "$turns" $((ms / 1000)) "$reported_cost"
           ;;
       esac
     done
@@ -1147,15 +1169,34 @@ format_stream() {
         say_stats "$counted" $((SECONDS - started)) ""
       fi
     fi
+    # CV-COST-10: with a log given, the recorded cost of this invocation is
+    # appended to it as the last converge_event line, so the controller
+    # reads it back when the invocation ends and writes the cost to the
+    # shared ledger. A value that is not a decimal lands as an empty
+    # record: absent cost is a record with no cost data, and never a
+    # recorded zero (CV-COST-1).
+    if ((reported)); then
+      cost_out=$reported_cost
+    elif ((stream_cost)); then
+      cost_out=$sum
+    else
+      cost_out=""
+    fi
+    if [[ -n ${cost_log:-} ]]; then
+      [[ $cost_out =~ $DECIMAL_RE ]] || cost_out=""
+      printf '{"type":"converge_event","event":"cost_record","record":"%s"}\n' \
+        "$cost_out" >>"$cost_log" 2>/dev/null
+    fi
   }
 }
 
 # ------------------------------------------------------------------- signals
 #
 # The panel follows the applicable converge stop conventions (RP-OUT-8): the
-# first Ctrl-C lets the running agents finish and starts nothing further; a
-# second Ctrl-C stops the panel and its own agents at once, with status 130;
-# a SIGTERM stops the panel with status 143. An interrupted panel must not
+# first Ctrl-C, or a graceful USR1 request of the parent loop (CV-FAIL-13),
+# lets the running agents finish and starts nothing further; a second
+# Ctrl-C stops the panel and its own agents at once, with status 130; a
+# SIGTERM stops the panel with status 143. An interrupted panel must not
 # claim completion (RP-OUT-6). The cleanup touches only the processes this
 # panel started, each of which leads its own process group, so another run
 # keeps working (RP-RUN-4).
@@ -1197,6 +1238,7 @@ on_term() {
 }
 
 trap on_int INT
+trap on_int USR1
 trap on_term TERM
 
 # ------------------------------------------------------------------ coverage
@@ -1227,6 +1269,38 @@ record_reviewed() {
   fi
   note "coverage recorded: profile=$profile $out"
   return 0
+}
+
+# record_invocation_cost <role> <profile> <log>   Appends one line for one
+# reviewer or merge invocation to the shared cost ledger (CV-COST-10). The
+# parent loop passes its existing CONVERGE_SESSION and an explicit absolute
+# CONVERGE_COST_LEDGER path; with either absent, a standalone panel
+# records nothing and keeps its own cost identity. The row uses the
+# converge ledger fields: session, role, canonical profile, cost. Panel
+# reviewers use the reviewer cost role, and merge calls use the distinct
+# merge cost role. The append holds the shared ledger lock. An absent cost
+# is a record with no cost data, and never a recorded zero (CV-COST-1);
+# unknown costs stay absent, not zero.
+record_invocation_cost() {
+  [[ -n $COST_SESSION && -n $COST_LEDGER ]] || return 0
+  local role=$1 profile=$2 log=$3 cost_record
+  cost_record=""
+  if [[ -s $log ]]; then
+    cost_record=$(jq -Rsr 'split("\n") | map(fromjson? // empty)
+      | map(select(.type == "converge_event" and .event == "cost_record")
+        | (.record // ""))
+      | last // ""' "$log" 2>/dev/null) || cost_record=""
+  fi
+  [[ $cost_record =~ $DECIMAL_RE ]] || cost_record=""
+  {
+    flock -x 9
+    printf '%s\t%s\t%s\t%s\n' "$COST_SESSION" "$role" "$profile" "$cost_record" >>"$COST_LEDGER"
+  } 9>>"$COST_LEDGER" 2>/dev/null || {
+    warn "cannot append to the cost ledger $COST_LEDGER; this invocation's cost stays out of the summaries"
+    note "cost record failed: role=$role profile=$profile"
+    return 0
+  }
+  note "cost recorded: role=$role profile=$profile cost=${cost_record:-absent}"
 }
 
 # ---------------------------------------------------------------- agent pass
@@ -1334,7 +1408,7 @@ ARGV=(bash -c 'end="$1"; shift; setsid "$@" & child=$!; trap "kill -TERM -$child
   rm -f "$fifo"
   if mkfifo "$fifo" 2>/dev/null; then
     fifo_ok=1
-    ( trap '' INT TERM; tee -a "$LOG" <"$fifo" | format_stream "$BLUE" ) &
+    ( trap '' INT TERM; tee -a "$LOG" <"$fifo" | format_stream "$BLUE" "$LOG" ) &
     FORMATTERS[$((index - 1))]=$!
     (
       trap '' INT
@@ -1415,7 +1489,7 @@ run_merge_agent() {
   rm -f "$fifo"
   if mkfifo "$fifo" 2>/dev/null; then
     ( trap '' INT TERM; tee -a "$LOG_FILE" <"$fifo" \
-      | format_stream "$MAGENTA" ) &
+      | format_stream "$MAGENTA" "$LOG_FILE" ) &
     FORMATTER=$!
     # The agent writes its message stream into the pipe, the way converge
     # does; the tee reads it. The stdin of the agent stays the panel's.
@@ -1480,6 +1554,9 @@ run_merge_agent() {
     good "merge finished in $(duration "$MERGE_SECONDS")"
   fi
   note "merge end: profile=$profile status=$MERGE_STATUS seconds=$MERGE_SECONDS"
+  # CV-COST-10: the merge records its own line, under the distinct merge
+  # cost role.
+  record_invocation_cost merge "$profile" "$LOG_FILE"
 }
 
 # ---------------------------------------------------------------------- main
@@ -1487,17 +1564,27 @@ run_merge_agent() {
 # The resolved profiles must hold before any agent starts (RP-PROF-5). The
 # resolution happens once, here; the panel stores no profile selection for
 # later runs (RP-PROF-6).
+reject_retired_panel_env
 resolve_reviewer_env
 parse_profile_list reviewer "$REVIEWER_RAW" REVIEWER_PROFILES
 REVIEWER_COUNT=${#REVIEWER_PROFILES[@]}
 resolve_merge_env "${REVIEWER_PROFILES[0]:-}"
-# The merge profile must parse as exactly one profile (RP-PROF-4).
+# The merge profile must parse as exactly one profile (CV-HARN-16,
+# RP-PROF-8).
 parse_profile_list merge "$MERGE_PROFILE_RAW" MERGE_PROFILES
 if ((${#MERGE_PROFILES[@]} != 1)); then
-  echo "review-panel: REVIEW_PANEL_MERGE_PROFILE must name exactly one merge profile, not a list" >&2
+  echo "review-panel: CONVERGE_REVIEW_PANEL_MERGE_PROFILE must name exactly one merge profile, not a list" >&2
   exit 2
 fi
 MERGE_PROFILE=${MERGE_PROFILES[0]}
+
+# CV-COST-10: the parent loop passes its existing CONVERGE_SESSION and an
+# explicit absolute CONVERGE_COST_LEDGER path. With both present, the
+# controller records one ledger line per reviewer and merge invocation,
+# under the shared ledger lock. A standalone panel sets neither, records
+# nothing, and keeps its own cost session and path.
+COST_SESSION=${CONVERGE_SESSION:-}
+COST_LEDGER=${CONVERGE_COST_LEDGER:-}
 
 if ((HELP_REQUESTED)); then
   usage
@@ -1646,6 +1733,10 @@ for ((i = 0; i < RUN_STARTED; i++)); do
       "$PANEL_ID" >>"$LOG_DIR/$stem.jsonl"
   fi
   note "reviewer end: profile=$profile status=$status stem=$stem seconds=$seconds"
+  # CV-COST-10: one ledger line per started invocation, as the stylesheet
+  # that the converge loop uses appends its own. The read waits for the
+  # formatter above, so the cost record is already the last line of the log.
+  [[ -z $stem ]] || record_invocation_cost reviewer "$profile" "$LOG_DIR/$stem.jsonl"
   ((status == 0)) || REVIEW_FAILED=1
 done
 

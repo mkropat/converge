@@ -839,8 +839,9 @@ reject_retired_env() {
 
 # pick_profile <role>   Advances that role's round-robin index and sets
 # PICKED_PROFILE to the profile it names (CV-HARN-14). Each session starts
-# every role at its first entry; cadence and final passes share the
-# reviewer's sequence because both call this with role=reviewer.
+# every role at its first entry; a cadence pass uses the reviewer's
+# sequence. Vote panels and merge invocations consume no turn in any
+# sequence (CV-HARN-14, CV-HARN-16).
 pick_profile() {
   local role=$1
   case $role in
@@ -1154,6 +1155,42 @@ WORKER_PROFILE_IDX=0
 REVIEWER_PROFILE_IDX=0
 COACH_PROFILE_IDX=0
 
+# CV-HARN-16: vote panels resolve profiles through CONVERGE_REVIEW_PANEL_PROFILE,
+# then CONVERGE_REVIEWER_PROFILE, then claude:opus. The merge profile comes
+# from CONVERGE_REVIEW_PANEL_MERGE_PROFILE, or the first resolved panel
+# profile when unset. These settings belong to the session (CV-HARN-13), so
+# the loop reads and validates them once here, whether or not a panel ever
+# runs (CV-HARN-11), and an attached client cannot change them. Validation
+# and retirement rules follow docs/review-panel-requirements.md:RP-PROF-2
+# through RP-PROF-9.
+resolve_panel_env() {
+  if [[ -n ${CONVERGE_REVIEW_PANEL_PROFILE+x} ]]; then
+    if [[ -z $CONVERGE_REVIEW_PANEL_PROFILE ]]; then
+      echo "converge: CONVERGE_REVIEW_PANEL_PROFILE is set but empty; give a comma-separated profile list" >&2
+      exit 2
+    fi
+    parse_profile_list panel "$CONVERGE_REVIEW_PANEL_PROFILE" PANEL_PROFILES
+  else
+    PANEL_PROFILES=("${REVIEWER_PROFILES[@]}")
+  fi
+  if [[ -n ${CONVERGE_REVIEW_PANEL_MERGE_PROFILE+x} ]]; then
+    if [[ -z $CONVERGE_REVIEW_PANEL_MERGE_PROFILE ]]; then
+      echo "converge: CONVERGE_REVIEW_PANEL_MERGE_PROFILE is set but empty; give one profile" >&2
+      exit 2
+    fi
+    parse_profile_list merge "$CONVERGE_REVIEW_PANEL_MERGE_PROFILE" PANEL_MERGE_PROFILES
+    if ((${#PANEL_MERGE_PROFILES[@]} != 1)); then
+      echo "converge: CONVERGE_REVIEW_PANEL_MERGE_PROFILE must name exactly one merge profile, not a list" >&2
+      exit 2
+    fi
+    PANEL_MERGE_PROFILE=${PANEL_MERGE_PROFILES[0]}
+  else
+    # Unset: the panel falls back to the first resolved panel profile.
+    PANEL_MERGE_PROFILE=""
+  fi
+}
+resolve_panel_env
+
 # The message stream of every invocation travels through a named pipe in the
 # runtime directory, so that the transcript shows live while the log file
 # keeps every message. Test once, here, that the directory supports one. A
@@ -1275,12 +1312,28 @@ on_signal() {
   if [[ $sig == INT || $sig == USR1 ]] && ((STOP_REQUESTED == 0)); then
     STOP_REQUESTED=1
     warn "stop requested; finishing the current invocation, then stopping"
+    # CV-FAIL-13: the graceful request must reach an active panel
+    # controller. The controller stops new launches and lets the active
+    # calls of its own agents finish; it starts no merge after the request.
+    if [[ -n $PANEL_PID ]]; then
+      kill -USR1 "$PANEL_PID" 2>/dev/null || true
+    fi
     if ((! IN_INVOCATION)) && [[ -n $CHILD ]]; then
       kill -TERM "$CHILD" 2>/dev/null
     fi
     return
   fi
   warn "received SIG$sig; stopping now"
+  # CV-FAIL-13: a second Ctrl-C or a SIGTERM must reach the owned
+  # descendants of an active panel, which lead process groups of their
+  # own. The panel's controller follows its own stop rules on the signal
+  # and cleans its agents; the kill of its group reaches its controller's
+  # own direct children.
+  if [[ -n $PANEL_PID ]]; then
+    kill -TERM -"$PANEL_PID" 2>/dev/null || kill -TERM "$PANEL_PID" 2>/dev/null || true
+    wait "$PANEL_PID" 2>/dev/null
+    PANEL_PID=""
+  fi
   if [[ -n $CHILD ]]; then
     kill -TERM "$CHILD" 2>/dev/null
     wait "$CHILD" 2>/dev/null
@@ -2208,8 +2261,13 @@ record_reviewed() {
   fi
 }
 
+# run_review_pass   Runs one cadence review pass synchronously (CV-REV-19,
+# CV-CONV-24). The range is every unreviewed commit of the considered
+# history, listed by the cadence focus (CV-REV-16, CV-REV-17). The
+# whole-code final pass is retired (CV-REV-18): the vote panel of
+# CV-CONV-23 replaces it, through run_vote_panel.
 run_review_pass() {
-  local kind=$1 pending_list pending_count pending_failed=0 bugs_before bugs_after new_bugs count
+  local pending_list pending_count pending_failed=0 bugs_before bugs_after new_bugs count
   local recorded=0 completed_at
   local bugs_before_ok=1 bugs_after_ok=1
   if pending_list=$(unreviewed_list); then
@@ -2219,39 +2277,30 @@ run_review_pass() {
     pending_list=""
     pending_count=0
   fi
-  if [[ $kind != final ]]; then
-    if ((pending_failed)); then
-      # CV-REV-19: a failed read is not an empty backlog. A cadence pass
-      # needs the exact list of unreviewed commits (CV-REV-16); without it,
-      # running one would give the reviewer a false "nothing is unreviewed"
-      # range, so the pass is skipped rather than run on bad data.
-      warn "cbugs reviewed pending failed; no cadence pass to run"
-      return 0
-    fi
-    if ((pending_count == 0)); then
-      note "review: no commit is unreviewed; no pass to run"
-      return 0
-    fi
+  if ((pending_failed)); then
+    # CV-REV-19: a failed read is not an empty backlog. A cadence pass
+    # needs the exact list of unreviewed commits (CV-REV-16); without it,
+    # running one would give the reviewer a false "nothing is unreviewed"
+    # range, so the pass is skipped rather than run on bad data.
+    warn "cbugs reviewed pending failed; no cadence pass to run"
+    return 0
+  fi
+  if ((pending_count == 0)); then
+    note "review: no commit is unreviewed; no pass to run"
+    return 0
   fi
 
   heading "$BLUE" "review" "$(date '+%H:%M:%S')"
-  note "review pass ($kind): $(plural "$pending_count" "unreviewed commit")"
+  note "review pass at $(date '+%Y-%m-%d %H:%M:%S'): $(plural "$pending_count" "unreviewed commit")"
 
   local focus prompt
-  if [[ $kind == final ]]; then
-    focus="the whole code in the run directory at the directory HEAD, not
-only the commits that no review pass has recorded. Judge how much of the
-code to read; the integration of the recent work with the old code matters
-most."
-  else
-    if ! focus=$(cadence_focus "$pending_list" "$pending_count"); then
-      # A failed reviewed-count read is not a first pass (CV-REV-17): the
-      # first-pass range would be a false claim, so the pass is skipped
-      # rather than run on a range that answers nothing, as the failed
-      # pending read above does.
-      warn "cbugs.db read failed; no cadence pass to run"
-      return 0
-    fi
+  if ! focus=$(cadence_focus "$pending_list" "$pending_count"); then
+    # A failed reviewed-count read is not a first pass (CV-REV-17): the
+    # first-pass range would be a false claim, so the pass is skipped
+    # rather than run on a range that answers nothing, as the failed
+    # pending read above does.
+    warn "cbugs.db read failed; no cadence pass to run"
+    return 0
   fi
   prompt=$(reviewer_prompt "$focus")
 
@@ -2320,43 +2369,104 @@ most."
     info "the review pass logged no bug"
   fi
 
-  # CV-OUT-12: the number of commits that the pass recorded, and, for a
-  # final pass, that it read the whole code in the run directory.
+  # CV-OUT-12: the number of commits that the pass recorded.
   if ((RUN_STATUS == 0)); then
-    if [[ $kind == final ]]; then
-      info "the final pass read the whole code in the run directory; recorded $(plural "$recorded" commit)"
-    else
-      info "the pass recorded $(plural "$recorded" commit)"
-    fi
+    info "the pass recorded $(plural "$recorded" commit)"
   else
-    if [[ $kind == final ]]; then
-      info "the final pass failed and recorded no commit; it read nothing to cover"
-    else
-      info "the pass failed and recorded no commit"
-    fi
+    info "the pass failed and recorded no commit"
   fi
 }
 
 run_due_review() {
-  local final_was_due=$FINAL_DUE
-  FINAL_DUE=0
-  if ((REVIEW_ENABLED)) && ((! STOP_REQUESTED)); then
-    if ((final_was_due)); then
-      run_review_pass final
-    else
-      local pending
-      if pending=$(unreviewed_count); then
-        ((REVIEW_AFTER <= pending)) && run_review_pass cadence
-      else
-        # CV-REV-19: a failed read does not mean no commit is pending; it
-        # means the count cannot be known this iteration. Warn instead of
-        # silently treating it as zero and skipping a pass that may be due;
-        # the next iteration retries the read (CV-FAIL-6: never stop for a
-        # failure).
-        warn "cbugs reviewed pending failed; cannot tell whether a cadence pass is due"
-      fi
-    fi
+  # CV-CONV-23: with --no-review, neither a cadence review nor a vote
+  # panel runs.
+  ((REVIEW_ENABLED)) || return 0
+  if ((STOP_REQUESTED)); then
+    return 0
   fi
+  local pending
+  if pending=$(unreviewed_count); then
+    ((REVIEW_AFTER <= pending)) && run_review_pass
+  else
+    # CV-REV-19: a failed read does not mean no commit is pending; it
+    # means the count cannot be known this iteration. Warn instead of
+    # silently treating it as zero and skipping a pass that may be due;
+    # the next iteration retries the read (CV-FAIL-6: never stop for a
+    # failure).
+    warn "cbugs reviewed pending failed; cannot tell whether a cadence pass is due"
+  fi
+}
+
+# run_vote_panel   Runs one vote panel when the consecutive vote count
+# changed from zero to one (CV-CONV-23). The panel reviews the whole live
+# working tree of the run directory in parallel and merges duplicate
+# findings under the panel's own rules; the loop waits for the panel and
+# its merge before the next worker or a convergence exit. The result is
+# advisory: panel findings, its failures, and its coverage-record
+# failures must not reset votes or block convergence (CV-CONV-22), and
+# panel and merge invocations consume no turn in any role rotation
+# (CV-HARN-14, CV-HARN-16). With --no-review, no panel runs (CV-CONV-23).
+#
+# The panel runs in its own session and process group, so the graceful
+# request can reach its controller and the hard stop can reach its group
+# (CV-FAIL-13). The panel logs its own agents, records its own coverage,
+# and writes its cost rows to the shared ledger (CV-COST-10). Sets
+# PANEL_PID while the panel runs, and PANEL_STATUS to its exit status.
+run_vote_panel() {
+  ((REVIEW_ENABLED)) || return 0
+  ((PANEL_DUE)) || return 0
+  # CV-CONV-24 step 3: stop on an operator signal before the launch, so a
+  # stop request forbids this launch, like every new invocation.
+  ((STOP_REQUESTED)) && return 0
+  PANEL_DUE=0
+  heading "$BLUE" "vote panel" "$(date '+%H:%M:%S')"
+  note "vote panel at $(date '+%Y-%m-%d %H:%M:%S')"
+  note "vote panel: reviewers=$(join_list "${PANEL_PROFILES[@]}") merge=${PANEL_MERGE_PROFILE:-first panel profile}"
+  # CV-COST-10: an explicit absolute ledger path. A relative state root
+  # resolves here, once, so the panel's records join the parent's ledger
+  # and its summaries read them under the same identity.
+  local ledger=$COST_LEDGER
+  case $ledger in
+    /*) ;;
+    *) ledger="$(cd "${ledger%/*}" 2>/dev/null && pwd -P)/${ledger##*/}" ;;
+  esac
+  local panel_status
+  (
+    export CONVERGE_SESSION="$RUN_ID"
+    export CONVERGE_COST_LEDGER="$ledger"
+    export CONVERGE_RUN_DIR="$RUN_DIR"
+    export CONVERGE_COLS="$COLS"
+    export CONVERGE_REVIEW_PANEL_PROFILE="$(join_list "${PANEL_PROFILES[@]}")"
+    [[ -z $PANEL_MERGE_PROFILE ]] || \
+      export CONVERGE_REVIEW_PANEL_MERGE_PROFILE="$PANEL_MERGE_PROFILE"
+    exec setsid "$BIN_DIR/review-panel" --timeout "$TIMEOUT" \
+      ${SCOPE[@]+"${SCOPE[@]}"}
+  ) &
+  PANEL_PID=$!
+  wait_child "$PANEL_PID"
+  panel_status=$?
+  PANEL_PID=""
+  # CV-OUT-12: the vote panel report says that the panel read the live
+  # working tree. The panel's own closing report names its findings and
+  # its coverage; this line ties the panel to the loop's stopping context.
+  case $panel_status in
+    0)
+      info "the vote panel read the live working tree and reported no error"
+      ;;
+    1)
+      info "the vote panel read the live working tree and retained new code bugs; they are listed above"
+      ;;
+    2)
+      bad "the vote panel read the live working tree but the run was incomplete (exit 2)"
+      ;;
+    130)
+      bad "the vote panel read the live working tree and stopped on the request of the operator"
+      ;;
+    *)
+      bad "the vote panel read the live working tree but exited with status $panel_status"
+      ;;
+  esac
+  PANEL_STATUS=$panel_status
 }
 
 # print_cost_summary
@@ -2474,7 +2584,9 @@ print_cost_summary() {
 
 ITERATION=0
 CONVERGED_VOTES=0
-FINAL_DUE=0
+PANEL_DUE=0
+PANEL_PID=""
+PANEL_STATUS=""
 FAIL_WAIT=0
 PENDING_LOGS=()
 # CV-COACH-10: the cadence starts at zero each session. The first coach run
@@ -2506,12 +2618,14 @@ stop_due() {
 }
 
 while true; do
-  # Step 2 (CV-CONV-18): signal, standing convergence, then the iteration
-  # limit, in that order, before any further invocation -- including the
-  # startup review that CV-REV-19 allows before the first worker.
+  # Step 3 (CV-CONV-24): stop on an operator signal otherwise, then run the
+  # vote panel if the count changed from zero to one. The panel runs before
+  # the convergence or the limit stop of step 4, so a first vote on the
+  # last permitted worker iteration still gets its panel.
+  run_vote_panel
   stop_due && break
 
-  # Step 3: a due final pass, or else a due cadence pass, replaces it.
+  # Step 5: a due cadence pass, then a due coach, then the next worker.
   run_due_review
   stop_due && break
 
@@ -2583,7 +2697,11 @@ while true; do
   else
     if voted_converged "$RESULT_TEXT"; then
       ((++CONVERGED_VOTES))
-      FINAL_DUE=1
+      # CV-CONV-23: each change of the count from zero to one starts one
+      # vote panel, which the top of the loop runs at step 3.
+      if ((CONVERGED_VOTES == 1)); then
+        PANEL_DUE=1
+      fi
       printf '  %s%s%s %s%s%s converged vote %s of %s\n' \
         "$GREEN" "$G_OK" "$OFF" \
         "$GREEN" "$(votes "$CONVERGED_VOTES" "$CONSENSUS")" "$OFF" \
