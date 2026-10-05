@@ -1461,8 +1461,8 @@ LEFT JOIN revision c ON c.id = (SELECT MAX(r2.id) FROM revision r2 WHERE r2.bug_
 LEFT JOIN revision s ON s.id = (SELECT MAX(r3.id) FROM revision r3 WHERE r3.bug_id = b.id)
 WHERE b.id = $id;") || exit 1
     case $current_status in
-      closed|wontfix) ;;
-      *) echo "cbugs reopen: bug #$id is $current_status; reopen requires closed or wontfix" >&2; exit 2 ;;
+      open|closed|wontfix) ;;
+      *) echo "cbugs reopen: bug #$id has invalid status '$current_status'" >&2; exit 2 ;;
     esac
   fi
   note=$(resolve_note "$verb" "$note_set" "$note") || exit $?
@@ -1900,25 +1900,13 @@ verb_reviewed_add() {
   # A supplied profile must be harness:model[:effort], where the harness is
   # claude, opencode, or codex and every field is nonempty with no colon, comma, or
   # whitespace; a slash is allowed. The command stores the caller's string
-  # unchanged (CB-RVW-14). This runs before any commit is resolved, so an
+  # unchanged (CB-RVW-19). This runs before any commit is resolved, so an
   # invalid profile fails before any record is written.
   if ((profile_set)); then
     [[ $profile =~ ^(claude|opencode|codex):[^:,[:space:]]+(:[^:,[:space:]]+)?$ ]] || {
       echo "cbugs reviewed add: --profile '$profile' must be claude:model[:effort], opencode:model[:effort], or codex:model[:effort], with nonempty fields and no colon, comma, or whitespace" >&2
       exit 2
     }
-    local profile_harness profile_effort effort_supported
-    IFS=':' read -r profile_harness _ profile_effort <<<"$profile"
-    if [[ $profile_harness == claude && -n $profile_effort ]]; then
-      effort_supported=0
-      for effort in low medium high xhigh max; do
-        [[ $effort == "$profile_effort" ]] && effort_supported=1
-      done
-      ((effort_supported)) || {
-        echo "cbugs reviewed add: --profile '$profile' has an effort claude does not support; use one of: low medium high xhigh max" >&2
-        exit 2
-      }
-    fi
   fi
   # A supplied completion time must be a valid UTC date and time in
   # YYYY-MM-DDTHH:MM:SSZ form (CB-RVW-15). Re-formatting the parsed value and
