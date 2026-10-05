@@ -1356,15 +1356,15 @@ record_invocation_cost() {
       | last // ""' "$log" 2>/dev/null) || cost_record=""
   fi
   [[ $cost_record =~ $DECIMAL_RE ]] || cost_record=""
-  {
-    flock -x 9
-    printf '%s\t%s\t%s\t%s\n' "$COST_SESSION" "$role" "$profile" "$cost_record" >>"$COST_LEDGER"
-  } 9>>"$COST_LEDGER" 2>/dev/null || {
+  if ! {
+    flock -x 9 &&
+      printf '%s\t%s\t%s\t%s\n' "$COST_SESSION" "$role" "$profile" "$cost_record" >>"$COST_LEDGER"
+  } 9>>"$COST_LEDGER" 2>/dev/null; then
     warn "cannot append to the cost ledger $COST_LEDGER; this invocation's cost stays out of the summaries"
     note "cost record failed: role=$role profile=$profile"
     COST_RECORD_FAILED=1
     return 1
-  }
+  fi
   note "cost recorded: role=$role profile=$profile cost=${cost_record:-absent}"
 }
 
