@@ -1884,14 +1884,24 @@ MERGE_PROFILE=${MERGE_PROFILES[0]}
 # explicitly empty pair is no parent cost context: then the panel stands
 # alone.
 if [[ ${CONVERGE_SESSION+x} && ${CONVERGE_COST_LEDGER+x} ]]; then
-  COST_SESSION=$CONVERGE_SESSION
-  case $CONVERGE_COST_LEDGER in
-    /*) COST_LEDGER=$CONVERGE_COST_LEDGER ;;
-    *)
-      echo "review-panel: CONVERGE_COST_LEDGER must be an absolute path, not '$CONVERGE_COST_LEDGER'" >&2
+  if [[ -z $CONVERGE_SESSION && -z $CONVERGE_COST_LEDGER ]]; then
+    COST_SESSION=$PANEL_ID
+    COST_LEDGER="$STATE_DIR/cost-history.tsv"
+    [[ $COST_LEDGER == /* ]] || COST_LEDGER="$(pwd -P)/$COST_LEDGER"
+  else
+    if [[ -z $CONVERGE_SESSION || -z $CONVERGE_COST_LEDGER ]]; then
+      echo "review-panel: partial cost context: CONVERGE_SESSION and CONVERGE_COST_LEDGER must both be nonempty" >&2
       exit 2
-      ;;
-  esac
+    fi
+    COST_SESSION=$CONVERGE_SESSION
+    case $CONVERGE_COST_LEDGER in
+      /*) COST_LEDGER=$CONVERGE_COST_LEDGER ;;
+      *)
+        echo "review-panel: CONVERGE_COST_LEDGER must be an absolute path, not '$CONVERGE_COST_LEDGER'" >&2
+        exit 2
+        ;;
+    esac
+  fi
 elif [[ ${CONVERGE_SESSION+x} || ${CONVERGE_COST_LEDGER+x} ]]; then
   echo "review-panel: partial cost context: CONVERGE_SESSION and CONVERGE_COST_LEDGER must be set together" >&2
   exit 2
