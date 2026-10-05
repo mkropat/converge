@@ -1310,6 +1310,7 @@ format_stream() {
 STOP_REQUESTED=0
 HARD_STOP=0
 SIGNAL_STATUS=130
+REVIEWED_PID=0
 AGENT_PIDS=()
 # A graceful stop may arrive between the final launch check and registering
 # the child in AGENT_PIDS. Defer traps only across that small launch window,
@@ -1372,6 +1373,12 @@ on_usr1() {
   if ((STOP_REQUESTED == 0)); then
     STOP_REQUESTED=1
     warn "parent stop requested; the running agents finish, and no further invocation starts"
+    # Coverage is not an agent invocation: it is an in-flight database
+    # transaction. Stop its process group so SQLite rolls back an unfinished
+    # reviewed-add transaction before the controller exits (RP-COV-5).
+    if [[ $REVIEWED_PID =~ ^[0-9]+$ ]] && ((REVIEWED_PID > 0)); then
+      kill -TERM -"$REVIEWED_PID" 2>/dev/null || kill -TERM "$REVIEWED_PID" 2>/dev/null || true
+    fi
   fi
 }
 on_term() {
@@ -1424,15 +1431,17 @@ finish_launch_critical() {
 # record_reviewed <profile> <completed-at>   Appends one coverage record per
 # captured commit, under the profile of one successful reviewer (RP-COV-3).
 record_reviewed() {
-  local profile=$1 completed_at=$2 status out
-  status=0
-  out=$(
-    printf '%s\n' "${PENDING_HASHES[@]:-}" |
-      env -u CONVERGE_ROLE -u CONVERGE_ITERATION \
-        CONVERGE_RUN_DIR="$RUN_DIR" \
-        "$BIN_DIR/cbugs" reviewed add \
-        --profile "$profile" --completed-at "$completed_at"
-  ) || status=$?
+  local profile=$1 completed_at=$2 status=0 out_file="$RUNTIME_DIR/coverage-$PANEL_ID.out"
+  printf '%s\n' "${PENDING_HASHES[@]:-}" |
+    setsid env -u CONVERGE_ROLE -u CONVERGE_ITERATION \
+      CONVERGE_RUN_DIR="$RUN_DIR" \
+      "$BIN_DIR/cbugs" reviewed add \
+      --profile "$profile" --completed-at "$completed_at" >"$out_file" &
+  REVIEWED_PID=$!
+  wait "$REVIEWED_PID" || status=$?
+  REVIEWED_PID=0
+  out=$(cat "$out_file" 2>/dev/null || true)
+  rm -f "$out_file"
   if ((status != 0)); then
     warn "cbugs reviewed add failed for profile $profile; the panel recorded no coverage for it"
     return 1

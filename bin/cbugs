@@ -1064,6 +1064,8 @@ print_listing() {
   fi
   local id kind status title hidden
   while IFS=$'\t' read -r id kind status title hidden; do
+    # Decode jq's @tsv transport escaping before printing the title.
+    printf -v title '%b' "$title"
     row_line "$id" "$kind" "$status" "$title" "$hidden"
   done < <(jq -r '.[] | [.id, .kind, .status, .title, (.hidden // false)] | @tsv' <<<"$rows")
 }
@@ -1778,7 +1780,7 @@ count_pending() {
     fi
   else
     rel=${RUN_DIR#"$REPO"/}
-    if ! reachable=$(git -C "$REPO" rev-list --max-count=1000 HEAD -- ":(top,literal)$rel" 2>"$ERRFILE"); then
+    if ! reachable=$(git -C "$REPO" rev-list --full-history --max-count=1000 HEAD -- ":(top,literal)$rel" 2>"$ERRFILE"); then
       echo "cbugs: cannot read repository history" >&2
       while IFS= read -r row; do
         [[ -n $row ]] && echo "cbugs: $row" >&2
@@ -2057,6 +2059,8 @@ WHERE c.id IS NULL;") || exit 1
   if ((n > 0)); then
     local id kind status title hidden
     while IFS=$'\t' read -r id kind status title hidden; do
+      # Decode jq's @tsv transport escaping before printing the title.
+      printf -v title '%b' "$title"
       row_line "$id" "$kind" "$status" "$title" "$hidden"
     done < <(jq -r '.[] | [.id, .kind, .status, .title, (.hidden // false)] | @tsv' <<<"$rows")
   else
