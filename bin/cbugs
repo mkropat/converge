@@ -1610,6 +1610,9 @@ verb_search() {
   local where extra panel_extra=""
   [[ -z $panel_run ]] || panel_extra=" AND $(panel_clause b.id "$panel_run")"
   where=$(where_clause ${kinds[@]+"${kinds[@]}"} -- ${statuses[@]+"${statuses[@]}"})
+  # The filter sits inside the current-row subquery, where both revision
+  # aliases have status columns. Apply status to the selected current state.
+  where=${where//status IN/CASE WHEN c.id IS NOT NULL THEN c.status ELSE s.status END IN}
   rows=$(sqlite3_run json "${prelude} SELECT json_object(
    'id', t.id, 'kind', t.kind, 'status', t.status, 'title', t.title,
    'revisions', (SELECT json_group_array(json_object(
