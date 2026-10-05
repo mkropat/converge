@@ -207,6 +207,18 @@ for brew_prefix in "${HOMEBREW_PREFIX:-}" /opt/homebrew /usr/local; do
   done
 done
 
+# Help is self-contained. Detect it before checking runtime tools so usage
+# remains available even when the database and locking tools are absent.
+EARLY_HELP=0
+skip_next=0
+for arg in "$@"; do
+  if ((skip_next)); then skip_next=0; continue; fi
+  case $arg in
+    -h|--help) EARLY_HELP=1 ;;
+    --title|--kind|--note|--cite|--commit|--status|--iteration|--profile|--completed-at|--panel-run) skip_next=1 ;;
+  esac
+done
+
 need_tool() {
   if ! command -v "$1" >/dev/null 2>&1; then
     echo "cbugs: '$1' is not on PATH" >&2
@@ -216,15 +228,17 @@ need_tool() {
     exit 2
   fi
 }
-need_tool sqlite3 sqlite
-need_tool jq jq
-need_tool date coreutils
-need_tool flock util-linux
+if ((! EARLY_HELP)); then
+  need_tool sqlite3 sqlite
+  need_tool jq jq
+  need_tool date coreutils
+  need_tool flock util-linux
+fi
 
 # The BSD date that macOS supplies shares the name "date" but rejects -d, the
 # GNU option that reviewed add's --completed-at validation depends on
 # (CV-PLAT-5's rule applies here too: a name on PATH is not enough).
-if ! date --version >/dev/null 2>&1; then
+if ((! EARLY_HELP)) && ! date --version >/dev/null 2>&1; then
   echo "cbugs: this 'date' is not GNU date" >&2
   echo "cbugs: on macOS, run 'brew install coreutils'" >&2
   exit 2
@@ -233,7 +247,7 @@ fi
 # The same rule applies to flock: the GNU/util-linux flock that the
 # migration lock (CB-DB-2's cross-process guarantee) depends on accepts
 # --version; a shim of the same name on PATH may not.
-if ! flock --version >/dev/null 2>&1; then
+if ((! EARLY_HELP)) && ! flock --version >/dev/null 2>&1; then
   echo "cbugs: this 'flock' is not GNU flock" >&2
   echo "cbugs: on macOS, run 'brew install util-linux'" >&2
   exit 2
