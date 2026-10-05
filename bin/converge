@@ -65,7 +65,7 @@ documents under the run directory themselves.
 Each role -- worker, reviewer, coach -- selects its agents through an
 environment variable: CONVERGE_WORKER_PROFILE, CONVERGE_REVIEWER_PROFILE,
 CONVERGE_COACH_PROFILE. Each holds a comma-separated list of profiles of the
-form harness:model[:effort], where harness is claude or opencode. The role
+form harness:model[:effort], where harness is claude, opencode, or codex. The role
 steps through its list in round robin order, one entry per invocation.
 Unset, the worker defaults to claude:sonnet and the reviewer and coach
 default to claude:opus. converge accepts no --harness, --model,
@@ -738,6 +738,12 @@ harness_argv() {
       [[ -z $effort ]] || ARGV+=(--variant "$effort")
       ARGV+=("$prompt")
       ;;
+    codex)
+      ARGV=(codex exec --json --ephemeral
+        --dangerously-bypass-approvals-and-sandbox --cd "$PWD" --model "$model")
+      [[ -z $effort ]] || ARGV+=(--config "model_reasoning_effort=\"$effort\"")
+      ARGV+=("$prompt")
+      ;;
   esac
 }
 
@@ -751,7 +757,8 @@ trim() {
 
 # The explicit efforts that the claude harness accepts (its --effort flag).
 # opencode's --variant is provider-specific, so any syntactically valid
-# field is accepted and passed through unvalidated (CV-HARN-10).
+# field is accepted and passed through unvalidated. Codex validates its own
+# reasoning effort value and model compatibility (CV-HARN-18).
 CLAUDE_EFFORTS=(low medium high xhigh max)
 
 # split_profile <canonical profile>   Splits a validated profile into
@@ -784,8 +791,8 @@ parse_profile_list() {
   local entry harness model effort e ok
   for entry in "${parts[@]}"; do
     entry=$(trim "$entry")
-    if [[ ! $entry =~ ^(claude|opencode):[^:,[:space:]]+(:[^:,[:space:]]+)?$ ]]; then
-      echo "converge: $role profile '$entry' must be claude:model[:effort] or opencode:model[:effort], with nonempty fields and no colon, comma, or whitespace" >&2
+    if [[ ! $entry =~ ^(claude|opencode|codex):[^:,[:space:]]+(:[^:,[:space:]]+)?$ ]]; then
+      echo "converge: $role profile '$entry' must be claude:model[:effort], opencode:model[:effort], or codex:model[:effort], with nonempty fields and no colon, comma, or whitespace" >&2
       exit 2
     fi
     split_profile "$entry"
@@ -1558,6 +1565,7 @@ produced_output() {
       [[ -n "$assistant_lines" ]] && grep -qv '"model":"<synthetic>"' <<<"$assistant_lines"
       ;;
     opencode) grep -qE '"type":"(text|tool_use)"' "$1" 2>/dev/null ;;
+    codex) grep -qE '"type":"(item.started|item.completed)"' "$1" 2>/dev/null ;;
   esac
 }
 
@@ -1598,6 +1606,12 @@ final_message() {
     claude)
       jq -Rsr 'split("\n") | map(fromjson? // empty)
               | map(select(.type == "result")) | last | (.result // "")' \
+        "$1" 2>/dev/null || true
+      ;;
+    codex)
+      jq -Rsr '[splits("\n") | select(. != "") | fromjson? // empty]
+        | map(select(.type == "item.completed" and .item.type == "agent_message"))
+        | if length == 0 then "" else last.item.text // "" end' \
         "$1" 2>/dev/null || true
       ;;
     opencode)
@@ -1741,11 +1755,35 @@ fromjson? // empty
   else empty end
 '
 
+# Codex emits an event per line. Only completed items are shown; command
+# failures and file changes are made visible in the normal transcript.
+CODEX_FILTER='
+def clean: gsub("[\\t\\r]"; " ");
+def firstline: split("\n")[0] // "";
+fromjson? // empty
+| if .type == "thread.started" then
+    "init\tsession \((.thread_id // "unknown")[0:8])"
+  elif .type == "item.completed" and .item.type == "agent_message" then
+    ((.item.text // "") | split("\n")[] | "text\t" + clean)
+  elif .type == "item.completed" and .item.type == "command_execution" then
+    ((.item.command // "") | split("\n")) as $command
+    | "tool\tbash\t\($command | length)\t\($command | map(clean) | join(" ↵ "))",
+    (if ((.item.exit_code // 0) != 0)
+     then "fail\tcommand exited \(.item.exit_code): \((.item.aggregated_output // "") | firstline | clean)"
+     else empty end)
+  elif .type == "item.completed" and .item.type == "file_change" then
+    (.item.changes // [])[]
+    | "tool\t\((.kind // "file_change") | tostring)\t1\t\(.path // "")"
+  elif .type == "turn.completed" then "tally\t"
+  else empty end
+'
+
 # stream_filter   Reports the filter of the harness of the running invocation.
 stream_filter() {
   case $INVOCATION_HARNESS in
     claude) printf '%s' "$CLAUDE_FILTER" ;;
     opencode) printf '%s' "$OPENCODE_FILTER" ;;
+    codex) printf '%s' "$CODEX_FILTER" ;;
   esac
 }
 

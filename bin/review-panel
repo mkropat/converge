@@ -525,8 +525,8 @@ parse_profile_list() {
   local entry harness model effort e ok
   for entry in "${parts[@]}"; do
     entry=$(trim "$entry")
-    if [[ ! $entry =~ ^(claude|opencode):[^:,[:space:]]+(:[^:,[:space:]]+)?$ ]]; then
-      echo "review-panel: $role profile '$entry' must be claude:model[:effort] or opencode:model[:effort], with nonempty fields and no colon, comma, or whitespace" >&2
+    if [[ ! $entry =~ ^(claude|opencode|codex):[^:,[:space:]]+(:[^:,[:space:]]+)?$ ]]; then
+      echo "review-panel: $role profile '$entry' must be claude:model[:effort], opencode:model[:effort], or codex:model[:effort], with nonempty fields and no colon, comma, or whitespace" >&2
       exit 2
     fi
     split_profile "$entry"
@@ -626,6 +626,12 @@ harness_argv() {
     opencode)
       ARGV=(opencode run --format json --model "$model" --auto)
       [[ -z $effort ]] || ARGV+=(--variant "$effort")
+      ARGV+=("$prompt")
+      ;;
+    codex)
+      ARGV=(codex exec --json --ephemeral
+        --dangerously-bypass-approvals-and-sandbox --cd "$PWD" --model "$model")
+      [[ -z $effort ]] || ARGV+=(--config "model_reasoning_effort=\"$effort\"")
       ARGV+=("$prompt")
       ;;
   esac
@@ -1070,11 +1076,35 @@ fromjson? // empty
   else empty end
 '
 
+# Codex emits one JSON event per line. Keep its emitted stream in the log and
+# normalize completed messages, command results, and file changes for display.
+CODEX_FILTER='
+def clean: gsub("[\\t\\r]"; " ");
+def firstline: split("\n")[0] // "";
+fromjson? // empty
+| if .type == "thread.started" then
+    "init\tsession \((.thread_id // "unknown")[0:8])"
+  elif .type == "item.completed" and .item.type == "agent_message" then
+    ((.item.text // "") | split("\n")[] | "text\t" + clean)
+  elif .type == "item.completed" and .item.type == "command_execution" then
+    ((.item.command // "") | split("\n")) as $command
+    | "tool\tbash\t\($command | length)\t\($command | map(clean) | join(" ↵ "))",
+    (if ((.item.exit_code // 0) != 0)
+     then "fail\tcommand exited \(.item.exit_code): \((.item.aggregated_output // "") | firstline | clean)"
+     else empty end)
+  elif .type == "item.completed" and .item.type == "file_change" then
+    (.item.changes // [])[]
+    | "tool\t\((.kind // "file_change") | tostring)\t1\t\(.path // "")"
+  elif .type == "turn.completed" then "tally\t"
+  else empty end
+'
+
 # stream_filter   Reports the filter of the harness of the running agent.
 stream_filter() {
   case $INVOCATION_HARNESS in
     claude) printf '%s' "$CLAUDE_FILTER" ;;
     opencode) printf '%s' "$OPENCODE_FILTER" ;;
+    codex) printf '%s' "$CODEX_FILTER" ;;
   esac
 }
 

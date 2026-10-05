@@ -34,7 +34,7 @@ or require automated tests.
 - `jq`.
 - `sqlite3`, for `bin/cbugs`.
 - The GNU versions of `timeout`, `tail`, `flock`, and `setsid`.
-- An agent harness for each enabled role: `claude` or `opencode`.
+- An agent harness for each enabled role: `claude`, `opencode`, or `codex`.
 
 Linux supplies the GNU tools. On macOS, install them with Homebrew:
 
