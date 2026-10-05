@@ -2016,7 +2016,7 @@ if ((COMPLETE)); then
     note "=== panel end: exit 0 ==="
     exit 0
   else
-    banner "$GREEN" "$E_OK" "Review complete. No new bugs found."
+    banner "$GREEN" "$E_OK" "Review complete in $TOTAL. No new bugs found."
     note "=== panel end: exit 0 ==="
     exit 0
   fi
