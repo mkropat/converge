@@ -1378,7 +1378,7 @@ print_cost_summary() {
     }
     END { OFS="\t"; split("worker reviewer coach", roles, " ")
       for (i=1;i<=3;i++) { r=roles[i]; print "ROLE",r,srn[r]+0,(srn[r]?sprintf("%.6f",srp[r]/srn[r]):"0"),crn[r]+0,(crn[r]?sprintf("%.6f",crp[r]/crn[r]):"0") }
-      for (i=1;i<=np;i++) { p=pk[i]; print "PROF",p,spn[p]+0,sprintf("%.6f",spp[p]+0),cpn[p]+0,sprintf("%.6f",cpp[p]+0) }
+      for (i=1;i<=np;i++) { p=pk[i]; print "PROF",p,spn[p]+0,(spn[p]?sprintf("%.6f",spp[p]):"0"),cpn[p]+0,(cpn[p]?sprintf("%.6f",cpp[p]):"0") }
       print "TOTAL","total",stn+0,sprintf("%.6f",stp+0),ctn+0,sprintf("%.6f",ctp+0)
     }' "$COST_LEDGER" 2>/dev/null)
   cost_cell() { (($1 > 0)) && fmt_usd "$2" || printf '—'; }
