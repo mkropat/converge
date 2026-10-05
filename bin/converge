@@ -2315,6 +2315,30 @@ commits, newest first:
 %s' "$2" "$1"
 }
 
+# decode_tsv_field <value>   Undo jq @tsv escaping without interpreting
+# ordinary backslashes as printf %b escape sequences.
+decode_tsv_field() {
+  local value=$1 output='' char next i=0
+  while ((i < ${#value})); do
+    char=${value:i:1}
+    if [[ $char == \\ && $((i + 1)) -lt ${#value} ]]; then
+      ((i++))
+      next=${value:i:1}
+      case $next in
+        \\) output+='\\' ;;
+        t) output+=$'\t' ;;
+        n) output+=$'\n' ;;
+        r) output+=$'\r' ;;
+        *) output+="\\$next" ;;
+      esac
+    else
+      output+=$char
+    fi
+    ((i++))
+  done
+  REPLY=$output
+}
+
 convergence_holds() {
   ((CONVERGED_VOTES >= CONSENSUS))
 }
@@ -2425,9 +2449,9 @@ run_review_pass() {
     # key (CB-LIST-9), so compare the visible revision ids through cbugs
     # show. Comparing against every pre-pass stored id excludes a
     # branch-specific revision that becomes visible after HEAD moves.
-    local after_id after_kind after_title revisions_json new_revision
-    local -a logged_rows=()
-    while IFS=$'\t' read -r after_id after_kind after_title; do
+    local after_id after_kind after_title_b64 revisions_json new_revision
+    local -a logged_ids=() logged_kinds=() logged_titles=()
+    while IFS=$'\t' read -r after_id after_kind after_title_b64; do
       revisions_json=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" show "$after_id" --json 2>/dev/null) || {
         bugs_after_ok=0
         break
@@ -2436,11 +2460,19 @@ run_review_pass() {
         '[.revisions[]?.id | select(($before_ids | index(.)) == null)] | max // empty' \
         <<<"$revisions_json" 2>/dev/null)
       if [[ -n $new_revision ]]; then
-        logged_rows+=("$after_id"$'\t'"$after_kind"$'\t'"$after_title")
+        logged_ids+=("$after_id")
+        logged_kinds+=("$after_kind")
+        logged_titles+=("$after_title_b64")
       fi
-    done < <(jq -r '.[] | [.id, .kind, .title] | @tsv' <<<"$bugs_after")
+    done < <(jq -r '.[] | [.id, .kind, (.title|@base64)] | @tsv' <<<"$bugs_after")
     if ((bugs_after_ok)); then
-      new_bugs=$(printf '%s\n' "${logged_rows[@]}" | jq -Rn '[inputs | select(length > 0) | split("\t") | {id:(.[0]|tonumber), kind:.[1], title:.[2]}]')
+      new_bugs='[]'
+      for ((i = 0; i < ${#logged_ids[@]}; i++)); do
+        new_bugs=$(jq --argjson id "${logged_ids[$i]}" --arg kind "${logged_kinds[$i]}" \
+          --arg title "$(printf '%s' "${logged_titles[$i]}" | base64 -d)" \
+          '. + [{id: $id, kind: $kind, title: $title}]' \
+          <<<"$new_bugs")
+      done
     else
       new_bugs=
     fi
@@ -2458,11 +2490,12 @@ run_review_pass() {
     note "cbugs list --json failed; cannot report the bugs this pass logged"
   elif ((count > 0)); then
     local id kind_ title
-    while IFS=$'\t' read -r id kind_ title; do
+    while IFS=$'\t' read -r id kind_ title_b64; do
+      title=$(printf '%s' "$title_b64" | base64 -d)
       printf '  %s%s%s bug #%s %s%s%s %s\n' \
         "$YELLOW" "$G_WARN" "$OFF" "$id" "$DIM" "$kind_" "$OFF" "$title"
       note "review logged bug #$id ($kind_): $title"
-    done < <(jq -r '.[] | [.id, .kind, .title] | @tsv' <<<"$new_bugs")
+    done < <(jq -r '.[] | [.id, .kind, (.title|@base64)] | @tsv' <<<"$new_bugs")
   else
     info "the review pass logged no bug"
   fi

@@ -1420,6 +1420,11 @@ on_term() {
     SIGNAL_STATUS=143
     warn "received SIGTERM; stopping at once"
     kill_agents
+    # Coverage is a controller-owned child too. Stop its process group so an
+    # interrupted reviewed-add transaction cannot commit after this run stops.
+    if [[ $REVIEWED_PID =~ ^[0-9]+$ ]] && ((REVIEWED_PID > 0)); then
+      kill -TERM -"$REVIEWED_PID" 2>/dev/null || kill -TERM "$REVIEWED_PID" 2>/dev/null || true
+    fi
   fi
 }
 
@@ -1471,6 +1476,10 @@ record_reviewed() {
   REVIEWED_PID=0
   out=$(cat "$out_file" 2>/dev/null || true)
   rm -f "$out_file"
+  if ((STOP_REQUESTED || HARD_STOP)); then
+    warn "coverage recording stopped for profile $profile after an operator stop"
+    return 1
+  fi
   if ((status != 0)); then
     warn "cbugs reviewed add failed for profile $profile; the panel recorded no coverage for it"
     return 1
@@ -2159,18 +2168,26 @@ elif ((FINDINGS_COLLECT_FAILED)); then
   heading "$MAGENTA" "merge duplicates" "$(date '+%H:%M:%S')"
   note "merge phase: the findings read failed before the merge, so the merge agent collects the bugs of this panel run itself"
   run_merge_agent "$(merge_prompt "" 1)" "$MERGE_PROFILE"
-  ((STOP_REQUESTED || HARD_STOP)) || MERGE_RAN=1
+  # A graceful stop lets an active merge finish. Its successful read-back is
+  # still the known outcome for this incomplete report.
   MERGE_FAILED=1
-  ((MERGE_STATUS == 0)) && MERGE_FAILED=0
+  if ((MERGE_STATUS == 0)); then
+    MERGE_FAILED=0
+    ((HARD_STOP)) || MERGE_RAN=1
+  fi
 elif ((NEW_COUNT == 0)); then
   note "merge skipped: the panel created no bug"
 else
   heading "$MAGENTA" "merge duplicates" "$(date '+%H:%M:%S')"
   note "merge phase: $(plural "$NEW_COUNT" "new bug") to reconcile"
   run_merge_agent "$(merge_prompt "$NEW_LINES")" "$MERGE_PROFILE"
-  ((STOP_REQUESTED || HARD_STOP)) || MERGE_RAN=1
+  # A graceful stop lets an active merge finish. Its successful read-back is
+  # still the known outcome for this incomplete report.
   MERGE_FAILED=1
-  ((MERGE_STATUS == 0)) && MERGE_FAILED=0
+  if ((MERGE_STATUS == 0)); then
+    MERGE_FAILED=0
+    ((HARD_STOP)) || MERGE_RAN=1
+  fi
 fi
 
 # The retained new bugs are the findings that the merge pass did not close

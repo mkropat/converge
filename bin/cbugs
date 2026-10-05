@@ -591,6 +591,7 @@ SQL
 # the database that the first one migrated.
 MIGRATE_V2_3_SQL=$(cat <<SQL
 BEGIN IMMEDIATE;
+DROP VIEW IF EXISTS bug_current;
 CREATE TABLE bug_migrate (
   id   INTEGER PRIMARY KEY,
   kind TEXT NOT NULL CHECK (kind IN ('code', 'spec', 'task'))
