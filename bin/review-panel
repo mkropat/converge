@@ -131,7 +131,8 @@ TIMEOUT=$((10#$TIMEOUT))
 # directory, so every relative path that follows, and the initial working
 # directory of every agent, stays anchored there (RP-INV-6).
 RUN_DIR="$(pwd -P)"
-REPO="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$RUN_DIR")"
+REPO=""
+REPO=$(git rev-parse --show-toplevel 2>/dev/null) || REPO=""
 
 # The state directory follows the same rule that converge and cbugs use for
 # a run directory: the name of the repository, the path of the run directory
@@ -164,24 +165,25 @@ hash_path() {
     printf '%s' "$1" | cksum | tr -d ' ' | cut -c1-12
   fi
 }
-if [[ $RUN_DIR == "$REPO" ]]; then
+STATE_REPO=${REPO:-$RUN_DIR}
+if [[ $RUN_DIR == "$STATE_REPO" ]]; then
   RUN_SUBPATH=""
 else
-  RUN_SUBPATH="${RUN_DIR#"$REPO"/}"
+  RUN_SUBPATH="${RUN_DIR#"$STATE_REPO"/}"
 fi
-SLUG="${REPO##*/}${RUN_SUBPATH:+-${RUN_SUBPATH//\//-}}-$(hash_path "$RUN_DIR")"
+SLUG="${STATE_REPO##*/}${RUN_SUBPATH:+-${RUN_SUBPATH//\//-}}-$(hash_path "$RUN_DIR")"
 if [[ -z ${XDG_STATE_HOME:-} && -z ${HOME:-} ]]; then
   echo "review-panel: set HOME or XDG_STATE_HOME; review-panel keeps its state there" >&2
   exit 2
 fi
 OWN_STATE_DIR="${XDG_STATE_HOME:-${HOME:-}/.local/state}/converge/$SLUG"
-if [[ $RUN_DIR == "$REPO" ]]; then
+if [[ $RUN_DIR == "$STATE_REPO" ]]; then
   STATE_DIR=$OWN_STATE_DIR
   WALK_ANCESTORS=0
   STATE_LIMIT=$RUN_DIR
 else
   WALK_ANCESTORS=1
-  STATE_LIMIT=$REPO
+  STATE_LIMIT=${REPO:-/}
   STATE_DIR=""
   ancestor=${RUN_DIR%/*}
   [[ -n $ancestor ]] || ancestor=/
