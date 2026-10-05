@@ -670,9 +670,13 @@ SEQ=0
 
 # note <message>  Records in the panel event log only. Each line carries the
 # panel run id, so a reader of a shared state directory knows which run
-# wrote the line (RP-OUT-9).
+# wrote the line (RP-OUT-9). Include the session's selected canonical
+# profiles in each event, so the event log remains self-describing even
+# when read without the terminal startup panel (RP-OUT-9).
 note() {
-  printf '%s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PANEL_ID" "$1" >>"$RUN_LOG"
+  printf '%s %s reviewers=%s merge=%s %s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PANEL_ID" \
+    "$(join_list "${REVIEWER_PROFILES[@]}")" "$MERGE_PROFILE" "$1" >>"$RUN_LOG"
 }
 info() {
   printf '  %s%s%s %s\n' "$DIM" "$G_DOT" "$OFF" "$1"
