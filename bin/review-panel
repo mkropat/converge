@@ -462,10 +462,11 @@ strip_style() {
 }
 
 # STREAM_LABEL   The text that names the concurrent invocation that the
-# stream belongs to, such as "reviewer 1/3". format_stream sets it for its
-# own subshell. gutter prints it before every transcript line and tags the
-# event log with it, so concurrent output stays attributable to its source
-# (RP-OUT-2). It is empty for the merge stream, which runs alone.
+# stream belongs to. It carries this run's id, reviewer position, and full
+# canonical profile. format_stream sets it for its own subshell. gutter
+# prints it before every transcript line and tags the event log with it, so
+# concurrent output stays attributable to its source (RP-OUT-2, RP-RUN-4).
+# It is empty for the merge stream, which runs alone.
 STREAM_LABEL=""
 
 # gutter <color> <marker> <text> <tag>   Prints one transcript line, behind a
@@ -1549,7 +1550,7 @@ ARGV=(bash -c 'end="$1"; shift; setsid "$@" & child=$!; trap "kill -TERM -$child
   # run and of another never share one pipe (RP-RUN-4).
   TRANSCRIPT_ACCENT=$BLUE
   FINAL_DRAWN=0
-  STREAM_LABEL="reviewer $index/$count"
+  STREAM_LABEL="panel $PANEL_ID reviewer $index/$count profile $profile"
   local fifo="$RUNTIME_DIR/panel-stream-$PANEL_ID-$stem" fifo_ok=0
   rm -f "$fifo"
   if mkfifo "$fifo" 2>/dev/null; then
