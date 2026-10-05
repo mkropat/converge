@@ -1680,6 +1680,16 @@ print(json.dumps(result, ensure_ascii=False))
 count_pending() {
   local -a pending=()
   local reachable="" row hash subject rel
+  # A newly initialized repository has a symbolic HEAD but no commit to
+  # walk. It has no relevant commits yet, which is an empty successful result
+  # under CB-RVW-8; a broken or unreadable existing history still errors.
+  if ! git -C "$REPO" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+    if git -C "$REPO" symbolic-ref -q HEAD >/dev/null 2>&1; then
+      return 0
+    fi
+    echo "cbugs: cannot read repository history" >&2
+    return 1
+  fi
   # The commits of a run directory that sits beside the root are the ones
   # that change a path under it. A commit that touches no such path is not
   # pending, however near the root of the repository it sits. --max-count
