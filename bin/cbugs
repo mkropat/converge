@@ -945,7 +945,10 @@ provenance() {
     WRITE_ID=$commit
     COMMIT_SQL="'$(sql_quote "$commit")'"
   else
-    commit=$(git -C "$REPO" rev-parse --verify -q HEAD 2>/dev/null || true)
+    # Use the HEAD already resolved for this call. In particular, do not
+    # resolve it again after a verb has read a note from standard input:
+    # visibility reads and default write provenance must share one snapshot.
+    commit=$HEAD_ID
     WRITE_ID=$commit
     if [[ -n $commit ]]; then
       COMMIT_SQL="'$(sql_quote "$commit")'"
