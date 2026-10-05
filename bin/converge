@@ -2729,16 +2729,18 @@ while true; do
     run_agent coach "$(coach_prompt "$PENDING_LOGS_TEXT")"
     ((STOP_REQUESTED)) || handle_invocation_wait "$LOG_FILE" "$INVOCATION_HARNESS"
     show_guidance "$GUIDANCE_BEFORE"
-    # CV-COACH-10's cadence counts worker iterations, not a backlog: the coach
-    # was due and ran, so the cadence resets whether or not the run itself
-    # succeeded, and every run after the first waits for the period.
+    # CV-COACH-10's cadence counts worker iterations, not a backlog: a started
+    # coach resets the cadence whether or not the run itself succeeded. A
+    # skipped invocation never ran and consumes neither cadence nor a turn.
     # PENDING_LOGS is different -- it is the backlog of logs the coach has not
     # yet reviewed -- so it clears only on success, letting a retry still see
     # the unprocessed logs.
-    SINCE_COACH=0
-    COACH_DUE_AT=$COACH_EVERY
-    if ((RUN_STATUS == 0)); then
-      PENDING_LOGS=()
+    if ((!INVOCATION_SKIPPED)); then
+      SINCE_COACH=0
+      COACH_DUE_AT=$COACH_EVERY
+      if ((RUN_STATUS == 0)); then
+        PENDING_LOGS=()
+      fi
     fi
   fi
   ((STOP_REQUESTED)) && break
