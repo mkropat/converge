@@ -689,11 +689,11 @@ SQL
 # another caller already finished, finds nothing left to do.
 init_db() {
   local ver
-  ver=$(sqlite3_run raw "PRAGMA user_version;") || exit 1
-  if [[ -z $ver || $ver == 0 ]]; then
+  if [[ ! -e $DB ]]; then
     sqlite3_run raw "$SCHEMA_SQL" >/dev/null
     return
   fi
+  ver=$(sqlite3_run raw "PRAGMA user_version;") || exit 1
   [[ $ver == "$DB_VERSION" ]] && return
   exec 9>"$STATE_DIR/cbugs.db.migrate.lock" || exit 1
   # CB-CONC-5: wait for the lock only up to a bounded time, the same bound
