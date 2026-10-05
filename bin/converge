@@ -1508,8 +1508,10 @@ run_agent() {
   # cost or sample counts at most once, since no caller re-appends. A
   # numeric cost is a recorded cost and one sample; an empty one is the
   # profile of this started invocation with no cost data, and no sample.
-  printf '%s\t%s\t%s\t%s\n' "$RUN_ID" "$role" "$RUN_PROFILE" "$cost_record" \
-    >>"$COST_LEDGER" 2>/dev/null || \
+  {
+    flock -x 9
+    printf '%s\t%s\t%s\t%s\n' "$RUN_ID" "$role" "$RUN_PROFILE" "$cost_record" >>"$COST_LEDGER"
+  } 9>>"$COST_LEDGER" 2>/dev/null || \
     warn "cannot append to the cost history $COST_LEDGER; this invocation's cost stays out of the summaries"
 
   RESULT_TEXT="$(final_message "$LOG_FILE" "$INVOCATION_HARNESS")"
