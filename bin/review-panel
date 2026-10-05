@@ -1285,6 +1285,12 @@ on_int() {
   SIGNAL_STATUS=130
   kill_agents
 }
+on_usr1() {
+  if ((STOP_REQUESTED == 0)); then
+    STOP_REQUESTED=1
+    warn "parent stop requested; the running agents finish, and no further invocation starts"
+  fi
+}
 on_term() {
   if ((HARD_STOP == 0)); then
     HARD_STOP=1
@@ -1295,7 +1301,7 @@ on_term() {
 }
 
 trap on_int INT
-trap on_int USR1
+trap on_usr1 USR1
 trap on_term TERM
 
 # ------------------------------------------------------------------ coverage
