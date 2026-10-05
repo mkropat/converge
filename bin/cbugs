@@ -1258,7 +1258,7 @@ verb_add() {
   ((title_set)) || { echo "cbugs add: --title is required" >&2; exit 2; }
   [[ -n $title ]] || { echo "cbugs add: --title must not be empty" >&2; exit 2; }
   title_is_one_line add "$title"
-  if [[ $kind == task && -n ${CONVERGE_ROLE:-} ]]; then
+  if [[ $kind == task && ${CONVERGE_ROLE+x} ]]; then
     echo "cbugs add: a task records a request from a human user; refused for role '$CONVERGE_ROLE'" >&2
     exit 1
   fi
@@ -1854,7 +1854,7 @@ verb_reviewed_add() {
   # The loop records the commits of a pass, and no agent of the loop records
   # one. The error names the role that the call read. reviewed pending
   # changes nothing, so every caller may run it (CB-RVW-7).
-  if [[ -n ${CONVERGE_ROLE:-} ]]; then
+  if [[ ${CONVERGE_ROLE+x} ]]; then
     echo "cbugs reviewed add: the loop records the commits of a pass, and no agent of the loop records one; refused for role '$CONVERGE_ROLE'" >&2
     exit 1
   fi
