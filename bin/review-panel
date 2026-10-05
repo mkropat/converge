@@ -1406,7 +1406,7 @@ run_reviewer() {
   # subshell, so the variable must hold this reviewer's harness.
   INVOCATION_HARNESS=$harness
   printf -v seq '%04d' $((++SEQ))
-  local stem="$PANEL_ID-$seq-reviewer" end_file
+  local stem="$PANEL_ID-$seq-reviewer" end_file fallback_stream
   LOG="$LOG_DIR/$stem.jsonl"
   RUN_REVIEWS[$((index - 1))]=$stem
   INV_STARTS[$((index - 1))]=$SECONDS
@@ -1473,6 +1473,7 @@ ARGV=(bash -c 'end="$1"; shift; setsid "$@" & child=$!; trap "kill -TERM -$child
   else
     FORMATTERS[$((index - 1))]=0
     warn "cannot create the stream pipe for reviewer $index/$count; it runs without a live transcript"
+    fallback_stream="$RUNTIME_DIR/$stem.stream"
     (
       trap '' INT
       exec setsid env \
@@ -1489,8 +1490,9 @@ ARGV=(bash -c 'end="$1"; shift; setsid "$@" & child=$!; trap "kill -TERM -$child
         REVIEW_PANEL_INVOCATION="$stem" \
         PATH="$AGENT_PATH" \
         timeout --foreground -k 10 "$TIMEOUT" "${ARGV[@]}"
-    ) >>"$LOG" 2>>"$LOG_DIR/$stem.err" </dev/null &
+    ) >"$fallback_stream" 2>>"$LOG_DIR/$stem.err" </dev/null &
     AGENT_PIDS+=("$!")
+    FALLBACK_STREAMS[$((index - 1))]=$fallback_stream
   fi
   STREAM_LABEL=""
 }
@@ -1501,7 +1503,7 @@ ARGV=(bash -c 'end="$1"; shift; setsid "$@" & child=$!; trap "kill -TERM -$child
 # carry no label and the tag scheme of its notes does not change. Sets
 # MERGE_STATUS and MERGE_SECONDS.
 run_merge_agent() {
-  local prompt=$1 profile=$2
+  local prompt=$1 profile=$2 fallback_stream
   TRANSCRIPT_ACCENT=$MAGENTA
   FINAL_DRAWN=0
   STREAM_LABEL=""
@@ -1555,6 +1557,7 @@ run_merge_agent() {
   else
     FORMATTER=0
     warn "cannot create the stream pipe; the merge agent runs without a live transcript"
+    fallback_stream="$RUNTIME_DIR/$MERGE_STEM.stream"
     (
       trap '' INT
       exec setsid env \
@@ -1571,7 +1574,7 @@ run_merge_agent() {
         REVIEW_PANEL_INVOCATION="$MERGE_STEM" \
         PATH="$AGENT_PATH" \
         timeout --foreground -k 10 "$TIMEOUT" "${ARGV[@]}"
-    ) </dev/null >>"$LOG_FILE" 2>>"$LOG_DIR/$MERGE_STEM.err" &
+    ) </dev/null >"$fallback_stream" 2>>"$LOG_DIR/$MERGE_STEM.err" &
   fi
   MERGE_PID=$!
   AGENT_PIDS+=("$MERGE_PID")
@@ -1580,6 +1583,11 @@ run_merge_agent() {
   MERGE_STATUS=$?
   MERGE_SECONDS=$((SECONDS - started))
   ((FORMATTER)) && { wait "$FORMATTER" 2>/dev/null; FORMATTER=0; }
+  if [[ -n $fallback_stream && -f $fallback_stream ]]; then
+    cat "$fallback_stream" >>"$LOG_FILE"
+    format_stream "$MAGENTA" "$LOG_FILE" <"$fallback_stream" >/dev/null
+    rm -f "$fallback_stream"
+  fi
   rm -f "$RUNTIME_DIR/panel-stream-$PANEL_ID"
 
   if ((MERGE_STATUS == 124 || MERGE_STATUS == 137)); then
@@ -1722,6 +1730,7 @@ RUN_REVIEWS=()
 INV_STARTS=()
 REVIEW_STATUSES=()
 FORMATTERS=()
+FALLBACK_STREAMS=()
 REVIEW_FAILED=0
 # The finding bookkeeping is defined from the start, so an operator stop
 # that arrives at any point leaves the same honest report.
@@ -1766,6 +1775,11 @@ for ((i = 0; i < RUN_STARTED; i++)); do
     wait_child "${FORMATTERS[$i]}" 2>/dev/null
     FORMATTERS[$i]=0
     rm -f "$RUNTIME_DIR/panel-stream-$PANEL_ID-$stem"
+  fi
+  if [[ -n ${FALLBACK_STREAMS[$i]:-} && -f ${FALLBACK_STREAMS[$i]} ]]; then
+    cat "${FALLBACK_STREAMS[$i]}" >>"$LOG_DIR/$stem.jsonl"
+    format_stream "$BLUE" "$LOG_DIR/$stem.jsonl" <"${FALLBACK_STREAMS[$i]}" >/dev/null
+    rm -f "${FALLBACK_STREAMS[$i]}"
   fi
   # The invocation recorded its own runtime when the harness exited. The
   # controller reaps one reviewer after another, so the reap arithmetic
