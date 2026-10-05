@@ -1340,7 +1340,8 @@ record_invocation_cost() {
   } 9>>"$COST_LEDGER" 2>/dev/null || {
     warn "cannot append to the cost ledger $COST_LEDGER; this invocation's cost stays out of the summaries"
     note "cost record failed: role=$role profile=$profile"
-    return 0
+    COST_RECORD_FAILED=1
+    return 1
   }
   note "cost recorded: role=$role profile=$profile cost=${cost_record:-absent}"
 }
@@ -1606,7 +1607,7 @@ run_merge_agent() {
   note "merge end: profile=$profile status=$MERGE_STATUS seconds=$MERGE_SECONDS"
   # CV-COST-10: the merge records its own line, under the distinct merge
   # cost role.
-  record_invocation_cost merge "$profile" "$LOG_FILE"
+  record_invocation_cost merge "$profile" "$LOG_FILE" || true
 }
 
 # ---------------------------------------------------------------------- main
@@ -1732,6 +1733,7 @@ REVIEW_STATUSES=()
 FORMATTERS=()
 FALLBACK_STREAMS=()
 REVIEW_FAILED=0
+COST_RECORD_FAILED=0
 # The finding bookkeeping is defined from the start, so an operator stop
 # that arrives at any point leaves the same honest report.
 FINDINGS_COLLECT_FAILED=0
@@ -1813,7 +1815,7 @@ for ((i = 0; i < RUN_STARTED; i++)); do
   # CV-COST-10: one ledger line per started invocation, as the stylesheet
   # that the converge loop uses appends its own. The read waits for the
   # formatter above, so the cost record is already the last line of the log.
-  [[ -z $stem ]] || record_invocation_cost reviewer "$profile" "$LOG_DIR/$stem.jsonl"
+  [[ -z $stem ]] || record_invocation_cost reviewer "$profile" "$LOG_DIR/$stem.jsonl" || true
   ((status == 0)) || REVIEW_FAILED=1
 done
 
@@ -1955,6 +1957,7 @@ done
 ((FINDINGS_COLLECT_FAILED)) && \
   FAILED_ROWS+=("findings: cbugs list --panel-run failed before the merge")
 ((RETAINED_FAILED)) && FAILED_ROWS+=("findings: cbugs list --panel-run failed after the merge")
+((COST_RECORD_FAILED)) && FAILED_ROWS+=("cost ledger: one or more invocation records could not be written")
 
 findings_block() {
   local json=$1 word=${2:-retained new} id kind status title hidden shown_title
