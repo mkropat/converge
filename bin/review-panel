@@ -674,9 +674,16 @@ SEQ=0
 # profiles in each event, so the event log remains self-describing even
 # when read without the terminal startup panel (RP-OUT-9).
 note() {
+  # Signals can arrive after the traps are installed but before profile
+  # resolution. Keep early stop reporting safe under nounset.
+  local -a note_reviewers=()
+  if declare -p REVIEWER_PROFILES >/dev/null 2>&1; then
+    note_reviewers=("${REVIEWER_PROFILES[@]}")
+  fi
+  local note_merge=${MERGE_PROFILE:-unresolved}
   printf '%s %s reviewers=%s merge=%s %s\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PANEL_ID" \
-    "$(join_list "${REVIEWER_PROFILES[@]}")" "$MERGE_PROFILE" "$1" >>"$RUN_LOG"
+    "$(join_list "${note_reviewers[@]}")" "$note_merge" "$1" >>"$RUN_LOG"
 }
 info() {
   printf '  %s%s%s %s\n' "$DIM" "$G_DOT" "$OFF" "$1"
@@ -2043,10 +2050,19 @@ if ((coverage_enabled)) && ((PENDING_COUNT > 0)); then
   completed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   coverage_status=0
   for ((i = 0; i < REVIEWER_COUNT; i++)); do
+    # A stop can arrive while an earlier reviewer record is being written.
+    # Recheck immediately before each write so the interrupted run records
+    # no later coverage (RP-COV-5).
+    if ((STOP_REQUESTED || HARD_STOP)); then
+      coverage_enabled=0
+      break
+    fi
     [[ ${REVIEW_STATUSES[$i]:-1} == 0 ]] || continue
     record_reviewed "${REVIEWER_PROFILES[$i]}" "$completed_at" || coverage_status=1
   done
-  if ((coverage_status)); then
+  if ((!coverage_enabled)); then
+    info "coverage recording stopped after an operator stop"
+  elif ((coverage_status)); then
     COVERAGE_FAILED=1
   else
     info "recorded coverage for $(plural "$PENDING_COUNT" commit) under each reviewer profile"
