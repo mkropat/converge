@@ -80,7 +80,7 @@ bug, `1` when it did, and `2` when the run was invalid or incomplete.
 
 You set these variables to configure `converge`. Each holds a comma-separated
 list of profiles of the form `harness:model[:effort]`, where harness is
-`claude` or `opencode`. The role steps through its list in round-robin order,
+`claude`, `opencode`, or `codex`. The role steps through its list in round-robin order,
 one entry per invocation. `converge` accepts no `--harness`, `--model`,
 `--coach-model`, or `--review-model` option.
 
@@ -89,6 +89,11 @@ one entry per invocation. `converge` accepts no `--harness`, `--model`,
 | `CONVERGE_WORKER_PROFILE` | Worker profile list. Default: `claude:sonnet`. |
 | `CONVERGE_REVIEWER_PROFILE` | Reviewer profile list. Default: `claude:opus`. |
 | `CONVERGE_COACH_PROFILE` | Coach profile list. Default: `claude:opus`. |
+
+Codex profiles require the full model ID accepted by `codex exec`, for example
+`codex:gpt-6-luna` or `codex:gpt-6-sol:low`. Model names are passed unchanged;
+`luna` and `sol` are not expanded to full IDs. Codex effort is passed unchanged
+as `model_reasoning_effort` and validated by the Codex CLI.
 
 You set these variables to configure `review-panel`:
 

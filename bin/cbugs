@@ -1812,13 +1812,13 @@ verb_reviewed_add() {
     exit 2
   }
   # A supplied profile must be harness:model[:effort], where the harness is
-  # claude or opencode and every field is nonempty with no colon, comma, or
+  # claude, opencode, or codex and every field is nonempty with no colon, comma, or
   # whitespace; a slash is allowed. The command stores the caller's string
   # unchanged (CB-RVW-14). This runs before any commit is resolved, so an
   # invalid profile fails before any record is written.
   if ((profile_set)); then
-    [[ $profile =~ ^(claude|opencode):[^:,[:space:]]+(:[^:,[:space:]]+)?$ ]] || {
-      echo "cbugs reviewed add: --profile '$profile' must be claude:model[:effort] or opencode:model[:effort], with nonempty fields and no colon, comma, or whitespace" >&2
+    [[ $profile =~ ^(claude|opencode|codex):[^:,[:space:]]+(:[^:,[:space:]]+)?$ ]] || {
+      echo "cbugs reviewed add: --profile '$profile' must be claude:model[:effort], opencode:model[:effort], or codex:model[:effort], with nonempty fields and no colon, comma, or whitespace" >&2
       exit 2
     }
     local profile_harness profile_effort effort_supported

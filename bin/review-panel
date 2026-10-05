@@ -1095,6 +1095,10 @@ fromjson? // empty
   elif .type == "item.completed" and .item.type == "file_change" then
     (.item.changes // [])[]
     | "tool\t\((.kind // "file_change") | tostring)\t1\t\(.path // "")"
+  elif .type == "item.completed" and .item.type == "error" then
+    "fail\t" + ((.item.message // "Codex error") | tostring | firstline | clean)
+  elif .type == "error" or .type == "turn.failed" then
+    "fail\t" + ((.message // .error.message // "Codex turn failed") | tostring | firstline | clean)
   elif .type == "turn.completed" then "tally\t"
   else empty end
 '
