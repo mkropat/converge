@@ -200,11 +200,25 @@ EOF
 
 for brew_prefix in "${HOMEBREW_PREFIX:-}" /opt/homebrew /usr/local; do
   [[ -n $brew_prefix ]] || continue
-  for bin_dir in "$brew_prefix/opt/sqlite/bin" \
-                 "$brew_prefix/opt/coreutils/libexec/gnubin" \
+  for bin_dir in "$brew_prefix/opt/coreutils/libexec/gnubin" \
                  "$brew_prefix/opt/util-linux/bin"; do
     [[ -d $bin_dir ]] && PATH="$bin_dir:$PATH"
   done
+done
+# Homebrew's SQLite formula supplies sqlite3, but its bin directory can also
+# contain Homebrew's Bash 3.2 executable. Since the script's Bash 4 check has
+# already run, putting that directory on PATH would make the later
+# `converge --init-state` child re-exec cbugs with an unsupported Bash. Keep
+# PATH-resolved tools on the supported GNU path and invoke the Homebrew SQLite
+# binary by its discovered location instead.
+SQLITE3_BIN="$(command -v sqlite3 2>/dev/null || true)"
+for brew_prefix in "${HOMEBREW_PREFIX:-}" /opt/homebrew /usr/local; do
+  [[ -n $brew_prefix ]] || continue
+  candidate="$brew_prefix/opt/sqlite/bin/sqlite3"
+  if [[ -x $candidate ]]; then
+    SQLITE3_BIN=$candidate
+    break
+  fi
 done
 
 # Help is self-contained. Detect it before checking runtime tools so usage
@@ -229,7 +243,11 @@ need_tool() {
   fi
 }
 if ((! EARLY_HELP)); then
-  need_tool sqlite3 sqlite
+  if [[ -z $SQLITE3_BIN ]]; then
+    echo "cbugs: 'sqlite3' is not on PATH" >&2
+    echo "cbugs: on macOS, run 'brew install sqlite'" >&2
+    exit 2
+  fi
   need_tool jq jq
   need_tool date coreutils
   need_tool flock util-linux
@@ -478,7 +496,7 @@ sqlite3_run() {
   # The script rides standard input, not an argument: a query that carries
   # the visible commits of a long history in a temporary table would outgrow
   # the single-argument size that the kernel accepts.
-  out=$(sqlite3 "${flags[@]}" "$DB" 2>"$ERRFILE" <<<"$sql")
+  out=$("$SQLITE3_BIN" "${flags[@]}" "$DB" 2>"$ERRFILE" <<<"$sql")
   status=$?
   if ((status != 0)); then
     echo "cbugs: database error" >&2
