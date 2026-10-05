@@ -1196,7 +1196,7 @@ format_stream() {
           if [[ $INVOCATION_HARNESS == codex ]]; then
             local held_text
             held_text=$(jq -nr --arg encoded "${rest#*$'\t'}" '$encoded | fromjson')
-            hold+=("text\t$held_text")
+            hold+=("text"$'\t'"$held_text")
           else
             hold+=("$rest")
           fi
@@ -1331,6 +1331,20 @@ kill_agents() {
     kill -TERM -"$pid" 2>/dev/null || true
     kill -TERM "$pid" 2>/dev/null || true
   done
+  # Transcript readers are owned descendants too. A reader may be waiting
+  # for a FIFO writer at open time, so pair TERM with a short-lived writer
+  # before removing each registered FIFO.
+  for pid in ${FORMATTERS[@]+"${FORMATTERS[@]}"}; do
+    [[ $pid =~ ^[0-9]+$ ]] && ((pid > 0)) || continue
+    local fifo=${FORMATTER_FIFOS[$pid]:-}
+    [[ -n $fifo ]] && ( : >"$fifo" ) 2>/dev/null || true
+    kill -TERM "$pid" 2>/dev/null || true
+  done
+  if [[ ${FORMATTER:-0} =~ ^[0-9]+$ ]] && ((FORMATTER > 0)); then
+    local fifo="$RUNTIME_DIR/panel-stream-$PANEL_ID"
+    [[ -p $fifo ]] && ( : >"$fifo" ) 2>/dev/null || true
+    kill -TERM "$FORMATTER" 2>/dev/null || true
+  fi
 }
 
 on_int() {
@@ -1617,10 +1631,17 @@ ARGV=(bash -c 'end="$1"; shift; setsid "$@" & child=$!; trap "kill -TERM -$child
   rm -f "$fifo"
   if mkfifo "$fifo" 2>/dev/null; then
     fifo_ok=1
-    ( trap '' INT TERM; tee -a "$LOG" <"$fifo" | format_stream "$BLUE" "$LOG" ) &
+    ( trap - INT TERM; tee -a "$LOG" <"$fifo" | format_stream "$BLUE" "$LOG" ) &
     FORMATTERS[$((index - 1))]=$!
+    FORMATTER_FIFOS[${FORMATTERS[$((index - 1))]}]=$fifo
     if ((STOP_REQUESTED || HARD_STOP)); then
-      kill "${FORMATTERS[$((index - 1))]}" 2>/dev/null || true
+      # The formatter may still be blocked opening the FIFO. Open a
+      # temporary writer first so it can observe EOF, then reap it.
+      ( : >"$fifo" ) 2>/dev/null || true
+      kill -TERM "${FORMATTERS[$((index - 1))]}" 2>/dev/null || true
+      wait "${FORMATTERS[$((index - 1))]}" 2>/dev/null || true
+      unset 'FORMATTER_FIFOS[${FORMATTERS[$((index - 1))]}]'
+      FORMATTERS[$((index - 1))]=0
       rm -f "$fifo"
       unset 'RUN_REVIEWS[index - 1]' 'INV_STARTS[index - 1]'
       return 0
@@ -1715,11 +1736,16 @@ run_merge_agent() {
   fifo="$RUNTIME_DIR/panel-stream-$PANEL_ID"
   rm -f "$fifo"
   if mkfifo "$fifo" 2>/dev/null; then
-    ( trap '' INT TERM; tee -a "$LOG_FILE" <"$fifo" \
+    ( trap - INT TERM; tee -a "$LOG_FILE" <"$fifo" \
       | format_stream "$MAGENTA" "$LOG_FILE" "$LOG_FILE" ) &
     FORMATTER=$!
+    FORMATTER_FIFOS[$FORMATTER]=$fifo
     if ((STOP_REQUESTED || HARD_STOP)); then
-      kill "$FORMATTER" 2>/dev/null || true
+      ( : >"$fifo" ) 2>/dev/null || true
+      kill -TERM "$FORMATTER" 2>/dev/null || true
+      wait "$FORMATTER" 2>/dev/null || true
+      unset 'FORMATTER_FIFOS[$FORMATTER]'
+      FORMATTER=0
       rm -f "$fifo"
       MERGE_STATUS=$SIGNAL_STATUS
       return 0
@@ -1778,7 +1804,11 @@ run_merge_agent() {
   wait_child "$MERGE_PID"
   MERGE_STATUS=$?
   MERGE_SECONDS=$((SECONDS - started))
-  ((FORMATTER)) && { wait "$FORMATTER" 2>/dev/null; FORMATTER=0; }
+  if ((FORMATTER)); then
+    wait "$FORMATTER" 2>/dev/null
+    unset 'FORMATTER_FIFOS[$FORMATTER]'
+    FORMATTER=0
+  fi
   if [[ -n $fallback_stream && -f $fallback_stream ]]; then
     cat "$fallback_stream" >>"$LOG_FILE"
     format_stream "$MAGENTA" "$LOG_FILE" <"$fallback_stream" >/dev/null
@@ -1928,6 +1958,7 @@ RUN_REVIEWS=()
 INV_STARTS=()
 REVIEW_STATUSES=()
 FORMATTERS=()
+FORMATTER_FIFOS=()
 FALLBACK_STREAMS=()
 REVIEW_FAILED=0
 COST_RECORD_FAILED=0
@@ -1972,6 +2003,7 @@ for ((i = 0; i < RUN_STARTED; i++)); do
   # pipe is 0, and a drain waits for nothing.
   if [[ -n $stem && -n ${FORMATTERS[$i]:-} && ${FORMATTERS[$i]} -ne 0 ]]; then
     wait_child "${FORMATTERS[$i]}" 2>/dev/null
+    unset 'FORMATTER_FIFOS[${FORMATTERS[$i]}]'
     FORMATTERS[$i]=0
     rm -f "$RUNTIME_DIR/panel-stream-$PANEL_ID-$stem"
   fi
