@@ -166,7 +166,7 @@ hash_path() {
   fi
 }
 STATE_REPO=${REPO:-$RUN_DIR}
-if [[ $RUN_DIR == "$STATE_REPO" ]]; then
+if [[ -z $REPO || $RUN_DIR == "$REPO" ]]; then
   RUN_SUBPATH=""
 else
   RUN_SUBPATH="${RUN_DIR#"$STATE_REPO"/}"
@@ -181,7 +181,7 @@ if [[ -d $OWN_STATE_DIR ]]; then
   # Match cbugs: an existing state directory for this run takes precedence
   # over every ancestor, including the repository root (RP-REL-3, CB-DB-8).
   STATE_DIR=$OWN_STATE_DIR
-elif [[ $RUN_DIR == "$STATE_REPO" ]]; then
+elif [[ -n $REPO && $RUN_DIR == "$REPO" ]]; then
   STATE_DIR=$OWN_STATE_DIR
   WALK_ANCESTORS=0
   STATE_LIMIT=$RUN_DIR
