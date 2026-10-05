@@ -336,7 +336,7 @@ panel() {
     label=${row%%|*}
     value=${row#*|}
     case $label in
-      "run dir"|"run log"|logs|scope|source)
+      "run dir"|"run log"|"state dir"|"bug db"|logs|scope|source)
         if ((11 + ${#value} <= COLS - 17)); then
           printf -v line '%-10s %s' "$label" "$value"
           ((${#line} > inner)) && inner=${#line}
@@ -359,7 +359,7 @@ panel() {
     label=${row%%|*}
     value=${row#*|}
     raw=0
-    case $label in "run dir"|"run log"|logs|scope|source) raw=1 ;; esac
+    case $label in "run dir"|"run log"|"state dir"|"bug db"|logs|scope|source) raw=1 ;; esac
     if ((raw)) && ((11 + ${#value} > inner)); then
       printf '%s%s%s %s%-10s%s %s\n' \
         "$DIM" "$G_V" "$OFF" \
@@ -1754,6 +1754,8 @@ else
 fi
 PANEL_ROWS=(
   "run dir|$(home_relative "$RUN_DIR")"
+  "state dir|$(home_relative "$STATE_DIR")"
+  "bug db|$(home_relative "$STATE_DIR/cbugs.db")"
   "scope|$SCOPE_SUMMARY"
   "run log|$(home_relative "$RUN_LOG")"
   "logs|$(home_relative "$LOG_DIR")"
