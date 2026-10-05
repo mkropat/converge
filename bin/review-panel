@@ -1512,7 +1512,7 @@ ARGV=(bash -c 'end="$1"; shift; setsid "$@" & child=$!; trap "kill -TERM -$child
 # carry no label and the tag scheme of its notes does not change. Sets
 # MERGE_STATUS and MERGE_SECONDS.
 run_merge_agent() {
-  local prompt=$1 profile=$2 fallback_stream
+  local prompt=$1 profile=$2 fallback_stream=""
   TRANSCRIPT_ACCENT=$MAGENTA
   FINAL_DRAWN=0
   STREAM_LABEL=""
