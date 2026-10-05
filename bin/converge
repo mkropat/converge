@@ -235,6 +235,11 @@ fi
 # repository that contains it supplies the git state of the run: the commits,
 # and the history that a review pass reads.
 RUN_DIR="$(pwd -P)"
+if ((!INIT_STATE && !HELP_REQUESTED)) && ! command -v git >/dev/null 2>&1; then
+  echo "converge: 'git' is not on PATH" >&2
+  echo "converge: on macOS, run 'brew install git'" >&2
+  exit 2
+fi
 REPO="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$RUN_DIR")"
 
 # The loop needs the GNU versions of the tools below. macOS supplies the BSD

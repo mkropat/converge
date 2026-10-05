@@ -169,7 +169,6 @@ hash_path() {
   fi
 }
 STATE_REPO=${REPO:-$RUN_DIR}
-[[ -n $REPO ]] || STATE_REPO=""
 if [[ -z $REPO || $RUN_DIR == "$STATE_REPO" ]]; then
   RUN_SUBPATH=""
 else
