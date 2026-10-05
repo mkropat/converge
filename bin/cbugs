@@ -1059,7 +1059,9 @@ print_listing() {
   n=$(jq 'length' <<<"$rows")
   ((n > 0)) || exit 0
   if ((json)); then
-    printf '%s\n' "$rows"
+    # revision_key is an internal ordering column, not part of a bug's
+    # public listing (CB-LIST-9, CB-OUT-2).
+    jq -M 'map(del(.revision_key))' <<<"$rows"
     return
   fi
   local id kind status title hidden
@@ -1144,6 +1146,8 @@ WHERE b.id = $id;") || exit 1
   fi
   local id kind status title
   IFS=$'\t' read -r id kind status title < <(jq -r '.[0] | [.id, .kind, .status, .title] | @tsv' <<<"$rows")
+  # Decode jq's @tsv transport escaping before printing the title.
+  printf -v title '%b' "$title"
   row_line "$id" "$kind" "$status" "$title"
 }
 

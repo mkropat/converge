@@ -1359,6 +1359,11 @@ on_int() {
   if ((STOP_REQUESTED == 0)); then
     STOP_REQUESTED=1
     warn "stop requested; the running agents finish, and no further invocation starts; press Ctrl-C again to stop at once"
+    # Coverage is not an agent invocation. Stop an in-flight writer so an
+    # interrupted run cannot leave a committed reviewed record (RP-COV-5).
+    if [[ $REVIEWED_PID =~ ^[0-9]+$ ]] && ((REVIEWED_PID > 0)); then
+      kill -TERM -"$REVIEWED_PID" 2>/dev/null || kill -TERM "$REVIEWED_PID" 2>/dev/null || true
+    fi
     return
   fi
   HARD_STOP=1
