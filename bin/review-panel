@@ -679,7 +679,7 @@ note() {
   # resolution. Keep early stop reporting safe under nounset.
   local -a note_reviewers=()
   if declare -p REVIEWER_PROFILES >/dev/null 2>&1; then
-    note_reviewers=("${REVIEWER_PROFILES[@]}")
+    note_reviewers=("${REVIEWER_PROFILES[@]+${REVIEWER_PROFILES[@]}}")
   fi
   local note_merge=${MERGE_PROFILE:-unresolved}
   printf '%s %s reviewers=%s merge=%s %s\n' \
@@ -1290,7 +1290,7 @@ kill_agents() {
   # Include live background jobs as well as registered agent PIDs. Bash may
   # run a signal trap between launching a child and appending $! above.
   local -a owned_pids=()
-  owned_pids+=("${AGENT_PIDS[@]}")
+  owned_pids+=("${AGENT_PIDS[@]+${AGENT_PIDS[@]}}")
   while IFS= read -r pid; do owned_pids+=("$pid"); done < <(jobs -pr)
   for pid in "${owned_pids[@]}"; do
     kill -0 "$pid" 2>/dev/null || continue
