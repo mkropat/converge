@@ -1776,7 +1776,7 @@ fromjson? // empty
 | if .type == "thread.started" then
     "init\tsession \((.thread_id // "unknown")[0:8])"
   elif .type == "item.completed" and .item.type == "agent_message" then
-    ((.item.text // "") | split("\n")[] | "text\t" + clean)
+    ((.item.text // "") | split("\n")[] | "hold\ttext\t" + clean)
   elif .type == "item.completed" and .item.type == "command_execution" then
     ((.item.command // "") | split("\n")) as $command
     | "tool\tbash\t\($command | length)\t\($command | map(clean) | join(" ↵ "))",
@@ -1790,7 +1790,7 @@ fromjson? // empty
     "fail\t" + ((.item.message // "Codex error") | tostring | firstline | clean)
   elif .type == "error" or .type == "turn.failed" then
     "fail\t" + ((.message // .error.message // "Codex turn failed") | tostring | firstline | clean)
-  elif .type == "turn.completed" then "tally\t"
+  elif .type == "turn.completed" then "tally\t", "release\tfinal"
   else empty end
 '
 
@@ -1961,9 +1961,16 @@ format_stream() {
         release)
           as_final=0
           [[ $rest == final ]] && as_final=1
-          for held in ${hold[@]+"${hold[@]}"}; do
-            dispatch_held "$held" "$as_final"
-          done
+          if ((as_final)) && [[ $INVOCATION_HARNESS == codex ]] && ((${#hold[@]})); then
+            for ((i=0; i<${#hold[@]}-1; i++)); do
+              dispatch_held "${hold[i]}" 0
+            done
+            dispatch_held "${hold[${#hold[@]}-1]}" 1
+          else
+            for held in ${hold[@]+"${hold[@]}"}; do
+              dispatch_held "$held" "$as_final"
+            done
+          fi
           hold=()
           ;;
         tally)
