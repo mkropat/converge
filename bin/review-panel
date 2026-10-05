@@ -1087,7 +1087,7 @@ fromjson? // empty
 | if .type == "thread.started" then
     "init\tsession \((.thread_id // "unknown")[0:8])"
   elif .type == "item.completed" and .item.type == "agent_message" then
-    ((.item.text // "") | split("\n")[] | "hold\ttext\t" + clean)
+    "hold\ttext\t" + ((.item.text // "") | tojson)
   elif .type == "item.completed" and .item.type == "command_execution" then
     ((.item.command // "") | split("\n")) as $command
     | "tool\tbash\t\($command | length)\t\($command | map(clean) | join(" ↵ "))",
@@ -1139,7 +1139,13 @@ format_stream() {
           say_text "$rest"
           ;;
         hold)
-          hold+=("$rest")
+          if [[ $INVOCATION_HARNESS == codex ]]; then
+            local held_text
+            held_text=$(jq -nr --arg encoded "${rest#*$'\t'}" '$encoded | fromjson')
+            hold+=("text\t$held_text")
+          else
+            hold+=("$rest")
+          fi
           ;;
         release)
           as_final=0
