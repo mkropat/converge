@@ -747,8 +747,8 @@ assume another reviewer examined identical content.
 
 1. Read the code relevant to the requirements, and the requirements they
    belong to. ${scope_line}
-2. Run \`cbugs search <text>\` before you log anything. Log nothing that a
-   bug already names.
+2. Run \`cbugs search <text>\` before you log anything. Log nothing that an
+   open bug already names.
 3. For each defect in the code (behavior that contradicts a requirement, an
    unhandled case, or a regression), log
    \`cbugs add --kind code --title <text>\` with \`--cite <path>[:<id>]\`
