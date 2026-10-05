@@ -1525,7 +1525,13 @@ run_agent() {
   fi
 
   if ((fifo_failed)); then
-    : # already reported above
+    # This setup failure skipped the invocation, so CV-HARN-14 says it
+    # consumes no round-robin turn. pick_profile already advanced once.
+    case $role in
+      worker) WORKER_PROFILE_IDX=$(( (WORKER_PROFILE_IDX + ${#WORKER_PROFILES[@]} - 1) % ${#WORKER_PROFILES[@]} )) ;;
+      reviewer) REVIEWER_PROFILE_IDX=$(( (REVIEWER_PROFILE_IDX + ${#REVIEWER_PROFILES[@]} - 1) % ${#REVIEWER_PROFILES[@]} )) ;;
+      coach) COACH_PROFILE_IDX=$(( (COACH_PROFILE_IDX + ${#COACH_PROFILES[@]} - 1) % ${#COACH_PROFILES[@]} )) ;;
+    esac
   elif ((RUN_STATUS == 124 || RUN_STATUS == 137)); then
     warn "$role exceeded the ${TIMEOUT}s timeout; killed it"
     show_stderr "$LOG_FILE"
