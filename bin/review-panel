@@ -1299,7 +1299,7 @@ kill_agents() {
   local -a owned_pids=()
   owned_pids+=("${AGENT_PIDS[@]+${AGENT_PIDS[@]}}")
   while IFS= read -r pid; do owned_pids+=("$pid"); done < <(jobs -pr)
-  for pid in "${owned_pids[@]}"; do
+  for pid in ${owned_pids[@]+"${owned_pids[@]}"}; do
     kill -0 "$pid" 2>/dev/null || continue
     # The setsid child leads its own process group, so one signal reaches
     # its timeout and every agent under it. The plain kill is the fallback
