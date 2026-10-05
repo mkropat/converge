@@ -1335,6 +1335,7 @@ STOP_REQUESTED=0
 HARD_STOP=0
 SIGNAL_STATUS=130
 REVIEWED_PID=0
+FORMATTER=0
 AGENT_PIDS=()
 # A graceful stop may arrive between the final launch check and registering
 # the child in AGENT_PIDS. Defer traps only across that small launch window,
