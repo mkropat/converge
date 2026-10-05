@@ -2369,7 +2369,7 @@ run_review_pass() {
   heading "$BLUE" "review" "$(date '+%H:%M:%S')"
   note "review pass at $(date '+%Y-%m-%d %H:%M:%S'): $(plural "$pending_count" "unreviewed commit")"
 
-  local focus prompt
+  local focus prompt before_revision_lines before_revision_ids
   if ! focus=$(cadence_focus "$pending_list" "$pending_count"); then
     # A failed reviewed-count read is not a first pass (CV-REV-17): the
     # first-pass range would be a false claim, so the pass is skipped
@@ -2390,6 +2390,15 @@ run_review_pass() {
   # keeps its revision_key, so it drops out of the diff.
   bugs_before=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" list --visibility all --json 2>/dev/null) || bugs_before_ok=0
   [[ -n $bugs_before ]] || bugs_before='[]'
+  # The visible revision of an existing bug can change when HEAD changes,
+  # even when no revision was written during this pass. Snapshot every
+  # stored revision id before starting the reviewer so branch visibility
+  # cannot make an old revision look new (CV-OUT-14).
+  before_revision_lines=$(sqlite3 -bail -cmd '.timeout 10000' \
+    "$STATE_DIR/cbugs.db" 'SELECT id FROM revision ORDER BY id;' 2>/dev/null) || bugs_before_ok=0
+  before_revision_ids=$(jq -Rn '[inputs | select(length > 0) | tonumber]' \
+    <<<"$before_revision_lines" 2>/dev/null) || bugs_before_ok=0
+  [[ -n $before_revision_ids ]] || before_revision_ids='[]'
 
   run_agent reviewer "$prompt"
   ((STOP_REQUESTED)) || handle_invocation_wait "$LOG_FILE" "$INVOCATION_HARNESS"
@@ -2410,17 +2419,14 @@ run_review_pass() {
   bugs_after=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" list --visibility all --json 2>/dev/null) || bugs_after_ok=0
   [[ -n $bugs_after ]] || bugs_after='[]'
   if ((bugs_before_ok)) && ((bugs_after_ok)); then
-    # Pass-logged: a bug whose supplying revision now names a revision that
-    # did not exist at the first read. A bug that only flipped visibility
-    # between the two HEADs keeps its revision_key and drops out
-    # (CV-OUT-14); a bug the pass logged carries a new revision and stays.
-    new_bugs=$(jq --argjson before "$bugs_before" \
-      '[
-        .[]
-        | select(. as $r
-            | (($before | map(select(.id == $r.id)) | (.[0].revision_key // -1))
-               < (($r.revision_key // -1))))
-      ]' \
+    # Pass-logged: a visible bug whose supplying revision id was not stored
+    # before the pass. Comparing against all stored revision ids, rather
+    # than only the first list's visible revision per bug, excludes a
+    # branch-specific revision that becomes visible after HEAD moves
+    # (CV-OUT-14).
+    new_bugs=$(jq --argjson before_ids "$before_revision_ids" \
+      '[.[] | select(.revision_key as $revision
+        | ($before_ids | index($revision)) == null)]' \
       <<<"$bugs_after" 2>/dev/null)
     count=$(jq 'length' <<<"$new_bugs" 2>/dev/null)
   else
