@@ -130,9 +130,12 @@ TIMEOUT=$((10#$TIMEOUT))
 # is for converge (CV-INV-9). The script never changes its own working
 # directory, so every relative path that follows, and the initial working
 # directory of every agent, stays anchored there (RP-INV-6).
-RUN_DIR="$(pwd -P)"
+# Resolve the shell's logical PWD before asking git or deriving state. The
+# shell may retain a symlink path when the operator entered through one, so
+# cbugs and converge canonicalize it with pwd -P (CB-DB-2).
+RUN_DIR="$(cd -P . && pwd -P)"
 REPO=""
-REPO=$(git rev-parse --show-toplevel 2>/dev/null) || REPO=""
+REPO=$(git -C "$RUN_DIR" rev-parse --show-toplevel 2>/dev/null) || REPO=""
 
 # The state directory follows the same rule that converge and cbugs use for
 # a run directory: the name of the repository, the path of the run directory
@@ -166,12 +169,17 @@ hash_path() {
   fi
 }
 STATE_REPO=${REPO:-$RUN_DIR}
-if [[ -z $REPO || $RUN_DIR == "$REPO" ]]; then
+[[ -n $REPO ]] || STATE_REPO=""
+if [[ -z $REPO || $RUN_DIR == "$STATE_REPO" ]]; then
   RUN_SUBPATH=""
 else
   RUN_SUBPATH="${RUN_DIR#"$STATE_REPO"/}"
 fi
-SLUG="${STATE_REPO##*/}${RUN_SUBPATH:+-${RUN_SUBPATH//\//-}}-$(hash_path "$RUN_DIR")"
+if [[ -n $STATE_REPO ]]; then
+  SLUG="${STATE_REPO##*/}${RUN_SUBPATH:+-${RUN_SUBPATH//\//-}}-$(hash_path "$RUN_DIR")"
+else
+  SLUG="$(hash_path "$RUN_DIR")"
+fi
 if [[ -z ${XDG_STATE_HOME:-} && -z ${HOME:-} ]]; then
   echo "review-panel: set HOME or XDG_STATE_HOME; review-panel keeps its state there" >&2
   exit 2
