@@ -42,7 +42,7 @@ An identifier must not change its meaning. Removed requirements leave their iden
 
 - **RP-PROF-1**: Retired. Selected reviewers with `REVIEW_PANEL_PROFILES`. **RP-PROF-7** replaces this variable.
 - **RP-PROF-2**: An explicitly empty selected variable must be an error, not a request for fallback.
-- **RP-PROF-3**: Profiles must follow the syntax, canonical form, supported harnesses, and effort rules of `docs/converge-requirements.md:CV-HARN-9` and `CV-HARN-10`. Duplicate canonical reviewer profiles must be rejected.
+- **RP-PROF-3**: Retired. Referenced the former two-harness profile rules. **RP-PROF-11** replaces it.
 - **RP-PROF-4**: Retired. Selected the merge agent with `REVIEW_PANEL_MERGE_PROFILE`. **RP-PROF-8** replaces this variable.
 - **RP-PROF-5**: The command must validate the resolved reviewer list and merge profile before it starts any agent. It must not require valid worker or coach profiles. A missing harness must fail its invocation under the converge harness convention.
 - **RP-PROF-6**: The command must resolve profiles once at startup. It must not rotate profiles between runs or store a profile selection for later runs.
@@ -50,6 +50,10 @@ An identifier must not change its meaning. Removed requirements leave their iden
 - **RP-PROF-7**: `CONVERGE_REVIEW_PANEL_PROFILE` must select an ordered, comma-separated reviewer list. If unset, the command must use `CONVERGE_REVIEWER_PROFILE`. If both are unset, it must use `claude:opus`.
 - **RP-PROF-8**: `CONVERGE_REVIEW_PANEL_MERGE_PROFILE` must select exactly one merge profile. If unset, it must use the first resolved panel profile. An empty or invalid value must be an error.
 - **RP-PROF-9**: The command must reject set `REVIEW_PANEL_PROFILES` and `REVIEW_PANEL_MERGE_PROFILE`, including empty values. The error must name the replacement variable.
+
+- **RP-PROF-10**: Codex reviewer and merge invocations must follow `docs/converge-requirements.md:CV-HARN-19` through `CV-HARN-22`, including CLI-only effort validation, fresh ephemeral sessions, full access, inherited configuration, output normalization, and success determined by process exit status. Panel logs must retain the emitted stream under the existing log conventions. A Codex invocation that reports no dollar cost must follow the existing absent-cost rules.
+
+- **RP-PROF-11**: Profiles must follow the syntax, canonical form, supported harnesses, and effort rules of `docs/converge-requirements.md:CV-HARN-17` and `CV-HARN-18`. Duplicate canonical reviewer profiles must be rejected.
 
 ## Reviewer execution
 

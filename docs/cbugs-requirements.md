@@ -531,15 +531,7 @@ sections of `docs/converge-requirements.md` for the loop behavior.
 - **CB-RVW-13**: `cbugs reviewed add` must accept commits as arguments or on
   standard input, one commit per line. One call must be one transaction. A
   failed call must record nothing. A call with no commit must fail.
-- **CB-RVW-14**: `reviewed add` must accept optional `--profile <profile>`.
-  It must accept only one profile, not a list or repeated `--profile` options.
-  An omitted option must store SQL NULL, which means unknown. A supplied value
-  must use `harness:model[:effort]`. The harness must be `claude` or `opencode`.
-  Each supplied field must be nonempty and contain no colon, comma, or
-  whitespace. A slash is allowed in a field. The optional effort is a value
-  native to the selected harness, not a shared scale. The command must store
-  the supplied canonical string without substitution of a named profile ID.
-  An invalid profile must fail before any record is written.
+- **CB-RVW-14**: Retired. Restricted review profiles to Claude and OpenCode. **CB-RVW-19** replaces it.
 - **CB-RVW-15**: `reviewed add` must accept optional
   `--completed-at <timestamp>`. The value must be a valid UTC date and time in
   `YYYY-MM-DDTHH:MM:SSZ` form. An invalid value must fail before any record is
@@ -567,6 +559,8 @@ sections of `docs/converge-requirements.md` for the loop behavior.
   Existing migrated records and manual records with an unknown profile count.
   The command must not require a number of reviews or a particular profile
   before it removes a commit from the pending result.
+
+- **CB-RVW-19**: `reviewed add` must accept optional `--profile <profile>`. It must accept only one profile, not a list or repeated `--profile` options. An omitted option must store SQL NULL, which means unknown. A supplied value must use `harness:model[:effort]`. The harness must be `claude`, `opencode`, or `codex`. Each supplied field must be nonempty and contain no colon, comma, or whitespace. A slash is allowed in a field. The optional effort is native to the selected harness, not a shared scale. Codex effort must receive syntax validation only; only the Codex CLI validates supported values and model compatibility. The command must store the supplied canonical string without substitution of a named profile ID. An invalid profile must fail before any record is written.
 
 ## The summary
 
