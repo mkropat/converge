@@ -1372,12 +1372,14 @@ trap 'on_signal USR1' USR1
 # run_agent <role> <prompt>
 # Picks the role's next profile in round robin and runs one non-interactive
 # harness invocation with it. Writes the full message stream to a new log
-# file, and one line about the invocation to the cost ledger (COST_LEDGER).
+# file, and one cost-ledger line for each started invocation.
 # Sets LOG_FILE, RESULT_TEXT, RUN_STATUS, RUN_PROFILE, and
-# INVOCATION_HARNESS.
+# INVOCATION_HARNESS. INVOCATION_SKIPPED is true when setup prevented it
+# from starting.
 run_agent() {
   local role=$1 prompt=$2 glyph=$G_WORKER started=$SECONDS seq_text
   local fifo_failed=0 cost_record
+  INVOCATION_SKIPPED=0
   case $role in
     coach) glyph=$G_COACH ;;
     reviewer) glyph=$G_REVIEW ;;
@@ -1492,6 +1494,7 @@ run_agent() {
     # own backoff and retry carry the run forward instead of the script
     # exiting mid-run with no closing report.
     fifo_failed=1
+    INVOCATION_SKIPPED=1
     RUN_STATUS=1
     bad "cannot create the stream pipe; the runtime directory does not support named pipes"
   fi
@@ -2744,8 +2747,10 @@ while true; do
   # arrived while it ran: the invocation still finished, and the report is
   # about what it did, not about scheduling more work.
   report_changes "$HEAD_BEFORE"
-  PENDING_LOGS+=("$LOG_FILE")
-  ((++SINCE_COACH))
+  if ((!INVOCATION_SKIPPED)); then
+    PENDING_LOGS+=("$LOG_FILE")
+    ((++SINCE_COACH))
+  fi
   # A review pass below overwrites $LOG_FILE and $INVOCATION_HARNESS with
   # its own; keep this invocation's so the wait at the end of this iteration
   # judges it, and not the reviewer's.
@@ -2791,6 +2796,12 @@ while true; do
   # iteration," and --max-iterations means there is none. Without this, a
   # backoff that grew to 15 minutes would sit idle that long right before
   # printing "reached the limit" and exiting anyway.
+  if ((INVOCATION_SKIPPED)); then
+    # The attempted iteration was never started, so undo its provisional
+    # number after result reporting and leave coach cadence and backlog
+    # unchanged.
+    ((--ITERATION))
+  fi
   if ((STOP_REQUESTED)) || { [[ -n $MAX_ITERATIONS ]] && ((ITERATION >= MAX_ITERATIONS)); }; then
     :
   else
