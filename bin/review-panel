@@ -683,6 +683,30 @@ harness_argv() {
 # per-run log files. The timestamp, PID, and random suffix distinguish
 # overlapping invocations, including calls started in the same second.
 PANEL_ID="panel-$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
+
+# decode_tsv_field <value>   Undo jq @tsv escaping without interpreting
+# ordinary backslashes as printf %b escape sequences.
+decode_tsv_field() {
+  local value=$1 output='' char next i=0
+  while ((i < ${#value})); do
+    char=${value:i:1}
+    if [[ $char == \\ && $((i + 1)) -lt ${#value} ]]; then
+      ((i++))
+      next=${value:i:1}
+      case $next in
+        \\) output+='\\' ;;
+        t) output+=$'\t' ;;
+        n) output+=$'\n' ;;
+        r) output+=$'\r' ;;
+        *) output+="\\$next" ;;
+      esac
+    else
+      output+=$char
+    fi
+    ((i++))
+  done
+  REPLY=$output
+}
 RUN_LOG="$STATE_DIR/review-panel-$PANEL_ID.log"
 RUN_START=$SECONDS
 SEQ=0
@@ -2108,6 +2132,7 @@ else
   else
     NEW_LINES=""
     while IFS=$'\t' read -r id kind status title; do
+      decode_tsv_field "$title"; title=$REPLY
       NEW_LINES+="#$id ($kind, $status): $title
 "
     done < <(jq -r '.[] | [.id, .kind, .status, .title] | @tsv' <<<"$FINDINGS_JSON")
@@ -2232,7 +2257,7 @@ for ((i = 0; i < RUN_STARTED; i++)); do
   [[ $status == 0 ]] || FAILED_ROWS+=("reviewer $((i + 1))/$REVIEWER_COUNT (${REVIEWER_PROFILES[$i]}): exit status $status")
 done
 ((RUN_STARTED < REVIEWER_COUNT)) && FAILED_ROWS+=("reviewer: invocations not started: $((REVIEWER_COUNT - RUN_STARTED))")
-((MERGE_RAN && MERGE_FAILED)) && FAILED_ROWS+=("merge agent: exit status $MERGE_STATUS")
+((MERGE_FAILED)) && FAILED_ROWS+=("merge agent: exit status $MERGE_STATUS")
 ((COVERAGE_FAILED)) && FAILED_ROWS+=("coverage recording: cbugs reviewed add failed")
 ((FINDINGS_COLLECT_FAILED)) && \
   FAILED_ROWS+=("findings: cbugs list --panel-run failed before the merge")
@@ -2247,13 +2272,15 @@ findings_block() {
     # row names itself, and borrows the title of the revision that created
     # the bug; the panel never presents an unreachable revision as current.
     if [[ $hidden == 1 || $hidden == true ]]; then
-      shown_title=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" show "$id" --json 2>/dev/null \
-        | jq -r '.revisions[0].title // empty' 2>/dev/null)
-      shown_title=${shown_title:-$title}
+      local shown_json
+      shown_json=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" show "$id" --json 2>/dev/null) || shown_json=
+      shown_title=$(jq -r '.revisions[0].title // empty' <<<"$shown_json" 2>/dev/null)
+      [[ -n $shown_title ]] || shown_title='[creation title unavailable]'
       printf '  %s%s%s %s\n' "$YELLOW" "$G_WARN" "$OFF" \
         "new $kind bug #$id (hidden): $shown_title"
       note "$word bug #$id ($kind, hidden): $shown_title"
     else
+      decode_tsv_field "$title"; title=$REPLY
       printf '  %s%s%s %s\n' "$YELLOW" "$G_WARN" "$OFF" \
         "new $kind bug #$id: $title"
       note "$word bug #$id ($kind): $title"

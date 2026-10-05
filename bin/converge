@@ -2385,14 +2385,10 @@ run_review_pass() {
   fi
   prompt=$(reviewer_prompt "$focus")
 
-  # CV-OUT-14: the two lists that a pass report compares must use cbugs
-  # visibility at the repository HEAD of their read, and a change of
-  # visibility caused only by a change of HEAD must not read as a bug that
-  # the pass logged. The comparison reads both lists in 'all' mode and
-  # counts a bug as pass-logged only when a revision of it became stored
-  # between the reads: the row that supplies each listing carries its
-  # supplying revision (revision_key). A bug that only flipped visibility
-  # keeps its revision_key, so it drops out of the diff.
+  # CV-OUT-14: the two report lists use cbugs visibility at each read's
+  # repository HEAD. Compare all stored revision ids to detect writes
+  # during the pass without mistaking a visibility-only change for a new
+  # finding.
   bugs_before=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" list --visibility all --json 2>/dev/null) || bugs_before_ok=0
   [[ -n $bugs_before ]] || bugs_before='[]'
   # The visible revision of an existing bug can change when HEAD changes,
@@ -2424,15 +2420,30 @@ run_review_pass() {
   bugs_after=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" list --visibility all --json 2>/dev/null) || bugs_after_ok=0
   [[ -n $bugs_after ]] || bugs_after='[]'
   if ((bugs_before_ok)) && ((bugs_after_ok)); then
-    # Pass-logged: a visible bug whose supplying revision id was not stored
-    # before the pass. Comparing against all stored revision ids, rather
-    # than only the first list's visible revision per bug, excludes a
-    # branch-specific revision that becomes visible after HEAD moves
-    # (CV-OUT-14).
-    new_bugs=$(jq --argjson before_ids "$before_revision_ids" \
-      '[.[] | select(.revision_key as $revision
-        | ($before_ids | index($revision)) == null)]' \
-      <<<"$bugs_after" 2>/dev/null)
+    # Pass-logged: a visible bug with a revision id not stored before the
+    # pass. The public list JSON deliberately omits the internal revision
+    # key (CB-LIST-9), so compare the visible revision ids through cbugs
+    # show. Comparing against every pre-pass stored id excludes a
+    # branch-specific revision that becomes visible after HEAD moves.
+    local after_id after_kind after_title revisions_json new_revision
+    local -a logged_rows=()
+    while IFS=$'\t' read -r after_id after_kind after_title; do
+      revisions_json=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" show "$after_id" --json 2>/dev/null) || {
+        bugs_after_ok=0
+        break
+      }
+      new_revision=$(jq -r --argjson before_ids "$before_revision_ids" \
+        '[.revisions[]?.id | select(($before_ids | index(.)) == null)] | max // empty' \
+        <<<"$revisions_json" 2>/dev/null)
+      if [[ -n $new_revision ]]; then
+        logged_rows+=("$after_id"$'\t'"$after_kind"$'\t'"$after_title")
+      fi
+    done < <(jq -r '.[] | [.id, .kind, .title] | @tsv' <<<"$bugs_after")
+    if ((bugs_after_ok)); then
+      new_bugs=$(printf '%s\n' "${logged_rows[@]}" | jq -Rn '[inputs | select(length > 0) | split("\t") | {id:(.[0]|tonumber), kind:.[1], title:.[2]}]')
+    else
+      new_bugs=
+    fi
     count=$(jq 'length' <<<"$new_bugs" 2>/dev/null)
   else
     new_bugs=
