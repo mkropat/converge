@@ -820,7 +820,11 @@ per bug in the form id, kind, status, title.
    of converge runs too.
 3. Combine two bugs only when they describe the same defect. Preserve every
    distinct finding.
-4. Keep exactly one retained bug for each duplicate set, and keep the
+4. For each duplicate set, choose the visible bug with the smallest numeric
+   id as the retained bug. Use the same choice even when another run created
+   it; do not dismiss that bug. This deterministic choice keeps overlapping
+   merge agents from dismissing each other's retained findings. Keep exactly
+   one retained bug for each duplicate set, and keep the
    retained bug in the status it holds: a bug that is still open stays
    open. For each duplicate, write
    \`cbugs dismiss <id> --note <text>\`
@@ -871,7 +875,11 @@ $findings
    The tracker holds bugs of other panel runs and of converge runs too.
 2. Combine two bugs only when they describe the same defect. Preserve every
    distinct finding.
-3. Keep exactly one retained bug for each duplicate set, and keep the
+3. For each duplicate set, choose the visible bug with the smallest numeric
+   id as the retained bug. Use the same choice even when another run created
+   it; do not dismiss that bug. This deterministic choice keeps overlapping
+   merge agents from dismissing each other's retained findings. Keep exactly
+   one retained bug for each duplicate set, and keep the
    retained bug in the status it holds: a bug that is still open stays
    open. For each duplicate, write
    \`cbugs dismiss <id> --note <text>\`
