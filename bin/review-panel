@@ -1709,7 +1709,7 @@ run_merge_agent() {
   rm -f "$fifo"
   if mkfifo "$fifo" 2>/dev/null; then
     ( trap '' INT TERM; tee -a "$LOG_FILE" <"$fifo" \
-      | format_stream "$MAGENTA" "$LOG_FILE" ) &
+      | format_stream "$MAGENTA" "$LOG_FILE" "$LOG_FILE" ) &
     FORMATTER=$!
     if ((STOP_REQUESTED || HARD_STOP)); then
       kill "$FORMATTER" 2>/dev/null || true
