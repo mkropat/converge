@@ -522,6 +522,10 @@ parse_profile_list() {
   local -n out=$arrname
   out=()
   local -a parts=()
+  if [[ $raw == *$'\n'* || $raw == *$'\r'* ]]; then
+    echo "review-panel: $role profile list must use commas between entries" >&2
+    exit 2
+  fi
   # A plain "IFS=','read -ra" silently drops a trailing empty entry, so
   # "claude:opus," would parse as the single entry "claude:opus" instead of
   # being rejected for its empty trailing entry. Splitting on newlines with
