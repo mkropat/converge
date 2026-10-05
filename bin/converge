@@ -1053,7 +1053,7 @@ client_int() {
   fi
   CLIENT_STOP_REQUESTED=1
   printf '\n  %s%s%s\n' "$BOLD$WHITE" \
-    "the loop stops at the end of the current iteration; press Ctrl-C again to stop it at once" \
+    "active calls can finish; the loop stops at the end of the current iteration; press Ctrl-C again to stop it at once" \
     "$OFF" >&2
   kill -USR1 "$pid" 2>/dev/null || kill -INT "$pid" 2>/dev/null || true
 }
