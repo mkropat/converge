@@ -212,7 +212,6 @@ fi
 LOG_DIR="$STATE_DIR/logs"
 # The panel keeps its own event log, so that its lines and a running
 # converge loop's lines never overwrite one another (RP-RUN-4).
-RUN_LOG="$STATE_DIR/review-panel.log"
 # The temporary directory holds only what a running process needs now: the
 # stream pipe of the merge agent, and the runtime record each reviewer
 # invocation writes about itself. The system removes the directory, so a
@@ -665,7 +664,11 @@ harness_argv() {
 # its transcript. The names carry the panel run id, so that two panel runs
 # and a converge loop never overwrite one another's files (RP-RUN-4).
 
+# The id is needed by the run log path too; resolve it before selecting any
+# per-run log files. The timestamp, PID, and random suffix distinguish
+# overlapping invocations, including calls started in the same second.
 PANEL_ID="panel-$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
+RUN_LOG="$STATE_DIR/review-panel-$PANEL_ID.log"
 RUN_START=$SECONDS
 SEQ=0
 
