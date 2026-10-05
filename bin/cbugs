@@ -366,7 +366,7 @@ for arg in "$@"; do
   esac
 done
 
-if [[ -n ${CONVERGE_RUN_DIR:-} ]]; then
+if [[ ${CONVERGE_RUN_DIR+x} ]]; then
   if ((! HELP_REQUESTED)) && [[ ! -d $CONVERGE_RUN_DIR ]]; then
     echo "cbugs: CONVERGE_RUN_DIR '$CONVERGE_RUN_DIR' names no directory" >&2
     exit 2
