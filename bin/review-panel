@@ -177,7 +177,11 @@ if [[ -z ${XDG_STATE_HOME:-} && -z ${HOME:-} ]]; then
   exit 2
 fi
 OWN_STATE_DIR="${XDG_STATE_HOME:-${HOME:-}/.local/state}/converge/$SLUG"
-if [[ $RUN_DIR == "$STATE_REPO" ]]; then
+if [[ -d $OWN_STATE_DIR ]]; then
+  # Match cbugs: an existing state directory for this run takes precedence
+  # over every ancestor, including the repository root (RP-REL-3, CB-DB-8).
+  STATE_DIR=$OWN_STATE_DIR
+elif [[ $RUN_DIR == "$STATE_REPO" ]]; then
   STATE_DIR=$OWN_STATE_DIR
   WALK_ANCESTORS=0
   STATE_LIMIT=$RUN_DIR
