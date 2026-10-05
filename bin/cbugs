@@ -772,21 +772,28 @@ WRITE_ID=""
 #   The sets are module arrays, so the name arguments pass through eval --
 #   bash 4 parsers must take this file, and namerefs are a bash 4.3 syntax.
 fill_vis() {
-  local setname=$1 flagname=$2 commit=$3 reachable status h
+  local setname=$1 flagname=$2 commit=$3 reachable status h shallow_file
   [[ -n $commit ]] || { eval "$setname=(); $flagname=all"; return 0; }
-  # CB-VIS-6: in a shallow repository the walk cannot prove that a commit
-  # stays beyond the boundary: the clone holds no ancestor, and absent
-  # ancestry must not by itself hide a revision. Every revision stays
-  # visible.
-  if [[ $(git -C "$REPO" rev-parse --is-shallow-repository 2>/dev/null || echo false) == true ]]; then
-    eval "$setname=(); $flagname=all"
-    return 0
-  fi
+  # A shallow repository can still contain complete history for the commit
+  # being examined, even when another branch has a shallow boundary. Only a
+  # boundary encountered by this walk makes non-reachability undecidable.
   reachable=$(git -C "$REPO" rev-list "$commit" 2>/dev/null)
   status=$?
   if ((status != 0)) || [[ -z $reachable ]]; then
     eval "$setname=(); $flagname=all"
     return 0
+  fi
+  if [[ $(git -C "$REPO" rev-parse --is-shallow-repository 2>/dev/null || echo false) == true ]]; then
+    shallow_file=$(git -C "$REPO" rev-parse --git-path shallow 2>/dev/null || true)
+    [[ $shallow_file == /* ]] || shallow_file="$REPO/$shallow_file"
+    if [[ -r $shallow_file ]]; then
+      while IFS= read -r h; do
+        if [[ -n $h && $'\n'$reachable$'\n' == *$'\n'"$h"$'\n'* ]]; then
+          eval "$setname=(); $flagname=all"
+          return 0
+        fi
+      done < "$shallow_file"
+    fi
   fi
   local -a hashes=()
   while IFS= read -r h; do
