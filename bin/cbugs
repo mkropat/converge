@@ -675,7 +675,7 @@ SQL
 
 # init_db   Prepares the database before the command answers the call. It
 # creates the database on first use, migrates a version 2, 3, 4, 5, 6, or 7
-# database one step at a time -- one transaction per step -- and stops
+# database in one transaction -- one transaction for the complete path -- and stops
 # with an error when the version is one that this command does not know.
 #
 # The migration steps run under a lock of their own (CB-MIG-5), not only
@@ -695,6 +695,13 @@ init_db() {
   fi
   ver=$(sqlite3_run raw "PRAGMA user_version;") || exit 1
   [[ $ver == "$DB_VERSION" ]] && return
+  case $ver in
+    2|3|4|5|6|7) ;;
+    *)
+      echo "cbugs: $DB is database version $ver, but this command knows version $DB_VERSION and migrates only versions 2, 3, 4, 5, 6, and 7" >&2
+      exit 1
+      ;;
+  esac
   exec 9>"$STATE_DIR/cbugs.db.migrate.lock" || exit 1
   # CB-CONC-5: wait for the lock only up to a bounded time, the same bound
   # as the sqlite busy timeout below, and then fail instead of blocking
@@ -704,21 +711,27 @@ init_db() {
     exit 1
   fi
   ver=$(sqlite3_run raw "PRAGMA user_version;") || exit 1
-  while [[ $ver != "$DB_VERSION" ]]; do
-      case $ver in
-        2) sqlite3_run raw "$MIGRATE_V2_3_SQL" >/dev/null ;;
-        3) sqlite3_run raw "$MIGRATE_V3_4_SQL" >/dev/null ;;
-        4) sqlite3_run raw "$MIGRATE_V4_5_SQL" >/dev/null ;;
-        5) sqlite3_run raw "$MIGRATE_V5_6_SQL" >/dev/null ;;
-        6) sqlite3_run raw "$MIGRATE_V6_7_SQL" >/dev/null ;;
-        7) sqlite3_run raw "$MIGRATE_V7_8_SQL" >/dev/null ;;
-        *)
-          echo "cbugs: $DB is database version $ver, but this command knows version $DB_VERSION and migrates only versions 2, 3, 4, 5, 6, and 7" >&2
-          exit 1
-          ;;
+  local migration_sql='BEGIN IMMEDIATE;' step
+  while ((ver < DB_VERSION)); do
+    case $ver in
+      2) step=$MIGRATE_V2_3_SQL ;;
+      3) step=$MIGRATE_V3_4_SQL ;;
+      4) step=$MIGRATE_V4_5_SQL ;;
+      5) step=$MIGRATE_V5_6_SQL ;;
+      6) step=$MIGRATE_V6_7_SQL ;;
+      7) step=$MIGRATE_V7_8_SQL ;;
+      *)
+        echo "cbugs: $DB is database version $ver, but this command knows version $DB_VERSION and migrates only versions 2, 3, 4, 5, 6, and 7" >&2
+        exit 1
+        ;;
     esac
-    ver=$(sqlite3_run raw "PRAGMA user_version;") || exit 1
+    step=${step#*$'\n'}
+    step=${step%$'\nCOMMIT;'*}
+    migration_sql+=$'\n'"$step"
+    ((ver += 1))
   done
+  migration_sql+=$'\nCOMMIT;'
+  sqlite3_run raw "$migration_sql" >/dev/null || exit 1
   flock -u 9
   exec 9>&-
 }
@@ -1413,6 +1426,19 @@ verb_status_change() {
   ((title_set)) && title_is_one_line "$verb" "$TITLE_OVERRIDE"
   local id; id=$(parse_id "$id_arg") || exit $?
   require_bug "$id"
+  if [[ $verb == reopen ]]; then
+    local current_status
+    current_status=$(sqlite3_run raw "$(vis_prelude head)
+SELECT CASE WHEN c.id IS NOT NULL THEN c.status ELSE s.status END
+FROM bug b
+LEFT JOIN revision c ON c.id = (SELECT MAX(r2.id) FROM revision r2 WHERE r2.bug_id = b.id AND ($(vis_pred head r2)))
+LEFT JOIN revision s ON s.id = (SELECT MAX(r3.id) FROM revision r3 WHERE r3.bug_id = b.id)
+WHERE b.id = $id;") || exit 1
+    case $current_status in
+      closed|wontfix) ;;
+      *) echo "cbugs reopen: bug #$id is $current_status; reopen requires closed or wontfix" >&2; exit 2 ;;
+    esac
+  fi
   note=$(resolve_note "$verb" "$note_set" "$note") || exit $?
   provenance "$commit" "$commit_set"
   write_revision "$id" "'$status'" "$note"

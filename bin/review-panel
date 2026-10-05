@@ -235,7 +235,7 @@ need_tool() {
     exit 2
   fi
 }
-for pair in jq:jq timeout:coreutils setsid:util-linux; do
+for pair in jq:jq timeout:coreutils setsid:util-linux flock:util-linux tail:coreutils; do
   need_tool "${pair%%:*}" "${pair##*:}"
 done
 # The BSD tools of the same names accept none of the options the panel uses,
@@ -248,6 +248,16 @@ fi
 if ! setsid --version >/dev/null 2>&1; then
   echo "review-panel: this 'setsid' is not GNU setsid" >&2
   echo "review-panel: on macOS, run 'brew install util-linux'" >&2
+  exit 2
+fi
+if ! flock --version >/dev/null 2>&1; then
+  echo "review-panel: this 'flock' is not GNU flock" >&2
+  echo "review-panel: on macOS, run 'brew install util-linux'" >&2
+  exit 2
+fi
+if ! tail --version >/dev/null 2>&1; then
+  echo "review-panel: this 'tail' is not GNU tail" >&2
+  echo "review-panel: on macOS, run 'brew install coreutils'" >&2
   exit 2
 fi
 
@@ -1265,7 +1275,12 @@ AGENT_PIDS=()
 
 kill_agents() {
   local pid
-  for pid in ${AGENT_PIDS[@]+"${AGENT_PIDS[@]}"}; do
+  # Include live background jobs as well as registered agent PIDs. Bash may
+  # run a signal trap between launching a child and appending $! above.
+  local -a owned_pids=()
+  owned_pids+=("${AGENT_PIDS[@]}")
+  while IFS= read -r pid; do owned_pids+=("$pid"); done < <(jobs -pr)
+  for pid in "${owned_pids[@]}"; do
     kill -0 "$pid" 2>/dev/null || continue
     # The setsid child leads its own process group, so one signal reaches
     # its timeout and every agent under it. The plain kill is the fallback
@@ -1511,6 +1526,12 @@ ARGV=(bash -c 'end="$1"; shift; setsid "$@" & child=$!; trap "kill -TERM -$child
   note "reviewer $index/$count start: profile=$profile stem=$stem log=$LOG"
   print_start_line "$G_REVIEW" "reviewer $index/$count" "$profile" "$LOG"
 
+  # Setup above can take long enough for the operator to request a stop.
+  if ((STOP_REQUESTED || HARD_STOP)); then
+    unset 'RUN_REVIEWS[index - 1]' 'INV_STARTS[index - 1]'
+    return 0
+  fi
+
   # The writer (the harness) opens the pipe for writing, and tee holds the
   # read end, so the two ends connect without a race. The pipe name carries
   # the panel run id and the invocation stem, so concurrent agents of this
@@ -1524,6 +1545,12 @@ ARGV=(bash -c 'end="$1"; shift; setsid "$@" & child=$!; trap "kill -TERM -$child
     fifo_ok=1
     ( trap '' INT TERM; tee -a "$LOG" <"$fifo" | format_stream "$BLUE" "$LOG" ) &
     FORMATTERS[$((index - 1))]=$!
+    if ((STOP_REQUESTED || HARD_STOP)); then
+      kill "${FORMATTERS[$((index - 1))]}" 2>/dev/null || true
+      rm -f "$fifo"
+      unset 'RUN_REVIEWS[index - 1]' 'INV_STARTS[index - 1]'
+      return 0
+    fi
     (
       trap '' INT
       exec setsid env \
@@ -1546,6 +1573,10 @@ ARGV=(bash -c 'end="$1"; shift; setsid "$@" & child=$!; trap "kill -TERM -$child
     FORMATTERS[$((index - 1))]=0
     warn "cannot create the stream pipe for reviewer $index/$count; it runs without a live transcript"
     fallback_stream="$RUNTIME_DIR/$stem.stream"
+    if ((STOP_REQUESTED || HARD_STOP)); then
+      unset 'RUN_REVIEWS[index - 1]' 'INV_STARTS[index - 1]'
+      return 0
+    fi
     (
       trap '' INT
       exec setsid env \
@@ -1593,6 +1624,8 @@ run_merge_agent() {
   note "merge start: profile=$profile log=$LOG_FILE"
   print_start_line "$G_COACH" "merge" "$profile" "$LOG_FILE"
 
+  ((STOP_REQUESTED || HARD_STOP)) && { MERGE_STATUS=$SIGNAL_STATUS; return 0; }
+
   # The message stream goes through a pipe to two readers: the log file
   # keeps every message, and the terminal shows the work as it happens,
   # the way converge renders one invocation. Another panel may run at the
@@ -1607,6 +1640,12 @@ run_merge_agent() {
     ( trap '' INT TERM; tee -a "$LOG_FILE" <"$fifo" \
       | format_stream "$MAGENTA" "$LOG_FILE" ) &
     FORMATTER=$!
+    if ((STOP_REQUESTED || HARD_STOP)); then
+      kill "$FORMATTER" 2>/dev/null || true
+      rm -f "$fifo"
+      MERGE_STATUS=$SIGNAL_STATUS
+      return 0
+    fi
     # The agent writes its message stream into the pipe, the way converge
     # does; the tee reads it. The stdin of the agent stays the panel's.
     (
@@ -1630,6 +1669,7 @@ run_merge_agent() {
     FORMATTER=0
     warn "cannot create the stream pipe; the merge agent runs without a live transcript"
     fallback_stream="$RUNTIME_DIR/$MERGE_STEM.stream"
+    if ((STOP_REQUESTED || HARD_STOP)); then MERGE_STATUS=$SIGNAL_STATUS; return 0; fi
     (
       trap '' INT
       exec setsid env \
@@ -1936,7 +1976,7 @@ elif ((FINDINGS_COLLECT_FAILED)); then
   heading "$MAGENTA" "merge duplicates" "$(date '+%H:%M:%S')"
   note "merge phase: the findings read failed before the merge, so the merge agent collects the bugs of this panel run itself"
   run_merge_agent "$(merge_prompt "" 1)" "$MERGE_PROFILE"
-  MERGE_RAN=1
+  ((STOP_REQUESTED || HARD_STOP)) || MERGE_RAN=1
   MERGE_FAILED=1
   ((MERGE_STATUS == 0)) && MERGE_FAILED=0
 elif ((NEW_COUNT == 0)); then
@@ -1945,7 +1985,7 @@ else
   heading "$MAGENTA" "merge duplicates" "$(date '+%H:%M:%S')"
   note "merge phase: $(plural "$NEW_COUNT" "new bug") to reconcile"
   run_merge_agent "$(merge_prompt "$NEW_LINES")" "$MERGE_PROFILE"
-  MERGE_RAN=1
+  ((STOP_REQUESTED || HARD_STOP)) || MERGE_RAN=1
   MERGE_FAILED=1
   ((MERGE_STATUS == 0)) && MERGE_FAILED=0
 fi
