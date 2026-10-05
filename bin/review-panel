@@ -1354,6 +1354,55 @@ record_invocation_cost() {
   note "cost recorded: role=$role profile=$profile cost=${cost_record:-absent}"
 }
 
+# print_cost_summary   Reports this panel session and cumulative ledger costs
+# on every graceful panel exit (CV-COST-6 through CV-COST-8).
+print_cost_summary() {
+  local kind key sn sv cn cv i
+  local -A role_n=() role_v=() cum_n=() cum_v=()
+  local -a profiles=() ps=() pv=() pc=() p_cv=() labels=() left=() right=()
+  local total_sn=0 total_sv=0 total_cn=0 total_cv=0 lw=0 sw=7 cw=10
+  [[ -n $COST_LEDGER ]] || return 0
+  while IFS=$'\t' read -r kind key sn sv cn cv; do
+    case $kind in
+      ROLE) role_n[$key]=$sn; role_v[$key]=$sv; cum_n[$key]=$cn; cum_v[$key]=$cv ;;
+      PROF) profiles+=("$key"); ps+=("$sn"); pv+=("$sv"); pc+=("$cn"); p_cv+=("$cv") ;;
+      TOTAL) total_sn=$sn; total_sv=$sv; total_cn=$cn; total_cv=$cv ;;
+    esac
+  done < <(awk -F '\t' -v SESSION="$COST_SESSION" '
+    { if (NF > 4 || (NF != 4 && $0 !~ "\t$")) next
+      c=$4; if (c !~ /^-?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$/) c=""
+      r=$2; p=$3
+      if ($1 == SESSION) { if (!(p in seen)) { pk[++np]=p; seen[p]=1 }
+        if (c != "") { srn[r]++; srp[r]+=c; spn[p]++; spp[p]+=c; stn++; stp+=c } }
+      if (c != "") { crn[r]++; crp[r]+=c; cpn[p]++; cpp[p]+=c; ctn++; ctp+=c }
+    }
+    END { OFS="\t"; split("worker reviewer coach", roles, " ")
+      for (i=1;i<=3;i++) { r=roles[i]; print "ROLE",r,srn[r]+0,(srn[r]?sprintf("%.6f",srp[r]/srn[r]):"0"),crn[r]+0,(crn[r]?sprintf("%.6f",crp[r]/crn[r]):"0") }
+      for (i=1;i<=np;i++) { p=pk[i]; print "PROF",p,spn[p]+0,sprintf("%.6f",spp[p]+0),cpn[p]+0,sprintf("%.6f",cpp[p]+0) }
+      print "TOTAL","total",stn+0,sprintf("%.6f",stp+0),ctn+0,sprintf("%.6f",ctp+0)
+    }' "$COST_LEDGER" 2>/dev/null)
+  cost_cell() { (($1 > 0)) && fmt_usd "$2" || printf '—'; }
+  labels+=("Total spend"); left+=("$(cost_cell "$total_sn" "$total_sv")"); right+=("$(cost_cell "$total_cn" "$total_cv")")
+  for key in worker reviewer coach; do
+    labels+=("Average per $key invocation")
+    left+=("$(cost_cell "${role_n[$key]:-0}" "${role_v[$key]:-0}")")
+    right+=("$(cost_cell "${cum_n[$key]:-0}" "${cum_v[$key]:-0}")")
+  done
+  for ((i=0;i<${#profiles[@]};i++)); do
+    labels+=("${profiles[i]}"); left+=("$(cost_cell "${ps[i]}" "${pv[i]}")"); right+=("$(cost_cell "${pc[i]}" "${p_cv[i]}")")
+  done
+  for ((i=0;i<${#labels[@]};i++)); do
+    ((${#labels[i]}>lw)) && lw=${#labels[i]}; ((${#left[i]}>sw)) && sw=${#left[i]}; ((${#right[i]}>cw)) && cw=${#right[i]}
+  done
+  info "cost summary (USD)"
+  printf '  %-*s %*s %*s\n' "$lw" "" "$sw" session "$cw" cumulative
+  note "cost summary columns: label / session / cumulative"
+  for ((i=0;i<${#labels[@]};i++)); do
+    printf '  %-*s %s%s%s %s%s%s\n' "$lw" "${labels[i]}" "$DIM" "$(printf '%*s' "$sw" "${left[i]}")" "$OFF" "$DIM" "$(printf '%*s' "$cw" "${right[i]}")" "$OFF"
+    note "cost summary: ${labels[i]}: ${left[i]} / ${right[i]}"
+  done
+}
+
 # ---------------------------------------------------------------- agent pass
 #
 # Each agent invocation gets one transcript file, one prompt file, and one
@@ -2034,6 +2083,8 @@ elif ((COMPLETE == 0)); then
     fi
   fi
 fi
+
+print_cost_summary
 
 if ((COMPLETE)); then
   if ((RETAINED_CODE > 0)); then
