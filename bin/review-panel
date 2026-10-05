@@ -1284,6 +1284,13 @@ STOP_REQUESTED=0
 HARD_STOP=0
 SIGNAL_STATUS=130
 AGENT_PIDS=()
+# A graceful stop may arrive between the final launch check and registering
+# the child in AGENT_PIDS. Defer traps only across that small launch window,
+# then deliver the pending stop before any subsequent invocation can start.
+LAUNCH_CRITICAL=0
+PENDING_INT=0
+PENDING_USR1=0
+PENDING_TERM=0
 
 kill_agents() {
   local pid
@@ -1303,6 +1310,10 @@ kill_agents() {
 }
 
 on_int() {
+  if ((LAUNCH_CRITICAL)); then
+    ((PENDING_INT == 0)) && PENDING_INT=1 || PENDING_INT=2
+    return
+  fi
   if ((STOP_REQUESTED == 0)); then
     STOP_REQUESTED=1
     warn "stop requested; the running agents finish, and no further invocation starts; press Ctrl-C again to stop at once"
@@ -1313,12 +1324,20 @@ on_int() {
   kill_agents
 }
 on_usr1() {
+  if ((LAUNCH_CRITICAL)); then
+    PENDING_USR1=1
+    return
+  fi
   if ((STOP_REQUESTED == 0)); then
     STOP_REQUESTED=1
     warn "parent stop requested; the running agents finish, and no further invocation starts"
   fi
 }
 on_term() {
+  if ((LAUNCH_CRITICAL)); then
+    PENDING_TERM=1
+    return
+  fi
   if ((HARD_STOP == 0)); then
     HARD_STOP=1
     SIGNAL_STATUS=143
@@ -1330,6 +1349,24 @@ on_term() {
 trap on_int INT
 trap on_usr1 USR1
 trap on_term TERM
+
+finish_launch_critical() {
+  LAUNCH_CRITICAL=0
+  if ((PENDING_TERM)); then
+    PENDING_TERM=0
+    on_term
+  elif ((PENDING_INT == 2)); then
+    PENDING_INT=0
+    STOP_REQUESTED=1
+    on_int
+  elif ((PENDING_INT == 1)); then
+    PENDING_INT=0
+    on_int
+  elif ((PENDING_USR1)); then
+    PENDING_USR1=0
+    on_usr1
+  fi
+}
 
 # ------------------------------------------------------------------ coverage
 #
@@ -1563,6 +1600,7 @@ ARGV=(bash -c 'end="$1"; shift; setsid "$@" & child=$!; trap "kill -TERM -$child
       unset 'RUN_REVIEWS[index - 1]' 'INV_STARTS[index - 1]'
       return 0
     fi
+    LAUNCH_CRITICAL=1
     (
       trap '' INT
       exec setsid env \
@@ -1581,6 +1619,7 @@ ARGV=(bash -c 'end="$1"; shift; setsid "$@" & child=$!; trap "kill -TERM -$child
         timeout --foreground -k 10 "$TIMEOUT" "${ARGV[@]}"
     ) >"$fifo" 2>>"$LOG_DIR/$stem.err" </dev/null &
     AGENT_PIDS+=("$!")
+    finish_launch_critical
   else
     FORMATTERS[$((index - 1))]=0
     warn "cannot create the stream pipe for reviewer $index/$count; it runs without a live transcript"
@@ -1589,6 +1628,7 @@ ARGV=(bash -c 'end="$1"; shift; setsid "$@" & child=$!; trap "kill -TERM -$child
       unset 'RUN_REVIEWS[index - 1]' 'INV_STARTS[index - 1]'
       return 0
     fi
+    LAUNCH_CRITICAL=1
     (
       trap '' INT
       exec setsid env \
@@ -1607,6 +1647,7 @@ ARGV=(bash -c 'end="$1"; shift; setsid "$@" & child=$!; trap "kill -TERM -$child
         timeout --foreground -k 10 "$TIMEOUT" "${ARGV[@]}"
     ) >"$fallback_stream" 2>>"$LOG_DIR/$stem.err" </dev/null &
     AGENT_PIDS+=("$!")
+    finish_launch_critical
     FALLBACK_STREAMS[$((index - 1))]=$fallback_stream
   fi
   STREAM_LABEL=""
@@ -1660,6 +1701,7 @@ run_merge_agent() {
     fi
     # The agent writes its message stream into the pipe, the way converge
     # does; the tee reads it. The stdin of the agent stays the panel's.
+    LAUNCH_CRITICAL=1
     (
       trap '' INT
       exec setsid env \
@@ -1677,11 +1719,15 @@ run_merge_agent() {
         PATH="$AGENT_PATH" \
         timeout --foreground -k 10 "$TIMEOUT" "${ARGV[@]}"
     ) >"$fifo" 2>>"$LOG_DIR/$MERGE_STEM.err" &
+    MERGE_PID=$!
+    AGENT_PIDS+=("$MERGE_PID")
+    finish_launch_critical
   else
     FORMATTER=0
     warn "cannot create the stream pipe; the merge agent runs without a live transcript"
     fallback_stream="$RUNTIME_DIR/$MERGE_STEM.stream"
     if ((STOP_REQUESTED || HARD_STOP)); then MERGE_STATUS=$SIGNAL_STATUS; return 0; fi
+    LAUNCH_CRITICAL=1
     (
       trap '' INT
       exec setsid env \
@@ -1699,9 +1745,10 @@ run_merge_agent() {
         PATH="$AGENT_PATH" \
         timeout --foreground -k 10 "$TIMEOUT" "${ARGV[@]}"
     ) </dev/null >"$fallback_stream" 2>>"$LOG_DIR/$MERGE_STEM.err" &
+    MERGE_PID=$!
+    AGENT_PIDS+=("$MERGE_PID")
+    finish_launch_critical
   fi
-  MERGE_PID=$!
-  AGENT_PIDS+=("$MERGE_PID")
 
   wait_child "$MERGE_PID"
   MERGE_STATUS=$?
