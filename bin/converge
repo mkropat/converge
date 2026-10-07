@@ -1515,7 +1515,12 @@ run_agent() {
       # the bugs of this run directory even after an agent changes its own
       # working directory, and never the bugs of another run directory that
       # it moved into.
-      export CONVERGE_ROLE="$role" CONVERGE_ITERATION="$ITERATION"
+      export CONVERGE_ROLE="$role"
+      if [[ $role == discovery ]]; then
+        unset CONVERGE_ITERATION
+      else
+        export CONVERGE_ITERATION="$ITERATION"
+      fi
       export CONVERGE_RUN_DIR="$RUN_DIR"
       export PATH="$BIN_DIR:$PATH"
       trap '' INT
@@ -2236,13 +2241,13 @@ EOF
 
   if ((${#SCOPE[@]} == 0)) && [[ -n $LOOKUP_TEXT ]]; then
     printf '\nResolved requirements lookup instructions for this session:\n\n%s\n' "$LOOKUP_TEXT"
-    printf '\nRead current source content on this invocation.\n'
-    printf 'If a required source is unavailable, report the lookup failure.\n'
-    printf 'Do not choose a replacement source.\n'
-    printf 'Do not implement against incomplete requirements.\n'
-    printf 'Do not vote for convergence.\n'
-    printf 'Cite the original local path or source URI in each bug.\n'
   fi
+  printf '\nRead current source content on this invocation.\n'
+  printf 'If a required source is unavailable, report the lookup failure.\n'
+  printf 'Do not choose a replacement source.\n'
+  printf 'Do not implement against incomplete requirements.\n'
+  printf 'Do not vote for convergence.\n'
+  printf 'Cite the original local path or source URI in each bug.\n'
 
   if [[ -s $GUIDANCE ]]; then
     printf '\nGuidance from the coach. Earlier iterations made these mistakes.\nApply this guidance:\n\n'
@@ -2336,11 +2341,11 @@ the command refuses one from you anyway.
 EOF
   if ((${#SCOPE[@]} == 0)) && [[ -n $LOOKUP_TEXT ]]; then
     printf '\nResolved requirements lookup instructions for this session:\n\n%s\n' "$LOOKUP_TEXT"
-    printf '\nRead current source content on this invocation.\n'
-    printf 'If a required source is unavailable, report an incomplete review.\n'
-    printf 'Do not choose a replacement source.\n'
-    printf 'Cite the original local path or source URI for each code bug.\n'
   fi
+  printf '\nRead current source content on this invocation.\n'
+  printf 'If a required source is unavailable, report an incomplete review.\n'
+  printf 'Do not choose a replacement source.\n'
+  printf 'Cite the original local path or source URI for each code bug.\n'
 }
 
 # cadence_focus <pending lines> <pending count>   Prints the text that names

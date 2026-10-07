@@ -841,11 +841,11 @@ a task (the command refuses it from an agent), or create a commit.
 EOF
   if ((${#SCOPE[@]} == 0)) && [[ -n $LOOKUP_TEXT ]]; then
     printf '\nResolved requirements lookup instructions for this panel run:\n\n%s\n' "$LOOKUP_TEXT"
-    printf '\nRead current source content during this review.\n'
-    printf 'If a required source is unavailable, report an incomplete review.\n'
-    printf 'Do not choose a replacement source.\n'
-    printf 'Cite the original local path or source URI for each code bug.\n'
   fi
+  printf '\nRead current source content during this review.\n'
+  printf 'If a required source is unavailable, report an incomplete review.\n'
+  printf 'Do not choose a replacement source.\n'
+  printf 'Cite the original local path or source URI for each code bug.\n'
 }
 
 merge_prompt() {
@@ -2114,7 +2114,8 @@ if (("${#SCOPE[@]}" == 0)); then
     DISCOVERY_STATUS=2
     printf 'status=failed\nphase=parent lookup validation\n' >"$LOOKUP_RESULT"
     bad "the parent did not provide its required requirements lookup instructions"
-  elif [[ -n ${CONVERGE_REQUIREMENTS_LOOKUP_FILE+x} ]]; then
+  elif [[ ${CONVERGE_REQUIREMENTS_LOOKUP_REQUIRED:-} == 1 ]] &&
+    [[ -n ${CONVERGE_REQUIREMENTS_LOOKUP_FILE+x} ]]; then
     parent_lookup=$CONVERGE_REQUIREMENTS_LOOKUP_FILE
     if [[ -f $parent_lookup && ! -L $parent_lookup && -r $parent_lookup && -s $parent_lookup ]] &&
       grep -q '[^[:space:]]' "$parent_lookup" &&

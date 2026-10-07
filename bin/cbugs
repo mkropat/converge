@@ -42,7 +42,7 @@ EOF
 usage_add() {
   cat >&2 <<'EOF'
 Usage: cbugs add --kind code|spec|task --title <text> [--note <text>]
-                  [--cite <path>[:<id>]]... [--commit <id>] [--json]
+                  [--cite <path>[:<id>]|<uri>]... [--commit <id>] [--json]
 
 Creates one bug with the status "open" and prints its id.
 
@@ -58,7 +58,7 @@ EOF
 usage_note() {
   cat >&2 <<'EOF'
 Usage: cbugs note <id> [<text>] [--note <text>] [--title <text>]
-                   [--cite <path>[:<id>]]... [--commit <id>] [--json]
+                   [--cite <path>[:<id>]|<uri>]... [--commit <id>] [--json]
 
 Writes a revision that keeps the status. Valid on a bug in any status.
 
@@ -72,7 +72,7 @@ usage_status_verb() {
   local verb=$1 status=$2
   cat >&2 <<EOF
 Usage: cbugs $verb <id> [--note <text>] [--title <text>]
-                    [--cite <path>[:<id>]]... [--commit <id>] [--json]
+                    [--cite <path>[:<id>]|<uri>]... [--commit <id>] [--json]
 
 Writes a revision with the status "$status".
 
