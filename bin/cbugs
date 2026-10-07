@@ -180,10 +180,13 @@ usage_reviewed_pending() {
 Usage: cbugs reviewed pending [--json]
 
 Prints the unreviewed commits, the newest first: one line for each commit,
-with the full hash and the subject. A commit is relevant when it changes one
-or more paths in the run directory; the command reads it as relevant when the
-repository HEAD reaches it and no row of the reviewed table names it. A call
-from the root of the repository makes every reachable commit relevant.
+with the full hash and the subject. Review history excludes commits reachable
+from local main and locally stored origin/main, except when the current branch
+is local main or neither base has a common ancestor with HEAD. A commit is
+relevant when it changes one or more paths in the run directory. The command
+keeps only the 1,000 newest relevant commits in the selected review history,
+then removes commits that the reviewed table names. A call from the root of
+the repository makes every commit in that history relevant.
 
 Prints nothing and exits with the status 0 when no commit is unreviewed, and
 when the repository holds no relevant commit.
@@ -1762,16 +1765,18 @@ print(json.dumps(result, ensure_ascii=False))
 # count_pending <json>   One shared reader for both forms: prints one line
 # per unreviewed commit -- "<hash>\t<subject>" -- or nothing, and exits 0,
 # when no commit is unreviewed and the considered history holds no relevant
-# commit (CB-RVW-8). A relevant commit changes one or more paths in the run
-# directory, and every commit that the repository HEAD reaches is relevant
-# when the run directory is the root of the repository. The considered
-# history holds the 1,000 newest relevant commits, and not the older ones,
-# whatever rows exist for them (CB-RVW-8). The command reads the repository
-# at the time of the call: git rev-list walks HEAD now, and the rows of the
-# reviewed table are the names that no pass recorded yet.
+# commit (CB-RVW-20 through CB-RVW-24). The selected review history excludes
+# commits reachable from local main and locally stored origin/main, except
+# when HEAD is local main or neither base has a common ancestor with HEAD.
+# A relevant commit changes one or more paths in the run directory. The
+# considered history holds the 1,000 newest relevant commits after branch
+# selection, and not the older ones, whatever rows exist for them. The
+# command reads the repository and local refs at the time of the call.
 count_pending() {
   local -a pending=()
-  local reachable="" row hash subject rel
+  local -a rev_args=() exclude_args=()
+  local reachable="" row hash subject rel current_branch base_ref merge_base
+  local has_common=0 ref_status
   # A newly initialized repository has a symbolic HEAD but no commit to
   # walk. It has no relevant commits yet, which is an empty successful result
   # under CB-RVW-8; a broken or unreadable existing history still errors.
@@ -1782,13 +1787,46 @@ count_pending() {
     echo "cbugs: cannot read repository history" >&2
     return 1
   fi
+  # Select the review history before applying the 1,000 relevant-commit
+  # limit. A local main branch reviews its full reachable history. Otherwise
+  # exclude every existing base that shares a common ancestor with HEAD. If
+  # neither base shares one, use the full reachable history as the fallback.
+  current_branch=$(git -C "$REPO" symbolic-ref -q HEAD 2>/dev/null) || current_branch=""
+  if [[ $current_branch != refs/heads/main ]]; then
+    for base_ref in refs/heads/main refs/remotes/origin/main; do
+      if git -C "$REPO" show-ref --verify --quiet "$base_ref"; then
+        if merge_base=$(git -C "$REPO" merge-base HEAD "$base_ref" 2>/dev/null); then
+          has_common=1
+          exclude_args+=("^$base_ref")
+        else
+          ref_status=$?
+          if ((ref_status > 1)); then
+            echo "cbugs: cannot read repository history" >&2
+            return 1
+          fi
+        fi
+      else
+        ref_status=$?
+        if ((ref_status > 1)); then
+          echo "cbugs: cannot read repository references" >&2
+          return 1
+        fi
+      fi
+    done
+    if ((has_common)); then
+      rev_args=(HEAD "${exclude_args[@]}")
+    else
+      rev_args=(HEAD)
+    fi
+  else
+    rev_args=(HEAD)
+  fi
   # The commits of a run directory that sits beside the root are the ones
   # that change a path under it. A commit that touches no such path is not
   # pending, however near the root of the repository it sits. --max-count
-  # cuts the walk at the 1,000 newest relevant commits, older than the
-  # 1,000th relevant commit nothing is considered.
+  # now cuts the selected history at the 1,000 newest relevant commits.
   if [[ $REPO == "$RUN_DIR" ]]; then
-    if ! reachable=$(git -C "$REPO" rev-list --max-count=1000 HEAD 2>"$ERRFILE"); then
+    if ! reachable=$(git -C "$REPO" rev-list --max-count=1000 "${rev_args[@]}" 2>"$ERRFILE"); then
       echo "cbugs: cannot read repository history" >&2
       while IFS= read -r row; do
         [[ -n $row ]] && echo "cbugs: $row" >&2
@@ -1797,7 +1835,7 @@ count_pending() {
     fi
   else
     rel=${RUN_DIR#"$REPO"/}
-    if ! reachable=$(git -C "$REPO" rev-list --full-history --max-count=1000 HEAD -- ":(top,literal)$rel" 2>"$ERRFILE"); then
+    if ! reachable=$(git -C "$REPO" rev-list --full-history --max-count=1000 "${rev_args[@]}" -- ":(top,literal)$rel" 2>"$ERRFILE"); then
       echo "cbugs: cannot read repository history" >&2
       while IFS= read -r row; do
         [[ -n $row ]] && echo "cbugs: $row" >&2
