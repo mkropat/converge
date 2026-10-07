@@ -88,8 +88,12 @@ through `CB-MIG-6` replace it.
 - **Relevant commit**: a commit that git reaches from the repository HEAD and
   that changes one or more paths in the run directory. Every reachable commit
   is relevant when the run directory is the repository root.
-- **Unreviewed commit**: a relevant commit that the table of reviewed commits
-  does not name.
+- **Review history**: the commits selected by the branch and base-reference
+  rules of CB-RVW-20 and CB-RVW-21, before path and count limits.
+- **Considered history**: the 1,000 newest relevant commits in the review
+  history, or all relevant commits when fewer than 1,000 exist.
+- **Unreviewed commit**: a commit in the considered history that the table
+  of reviewed commits does not name.
 - **Human user**: the person who runs the project. An agent is not a human
   user.
 - **Caller**: the loop, an agent, or the operator that runs the command.
@@ -495,17 +499,9 @@ sections of `docs/converge-requirements.md` for the loop behavior.
   An operator who runs the command by hand may record commits. The command
   must apply this test to `reviewed add` only: `reviewed pending` changes
   nothing, and every caller may run it.
-- **CB-RVW-8**: `cbugs reviewed pending` must print the unreviewed commits, the
-  newest first. The command must use the run directory to select relevant
-  commits from the history that the repository HEAD reaches. A commit is
-  relevant when it changes one or more paths in the run directory. Every
-  reachable commit is relevant when the run directory is the repository root.
-  The command must consider only the 1,000 newest relevant commits. It must
-  ignore all older commits, whether or not a review record exists for them.
-  This limit applies before the command selects the unreviewed commits. The
-  command must read the repository at the time of the call. When the considered
-  history holds no relevant commit, and when no considered commit is
-  unreviewed, the command must print nothing and exit with the status 0.
+- **CB-RVW-8**: Retired. Selected pending commits from all history reachable
+  from repository `HEAD`. **CB-RVW-20** through **CB-RVW-24** replace this
+  behavior.
 - **CB-RVW-9**: The human form of `reviewed pending` must give one line for
   each commit, with the hash and the subject of the commit. The `--json` form
   must give the same information as JSON.
@@ -551,12 +547,48 @@ sections of `docs/converge-requirements.md` for the loop behavior.
   writes. An unknown profile must be JSON null. `created_at` must be the stored
   timestamp. `reviewed pending` keeps the output of CB-RVW-9; pending commits
   have no review metadata.
-- **CB-RVW-18**: For CB-RVW-8, any review record is sufficient coverage.
+- **CB-RVW-18**: For CB-RVW-24, any review record is sufficient coverage.
   Existing migrated records and manual records with an unknown profile count.
   The command must not require a number of reviews or a particular profile
   before it removes a commit from the pending result.
 
 - **CB-RVW-19**: `reviewed add` must accept optional `--profile <profile>`. It must accept only one profile, not a list or repeated `--profile` options. An omitted option must store SQL NULL, which means unknown. A supplied value must use `harness:model[:effort]`. The harness must be `claude`, `opencode`, or `codex`. Each supplied field must be nonempty and contain no colon, comma, or whitespace. A slash is allowed in a field. The optional effort is native to the selected harness, not a shared scale. Codex effort must receive syntax validation only; only the Codex CLI validates supported values and model compatibility. The command must store the supplied canonical string without substitution of a named profile ID. An invalid profile must fail before any record is written.
+
+- **CB-RVW-20**: Except under CB-RVW-21, `reviewed pending` must select the
+  commits reachable from repository `HEAD` that neither base reference reaches.
+  The base references are local `main` (`refs/heads/main`) and locally stored
+  `origin/main` (`refs/remotes/origin/main`). Each base reference that exists
+  must contribute its exclusions. The command must include commits introduced
+  through merges when they satisfy this rule. An implementation may use any
+  method that produces this set.
+- **CB-RVW-21**: When the current branch is local `main`, the review history
+  must contain all commits reachable from repository `HEAD`. This fallback
+  must also apply when neither base reference has a common ancestor with
+  `HEAD`. A missing base reference must contribute no exclusions. Missing
+  references or absence of a common ancestor must not cause an error. An empty
+  branch selection must not trigger the fallback. A repository with no commit
+  must have an empty review history. A detached `HEAD` must use the same base
+  selection and common-ancestor rules; it is not the local branch `main`.
+- **CB-RVW-22**: The command must select relevant commits from the review
+  history before it applies the count limit. A commit is relevant when it
+  changes one or more paths in the run directory. Every commit in the review
+  history is relevant when the run directory is the repository root. The
+  considered history must contain only the 1,000 newest relevant commits.
+  This limit must apply to branch selection and fallback selection. It must
+  apply before the command removes commits with review records. Older commits
+  must remain outside the considered history, even when they have no review
+  record.
+- **CB-RVW-23**: Each pending query must use the repository state and local
+  reference values at the time of the call. The command must perform no fetch.
+  Branch changes, reference changes, and history changes must affect later
+  queries. The command must not retain a branch boundary from an earlier query
+  or session. A failure to read existing repository history must remain an
+  error; it must not produce a successful empty result.
+- **CB-RVW-24**: `cbugs reviewed pending` must print the commits in the
+  considered history that have no review record, newest first. Any review
+  record must count as coverage under CB-RVW-18. When no considered commit is
+  unreviewed, the command must print nothing and exit with status `0`. This
+  includes an empty branch selection and a repository with no commit.
 
 ## The summary
 
@@ -861,10 +893,10 @@ These are recorded decisions, not oversights.
 - **CB-OOS-25** — **A removal of a reviewed commit**: rejected. A commit that
   the history drops can come back, as a cherry-pick brings one back, and the
   row does no harm while the commit is away. The count of the unreviewed
-  commits reads only relevant commits from the history that the repository
-  HEAD reaches.
+  commits reads only commits in the considered history selected under
+  CB-RVW-20 through CB-RVW-24.
 - **CB-OOS-26** — **A separate review pass table or finding record**: rejected.
-  Review history records commit coverage, including the profile and completion
+  Review records hold commit coverage, including the profile and completion
   time. It holds no findings. Coverage records may exist even when a pass finds
   no defect. The logs of the loop record the pass itself.
 - **CB-OOS-27** — **A revision that gives only what changed**: rejected. Each

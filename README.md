@@ -70,11 +70,26 @@ children immediately. Ctrl-C returns status `130`. SIGTERM returns `143`.
 ### Review, coaching, and completion
 
 By default, cadence reviews run when at least five unreviewed commits affect
-the run directory. The pending count covers the 1,000 newest relevant commits
-reachable from `HEAD`, including commits from before the session. A review can
-run before the first worker. Successful reviews record coverage in `cbugs`, so
-restarting does not discard it. A new commit hash after a rebase or amendment
-needs new coverage.
+the run directory. The requirements define the following commit selection.
+This selection is not yet implemented.
+
+On a feature branch, review history contains commits
+reachable from `HEAD` that neither local `main` nor locally stored
+`origin/main` reaches. This includes commits introduced through merges.
+Pending queries use current local references and perform no fetch.
+
+On local `main`, review history contains all commits reachable from `HEAD`.
+The same fallback applies when neither base reference has a common ancestor
+with `HEAD`. Missing base references cause no error. An empty feature-branch
+selection does not trigger the fallback.
+
+Both selections consider only the 1,000 newest commits that affect the run
+directory. The limit applies before commits with review records are removed.
+Commits from before the session can qualify. A review can run before the first
+worker. Successful reviews record coverage in `cbugs`, so restarting does not
+discard it. A new commit hash after a rebase or amendment needs new coverage.
+The first cadence review uses the same commit boundary as later reviews.
+Vote panels continue to review the whole live working tree.
 
 The coach runs after five worker iterations, then every ten iterations. Failed
 and timed-out workers count toward this schedule. A failed coach call also

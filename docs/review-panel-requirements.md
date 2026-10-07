@@ -113,7 +113,7 @@ An identifier must not change its meaning. Removed requirements leave their iden
 
 ## Review coverage
 
-- **RP-COV-1**: At startup, the controller must capture the commits pending review for the run directory under the existing cbugs coverage rules.
+- **RP-COV-1**: At startup, the controller must capture the commits pending review for the run directory under `docs/cbugs-requirements.md:CB-RVW-20` through `CB-RVW-24`.
 - **RP-COV-2**: After a complete review and merge phase, the controller must record coverage for the captured commits through the existing cbugs review-record mechanism. Agents must not record coverage themselves.
 - **RP-COV-3**: Coverage records must identify the successful reviewer profiles under the cbugs profile-record rules. The merge profile must not count as a reviewer. Coverage must not imply that defects were absent.
 - **RP-COV-4**: The controller must record only commits captured at startup. It must record them even if HEAD changed during the run. Commits added after startup must not receive coverage from this run.

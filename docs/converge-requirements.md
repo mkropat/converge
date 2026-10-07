@@ -59,10 +59,12 @@ These are the section codes.
 - **Worker**: one agent instance that the loop starts for one iteration.
 - **Reviewer**: an agent that the loop starts to examine code and to log bugs.
 - **Review pass**: one run of the reviewer.
-- **Cadence pass**: a review pass that the count of unreviewed commits starts. It reads the relevant commits that no review pass has recorded.
+- **Cadence pass**: a review pass that the count of unreviewed commits starts. It reads the unreviewed commits in the considered history.
 - **Vote panel**: one `review-panel` run that starts when the consecutive vote count changes from zero to one. Its reviewers read the whole live working tree in parallel.
 - **Relevant commit**: a commit that git reaches from the repository HEAD and that changes one or more paths in the run directory. When the run directory is the repository root, every reachable commit is relevant.
-- **Unreviewed commit**: a relevant commit that no review pass has recorded in the bug database.
+- **Review history**: the commits selected by the branch and base-reference rules of `docs/cbugs-requirements.md:CB-RVW-20` and `CB-RVW-21`.
+- **Considered history**: the 1,000 newest relevant commits in the review history, or all relevant commits when fewer than 1,000 exist.
+- **Unreviewed commit**: a commit in the considered history that no review pass has recorded in the bug database.
 - **Directory HEAD**: the newest relevant commit. A run directory with no relevant commit has no directory HEAD.
 - **Coach**: an agent that the loop starts on a fixed cadence to review recent worker logs and to write guidance.
 - **Bug tracker**: `bin/cbugs`, which keeps the bugs and the reviewed commits of the run directory in its state directory. See `docs/cbugs-requirements.md`.
@@ -420,6 +422,16 @@ The worker builds. The reviewer reads what the worker built. One agent cannot do
 - **CV-REV-21**: Reviewer duplicate searches must use normal cbugs visibility at
   repository `HEAD`. A hidden historical bug must not prevent the reviewer from
   recording a defect that exists in the current code.
+- **CV-REV-22**: Cadence counts and prompts must use the considered history
+  selected under `docs/cbugs-requirements.md:CB-RVW-20` through `CB-RVW-24`.
+  The prompt must identify this history as the review boundary. This rule must
+  apply to the first pass and every later pass. The first-pass discretion of
+  CV-REV-17 must not extend the review beyond this boundary. The first pass
+  must receive the selected commit list under CV-REV-16. The loop must not
+  count, request review of, or record coverage for commits outside the
+  considered history captured at pass start. CV-REV-15 still governs coverage
+  after a successful pass. Vote panels must continue to review the whole live
+  working tree under CV-CONV-23.
 
 ## Coach
 
