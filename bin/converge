@@ -2345,13 +2345,12 @@ EOF
   printf 'Cite the original local path or source URI for each code bug.\n'
 }
 
-# cadence_focus <pending lines> <pending count>   Prints the text that names
-# what a cadence pass reads. When the bug database holds no record of a
-# commit that cbugs reviewed pending considers, the range is every relevant
-# commit in the considered history, and the reviewer must judge how far back
-# to read (CV-REV-17). Otherwise the range is every unreviewed commit in the
-# considered history (CV-REV-16): the loop lists them, so the reviewer needs
-# no query to learn what it has not read yet.
+# cadence_focus <pending lines> <pending count>   Prints the considered
+# history boundary and the exact commits that cbugs reviewed pending selected.
+# When the bug database holds no record of a commit that cbugs reviewed
+# pending considers, the first pass may judge how far back to read from this
+# list (CV-REV-17). Otherwise the range is every listed unreviewed commit
+# (CV-REV-16). Neither pass may read beyond this boundary (CV-REV-22).
 # The count read gives a bounded wait on a busy database, the same bound the
 # calls through cbugs hold for their writes (CB-CONC-5), and fails this call
 # rather than answering nothing: a failed read carries no information about
@@ -2365,12 +2364,15 @@ cadence_focus() {
       "$STATE_DIR/cbugs.db" 'SELECT COUNT(*) FROM reviewed;' 2>/dev/null) || return 1
   fi
   if ((reviewed_count == 0)); then
-    printf 'every relevant commit in the repository history (first pass: judge
-how far back to read; the most recent commits matter most)'
+    printf 'Review boundary: the considered history selected by cbugs reviewed pending.
+First pass: judge how far back to read from this selected commit list; the most recent commits matter most.
+Selected unreviewed commits (%s, newest first):
+
+%s' "$2" "$1"
     return
   fi
-  printf 'every unreviewed commit: %s relevant
-commits, newest first:
+  printf 'Review boundary: the considered history selected by cbugs reviewed pending.
+Every selected unreviewed commit (%s, newest first):
 
 %s' "$2" "$1"
 }
