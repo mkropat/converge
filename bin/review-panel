@@ -475,20 +475,21 @@ strip_style() {
   sed -E $'s/\x1b\\[[0-9;]*m//g' <<<"$1"
 }
 
-# STREAM_LABEL   The text that names the concurrent invocation that the
-# stream belongs to. It carries this run's id, reviewer position, and full
-# canonical profile. format_stream sets it for its own subshell. gutter
-# prints it before every transcript line and tags the event log with it, so
-# concurrent output stays attributable to its source (RP-OUT-2, RP-RUN-4).
+# STREAM_LABEL   The full text that names the concurrent invocation that
+# the stream belongs to. It carries this run's id, reviewer position, and
+# full canonical profile. format_stream sets it for its own subshell.
+# STREAM_DISPLAY_LABEL carries the shorter terminal label, with the run id,
+# role, and full profile. gutter prints it before every transcript line and
+# tags the event log with the full label (RP-OUT-2, RP-RUN-4).
 # It is empty for the merge stream, which runs alone.
 STREAM_LABEL=""
 STREAM_DISPLAY_LABEL=""
 
 # gutter <color> <marker> <text> <tag>   Prints one transcript line, behind a
 # rule, and writes the same line to the event log as plain text (CV-OUT-11).
-# When STREAM_LABEL is set, the display carries it before the line, and the
-# event log tag carries it, so a reader can tell which invocation wrote the
-# line (RP-OUT-2).
+# When STREAM_LABEL is set, the display carries STREAM_DISPLAY_LABEL before
+# the line, and the event log tag carries STREAM_LABEL, so a reader can tell
+# which invocation wrote the line (RP-OUT-2).
 gutter() {
   local marker=$2 tag=${4:-} text=$3
   if [[ -z $marker && -z $3 ]]; then
@@ -1572,7 +1573,7 @@ EOF
     return 0
   fi
   STREAM_LABEL="panel $PANEL_ID requirements discovery profile $profile invocation $stem"
-  STREAM_DISPLAY_LABEL="discovery $profile"
+  STREAM_DISPLAY_LABEL="panel $PANEL_ID discovery $profile"
   ( trap - INT TERM; tee -a "$DISCOVERY_LOG" <"$fifo" | format_stream "$CYAN" "$DISCOVERY_LOG" ) &
   FORMATTER=$!
   FORMATTERS+=("$FORMATTER")
@@ -1771,7 +1772,7 @@ ARGV=(bash -c 'end="$1"; shift; setsid "$@" & child=$!; trap "kill -TERM -$child
   TRANSCRIPT_ACCENT=$BLUE
   FINAL_DRAWN=0
   STREAM_LABEL="panel $PANEL_ID reviewer $index/$count profile $profile invocation $stem"
-  STREAM_DISPLAY_LABEL="reviewer $index/$count $profile"
+  STREAM_DISPLAY_LABEL="panel $PANEL_ID reviewer $index/$count $profile"
   local fifo="$RUNTIME_DIR/panel-stream-$PANEL_ID-$stem" fifo_ok=0
   rm -f "$fifo"
   if mkfifo "$fifo" 2>/dev/null; then
