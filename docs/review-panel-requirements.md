@@ -20,23 +20,35 @@ An identifier must not change its meaning. Removed requirements leave their iden
 - **New bug**: a bug created by a reviewer in this panel run. A bug from an overlapping run is not a new bug of this run.
 - **Retained new bug**: a new bug that the merge pass does not close as a duplicate. A new duplicate combined into an existing bug is not a retained new bug.
 - **Complete run**: a run in which every configured reviewer and the required merge pass finish successfully, and required result recording succeeds.
-- **Scope**: the requirements files or directories named by the operator. An empty scope lets reviewers find the requirements.
+- **Scope**: the requirements paths named by the operator. With no paths, reviewers use lookup instructions from discovery or the parent session.
+- **Lookup instructions**: the specific instructions to read sources defined in `docs/converge-requirements.md`.
 
 ## Relationship to existing commands
 
 - **RP-REL-1**: `review-panel` must be a separate command at `bin/review-panel`.
-- **RP-REL-2**: The command must use the run directory rules and requirements scope rules of `docs/converge-requirements.md:CV-INV-9` and `CV-SCOPE-1` through `CV-SCOPE-6`.
+- **RP-REL-2**: Retired. Applied scope rules without discovery. **RP-REL-5** replaces this requirement.
 - **RP-REL-3**: The command must share the run directory's existing `cbugs` database with converge. It must use the same database selection and state directory rules. It must not create a separate bug store for the panel.
 - **RP-REL-4**: The command must reuse applicable converge harness, timeout, log, and agent-output conventions. This document takes priority for panel scheduling, concurrent operation, attribution, coverage, summaries, and exit status. Reuse does not require converge's worker loop, coach, voting, background attachment, or single-loop lock.
+- **RP-REL-5**: The command must use the run directory rule in `docs/converge-requirements.md:CV-INV-9`. Explicit scope must follow **CV-SCOPE-1** through **CV-SCOPE-3**, **CV-SCOPE-5**, and **CV-SCOPE-6**. Requirements reads must follow **CV-SCOPE-13** through **CV-SCOPE-15**. Panel discovery must follow **RP-DISC-1** through **RP-DISC-6**.
 
 ## Invocation and scope
 
 - **RP-INV-1**: The command must accept positional requirements file or directory paths. It must resolve them against the run directory. A missing path must cause an error that names the path before any agent starts.
-- **RP-INV-2**: With no scope paths, each reviewer must find requirements documents under the run directory. With scope paths, each reviewer must judge the requirements in those paths. A directory includes requirements documents below it.
+- **RP-INV-2**: Retired. Required each unscoped reviewer to discover requirements. **RP-INV-7** replaces this behavior.
 - **RP-INV-3**: The scope must not restrict review to a diff or commit range. Each reviewer must check the current code relevant to the scope, including uncommitted changes and relevant untracked files.
 - **RP-INV-4**: The command must accept `--timeout <seconds>` with the same validation as converge. The default must be 3600 seconds for each agent invocation, including the merge pass.
 - **RP-INV-5**: Profile selection must use environment variables only. The command must reject unknown options and must not pass them to a harness.
 - **RP-INV-6**: The run directory must be the initial working directory of each agent. Each agent must have access to `cbugs` on PATH. Database selection must remain anchored to the run directory if an agent changes its working directory.
+- **RP-INV-7**: With explicit scope paths, each reviewer must judge the current requirements in those paths. A directory includes requirements documents below it. With no paths, each reviewer prompt must include the same accepted lookup text. It must instruct the reviewer to read current requirements through that text without repeating discovery or selecting replacement sources.
+
+## Requirements discovery
+
+- **RP-DISC-1**: Explicit scope paths must skip discovery. With no paths and no parent lookup instructions, the command must run one discovery invocation before starting reviewers. It must use `docs/converge-requirements.md:CV-DISC-2` through **CV-DISC-7** and **CV-DISC-11**. The output path must be specific to this panel run. Help and operator stops must start no discovery agent.
+- **RP-DISC-2**: A panel started by converge with no scope paths must receive the parent's accepted lookup text. It must use that text without new discovery. Missing or invalid required parent lookup instructions must make the panel incomplete with status `2`. Explicit scope paths must take precedence over a parent lookup block.
+- **RP-DISC-3**: The accepted lookup text must remain fixed for this panel run. A standalone panel must not select sources from an earlier run's lookup file. Requirements content must remain live. The command must not claim that all reviewers read identical content.
+- **RP-DISC-4**: Discovery must use the first worker profile under `CONVERGE_WORKER_PROFILE`, with `claude:sonnet` when unset. The command must validate that list only when it needs discovery. It must not require worker profiles for explicit scope or inherited lookup instructions. It must not require coach profiles.
+- **RP-DISC-5**: After discovery, or acceptance of parent instructions, the command must print the full lookup text and its file path. It must retain the text with this run's records. Merge prompts must not include the lookup block.
+- **RP-DISC-6**: Discovery failures must start no reviewer or merge agent and must record no review coverage. The command must report the failed phase and return status `2`. Operator-stop rules and statuses must take priority. Discovery must follow the normal panel stop and process-ownership rules.
 
 ## Profiles
 
@@ -44,7 +56,7 @@ An identifier must not change its meaning. Removed requirements leave their iden
 - **RP-PROF-2**: An explicitly empty selected variable must be an error, not a request for fallback.
 - **RP-PROF-3**: Retired. Referenced the former two-harness profile rules. **RP-PROF-11** replaces it.
 - **RP-PROF-4**: Retired. Selected the merge agent with `REVIEW_PANEL_MERGE_PROFILE`. **RP-PROF-8** replaces this variable.
-- **RP-PROF-5**: The command must validate the resolved reviewer list and merge profile before it starts any agent. It must not require valid worker or coach profiles. A missing harness must fail its invocation under the converge harness convention.
+- **RP-PROF-5**: Retired. Excluded worker profile validation in all cases. **RP-PROF-12** replaces this requirement.
 - **RP-PROF-6**: The command must resolve profiles once at startup. It must not rotate profiles between runs or store a profile selection for later runs.
 
 - **RP-PROF-7**: `CONVERGE_REVIEW_PANEL_PROFILE` must select an ordered, comma-separated reviewer list. If unset, the command must use `CONVERGE_REVIEWER_PROFILE`. If both are unset, it must use `claude:opus`.
@@ -54,6 +66,7 @@ An identifier must not change its meaning. Removed requirements leave their iden
 - **RP-PROF-10**: Codex reviewer and merge invocations must follow `docs/converge-requirements.md:CV-HARN-19` through `CV-HARN-22`, including CLI-only effort validation, fresh ephemeral sessions, full access, inherited configuration, output normalization, and success determined by process exit status. Panel logs must retain the emitted stream under the existing log conventions. A Codex invocation that reports no dollar cost must follow the existing absent-cost rules.
 
 - **RP-PROF-11**: Profiles must follow the syntax, canonical form, supported harnesses, and effort rules of `docs/converge-requirements.md:CV-HARN-17` and `CV-HARN-18`. Duplicate canonical reviewer profiles must be rejected.
+- **RP-PROF-12**: The command must validate the resolved reviewer list and merge profile before it starts any agent. Worker profile validation must follow **RP-DISC-4**. A missing harness must fail its invocation under the normal harness convention.
 
 ## Reviewer execution
 
@@ -136,6 +149,7 @@ An identifier must not change its meaning. Removed requirements leave their iden
 - **RP-COST-2**: The panel must record each reviewer and merge invocation once in the shared ledger. All writers must use the same lock. Each TSV record must use the existing session, role, canonical profile, and cost fields. Reviewers must use the reviewer cost role. The merge agent must use a distinct merge cost role. The parent must include these records in its totals and must not add a panel total as another cost.
 - **RP-COST-3**: Cost handling must follow `docs/converge-requirements.md:CV-COST-1` through `CV-COST-8`. Unknown cost must not become zero. Failed or timed-out calls must retain available costs. A graceful stop must record available costs from completed calls. A hard stop may omit unfinished calls.
 - **RP-COST-4**: A standalone panel must create its own cost session and absolute ledger path when no parent cost context is supplied. It must reject a partial context or a relative ledger path before it starts agents.
+- **RP-COST-5**: Each started discovery call must record available cost once under the distinct `discovery` role. It must use the panel's cost session and ledger. Cost handling must follow `docs/converge-requirements.md:CV-COST-11`.
 
 ## Out of scope
 

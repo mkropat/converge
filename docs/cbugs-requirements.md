@@ -424,12 +424,8 @@ must meet, and does not search the documents for it. The option is also a
 reminder: a role that must name the requirement thinks about which requirement
 it means.
 
-- **CB-CITE-1**: A citation holds a **path** to a requirements document, and an
-  optional **requirement identifier** inside that document.
-- **CB-CITE-2**: Every verb that writes a revision must accept
-  `--cite <path>[:<id>]`. The colon separates the path from the identifier. The
-  last colon of the value is the separator. With no colon, the citation names the
-  whole document.
+- **CB-CITE-1**: Retired. Limited citations to local documents. **CB-CITE-10** replaces this requirement.
+- **CB-CITE-2**: Retired. Parsed every citation as a local path. **CB-CITE-11** replaces this requirement.
 - **CB-CITE-3**: The option must be repeatable. One revision can cite many
   requirements.
 - **CB-CITE-4**: The command must store the path as the caller wrote it, and
@@ -440,21 +436,20 @@ it means.
   inherits the citations of the previous one, and a revision with no `--cite`
   option retracts nothing. The citations of a bug are the citations of all its
   revisions together.
-- **CB-CITE-7**: The command must stop with an error when the path names no file
-  at the time of the call, and must write nothing. This catches a path that an
-  agent invented. The command must not test the path again later: a document that
-  a later commit renames leaves a citation that a reader can still understand.
-- **CB-CITE-8**: The command must stop with an error when the value gives an
-  empty path, or a colon with an empty identifier after it.
+- **CB-CITE-7**: Retired. Required every citation to name a local file. **CB-CITE-12** replaces this requirement.
+- **CB-CITE-8**: Retired. Defined validation without external references. **CB-CITE-13** replaces this requirement.
 - **CB-CITE-9**: The command must not read the document, and must accept any
   identifier. Documents write their identifiers in different ways, and the
   command holds no policy about them.
+- **CB-CITE-10**: A citation must hold a local document path or an external source URI. A local citation may also hold a requirement identifier. An external URI may include a fragment to identify part of the source.
+- **CB-CITE-11**: Every verb that writes a revision must accept `--cite <path>[:<id>]` and `--cite <uri>`. A value that starts with a URI scheme followed by `://` must be an external reference. A scheme starts with a letter. Its remaining characters are letters, digits, `+`, `-`, or `.`. Other values must use local path syntax. For local citations, the last colon separates the path and identifier. With no colon, the citation names the whole document.
+- **CB-CITE-12**: A local citation must name a regular file at the time of the call. Relative paths must resolve against the run directory. An invalid path must stop the call before any write. The command must not test a saved citation's path again on later reads.
+- **CB-CITE-13**: The command must reject an empty local path or an empty identifier after a local path separator. It must reject an external URI with nothing after `://` or with whitespace. Citation validation failures must write nothing.
+- **CB-CITE-14**: The command must store an external URI unchanged in the citation's existing path field. Its requirement identifier field must be null. It must not split URI colons, ports, or fragments. It must not fetch the source, test remote access, or apply rules for a specific service.
 
 ## Provenance
 
-- **CB-PROV-1**: The loop must export the role and the iteration number into the
-  environment of each agent that it starts. The variables are `CONVERGE_ROLE` and
-  `CONVERGE_ITERATION`.
+- **CB-PROV-1**: Retired. Required an iteration number for every loop agent. **CB-PROV-8** replaces this requirement.
 - **CB-PROV-2**: The command must read the role and the iteration from the
   environment. The caller gives no option for them, and therefore cannot get them
   wrong.
@@ -472,6 +467,7 @@ it means.
   write nothing.
 - **CB-PROV-7**: An explicit `--commit` value must replace `HEAD` for both the
   stored provenance and the visible source revision that **CB-REV-10** uses.
+- **CB-PROV-8**: Each controller must export `CONVERGE_ROLE` for its agents. The loop must supply `CONVERGE_ITERATION` under `docs/converge-requirements.md:CV-ENV-8`. Discovery and panel agents must run with that variable unset.
 
 ## Reviewed commits
 
@@ -610,6 +606,7 @@ next, and the help text does not tell it which bugs are open.
     was already writing.
   - **CB-WRITE-1.4**: `--commit <id>`: the commit, in place of `HEAD`. The command
     resolves and stores it as **CB-PROV-6** gives.
+  - **CB-WRITE-1.5**: `--cite <uri>`: an external requirements source. It must follow **CB-CITE-11** through **CB-CITE-14**.
 - **CB-WRITE-2**: When `--note` is absent, the command must read the note from
   standard input. This lets an agent give a long report with a here-document, and
   it avoids a shell quoting problem.
@@ -771,17 +768,10 @@ next, and the help text does not tell it which bugs are open.
 - **CB-ERR-1**: A command that succeeds must exit with the status 0.
 - **CB-ERR-2**: A command that fails must print a message to standard error that
   names the cause, and must exit with a non-zero status.
-- **CB-ERR-3**: These are failures: a first argument that is neither a verb nor
-  a whole number, an option that does not exist, a value that a field does not
-  accept, a missing required option, an id that names no bug, a citation whose
-  path names no file, a value of `CONVERGE_RUN_DIR` that names no directory,
-  and a creation call that fails or that finds no `converge` command on PATH.
-  `add --kind task` from an agent of the loop is also a failure. A revision write
-  whose explicit `--commit` does not resolve to exactly one repository commit is
-  also a failure. `reviewed add` that names no commit of the repository is also a
-  failure. `reviewed add` from an agent of the loop is also a failure.
+- **CB-ERR-3**: Retired. Defined errors with citation rules for local files. **CB-ERR-5** replaces this requirement.
 - **CB-ERR-4**: The command specifies no further exit statuses. A caller reads
   the message.
+- **CB-ERR-5**: The command must reject an unknown verb, an unknown option, an invalid field value, a missing required option, or an unknown bug id. Invalid citations must follow **CB-CITE-12** and **CB-CITE-13**. `CONVERGE_RUN_DIR` must name a directory. A failed creation call or a missing required `converge` command must be an error. `add --kind task` and `reviewed add` must reject agent callers. An explicit write commit must resolve to exactly one repository commit. `reviewed add` must reject commits outside the repository.
 
 ## Concurrency
 

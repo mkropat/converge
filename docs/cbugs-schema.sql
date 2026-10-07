@@ -85,8 +85,8 @@ CREATE INDEX revision_bug ON revision (bug_id, id);
 -- requirement the revision speaks about: the reader of a bug goes from the
 -- report to the requirement that the code must meet, without a search.
 --
--- `path` is the path of a requirements document, as the caller wrote it. `req`
--- is an identifier inside that document, and is null when the caller cited the
+-- `path` is a local document path or an external source URI, as supplied.
+-- `req` is an identifier inside a local document. It is null for a URI or the
 -- whole document.
 --
 -- A citation is an assertion of one revision, and no other revision inherits
