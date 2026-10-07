@@ -2106,6 +2106,25 @@ for row in "${PANEL_ROWS[@]}"; do
   note "${row%%|*}: ${row#*|}"
 done
 
+# RP-COV-1: capture, at startup, the commits that pending review covers for
+# the run directory, under the existing cbugs coverage rules. A failed read
+# is not an empty backlog: it makes the required coverage recording
+# impossible, and therefore the run incomplete (RP-COV-5).
+pending_capture=""
+if ! pending_capture=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" reviewed pending 2>/dev/null); then
+  warn "cbugs reviewed pending failed at startup; the panel cannot record coverage"
+  note "cbugs reviewed pending failed at startup"
+  PENDING_FAILED=1
+  PENDING_HASHES=()
+  PENDING_COUNT=0
+else
+  PENDING_FAILED=0
+  PENDING_HASHES=()
+  [[ -z $pending_capture ]] || mapfile -t PENDING_HASHES < <(awk 'NF { print $1 }' <<<"$pending_capture")
+  PENDING_COUNT=${#PENDING_HASHES[@]}
+  info "covers $(plural "$PENDING_COUNT" "unreviewed commit") at startup"
+fi
+
 # RP-DISC-2: accept the parent's session instructions or discover them once.
 DISCOVERY_FAILED=0
 DISCOVERY_STATUS=0
@@ -2172,25 +2191,6 @@ if (("${#SCOPE[@]}" == 0)); then
   fi
 fi
 AGENT_PIDS=()
-
-# RP-COV-1: capture, at startup, the commits that pending review covers for
-# the run directory, under the existing cbugs coverage rules. A failed read
-# is not an empty backlog: it makes the required coverage recording
-# impossible, and therefore the run incomplete (RP-COV-5).
-pending_capture=""
-if ! pending_capture=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" reviewed pending 2>/dev/null); then
-  warn "cbugs reviewed pending failed at startup; the panel cannot record coverage"
-  note "cbugs reviewed pending failed at startup"
-  PENDING_FAILED=1
-  PENDING_HASHES=()
-  PENDING_COUNT=0
-else
-  PENDING_FAILED=0
-  PENDING_HASHES=()
-  [[ -z $pending_capture ]] || mapfile -t PENDING_HASHES < <(awk 'NF { print $1 }' <<<"$pending_capture")
-  PENDING_COUNT=${#PENDING_HASHES[@]}
-  info "covers $(plural "$PENDING_COUNT" "unreviewed commit") at startup"
-fi
 
 PANEL_PROMPT=$(reviewer_prompt)
 RUN_REVIEWS=()
