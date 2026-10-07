@@ -482,6 +482,7 @@ strip_style() {
 # concurrent output stays attributable to its source (RP-OUT-2, RP-RUN-4).
 # It is empty for the merge stream, which runs alone.
 STREAM_LABEL=""
+STREAM_DISPLAY_LABEL=""
 
 # gutter <color> <marker> <text> <tag>   Prints one transcript line, behind a
 # rule, and writes the same line to the event log as plain text (CV-OUT-11).
@@ -499,7 +500,7 @@ gutter() {
     [[ -n $tag ]] && tag="$STREAM_LABEL $tag" || tag=$STREAM_LABEL
     printf '  %s%s%s %s%s%s %s%s%s %s%s\n' \
       "$DIM" "$G_GUT" "$OFF" "$1" "$marker" "$OFF" \
-      "$DIM" "$STREAM_LABEL" "$OFF" "$text" "$OFF"
+      "$DIM" "${STREAM_DISPLAY_LABEL:-$STREAM_LABEL}" "$OFF" "$text" "$OFF"
   else
     printf '  %s%s%s %s%s%s %s%s\n' \
       "$DIM" "$G_GUT" "$OFF" "$1" "$marker" "$OFF" "$text" "$OFF"
@@ -1570,7 +1571,8 @@ EOF
     warn "cannot create the stream pipe for requirements discovery"
     return 0
   fi
-  STREAM_LABEL="panel $PANEL_ID requirements discovery profile $profile"
+  STREAM_LABEL="panel $PANEL_ID requirements discovery profile $profile invocation $stem"
+  STREAM_DISPLAY_LABEL="discovery $profile"
   ( trap - INT TERM; tee -a "$DISCOVERY_LOG" <"$fifo" | format_stream "$CYAN" "$DISCOVERY_LOG" ) &
   FORMATTER=$!
   FORMATTERS+=("$FORMATTER")
@@ -1595,6 +1597,7 @@ EOF
   FORMATTERS=()
   FORMATTER=0
   STREAM_LABEL=""
+  STREAM_DISPLAY_LABEL=""
   rm -f "$fifo"
   DISCOVERY_SECONDS=$((SECONDS - started))
   if ((DISCOVERY_STATUS == 124 || DISCOVERY_STATUS == 137)); then
@@ -1767,7 +1770,8 @@ ARGV=(bash -c 'end="$1"; shift; setsid "$@" & child=$!; trap "kill -TERM -$child
   # run and of another never share one pipe (RP-RUN-4).
   TRANSCRIPT_ACCENT=$BLUE
   FINAL_DRAWN=0
-  STREAM_LABEL="panel $PANEL_ID reviewer $index/$count profile $profile"
+  STREAM_LABEL="panel $PANEL_ID reviewer $index/$count profile $profile invocation $stem"
+  STREAM_DISPLAY_LABEL="reviewer $index/$count $profile"
   local fifo="$RUNTIME_DIR/panel-stream-$PANEL_ID-$stem" fifo_ok=0
   rm -f "$fifo"
   if mkfifo "$fifo" 2>/dev/null; then
@@ -1838,6 +1842,7 @@ ARGV=(bash -c 'end="$1"; shift; setsid "$@" & child=$!; trap "kill -TERM -$child
     FALLBACK_STREAMS[$((index - 1))]=$fallback_stream
   fi
   STREAM_LABEL=""
+  STREAM_DISPLAY_LABEL=""
 }
 
 # run_merge_agent <prompt> <profile>
@@ -1850,6 +1855,7 @@ run_merge_agent() {
   TRANSCRIPT_ACCENT=$MAGENTA
   FINAL_DRAWN=0
   STREAM_LABEL=""
+  STREAM_DISPLAY_LABEL=""
   split_profile "$profile"
   local harness=$SPLIT_HARNESS model=$SPLIT_MODEL effort=$SPLIT_EFFORT
   local started=$SECONDS

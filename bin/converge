@@ -2243,10 +2243,7 @@ EOF
     printf '\nResolved requirements lookup instructions for this session:\n\n%s\n' "$LOOKUP_TEXT"
   fi
   printf '\nRead current source content on this invocation.\n'
-  printf 'If a required source is unavailable, report the lookup failure.\n'
-  printf 'Do not choose a replacement source.\n'
-  printf 'Do not implement against incomplete requirements.\n'
-  printf 'Do not vote for convergence.\n'
+  printf 'If a required source is unavailable, report the lookup failure, do not choose a replacement source, do not implement against incomplete requirements, and do not vote for convergence.\n'
   printf 'Cite the original local path or source URI in each bug.\n'
 
   if [[ -s $GUIDANCE ]]; then
