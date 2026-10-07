@@ -691,6 +691,9 @@ chmod 700 "$RUNTIME_DIR" 2>/dev/null || true
 RUN_ID="${CONVERGE_SESSION:-$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM}"
 SESSION_OUT="$SESSION_DIR/$RUN_ID.out"
 SESSION_STATUS="$SESSION_DIR/$RUN_ID.status"
+LOOKUP_FILE="$SESSION_DIR/$RUN_ID.requirements-lookup.txt"
+LOOKUP_RESULT="$SESSION_DIR/$RUN_ID.discovery.result"
+LOOKUP_TEXT=""
 SESSION_PID="$RUNTIME_DIR/$RUN_ID.pid"
 SEQ=0
 CHILD=""
@@ -874,6 +877,31 @@ pick_profile() {
       COACH_PROFILE_IDX=$(( (COACH_PROFILE_IDX + 1) % ${#COACH_PROFILES[@]} ))
       ;;
   esac
+}
+
+# discovery_prompt <output path>   Requests stable source-selection
+# instructions and permits only the supplied output file to change.
+discovery_prompt() {
+  cat <<EOF
+Follow the applicable project instructions to locate the requirements for this repository. If those instructions give no discovery rule, find requirements documents under the run directory. Sources can be local documents or external sources that this harness can read.
+
+Write specific lookup instructions to this file only when you can identify usable sources: $1
+
+The instructions must name the selected sources and explain how to read their current requirements. Resolve choices such as issue identities from branch names. State how to follow linked sources. Resolve every path against the run directory. The output must contain lookup instructions only. Do not write a requirements summary, implementation plan, or instruction to repeat general discovery.
+
+Do not change anything except the supplied output file. Do not edit repository files, requirements, project instructions, or guidance. Do not commit. Do not write bugs. If you cannot identify usable sources, leave the output file absent and explain the failure in your final message.
+EOF
+}
+
+# accept_lookup <path>   Accepts only readable, nonempty lookup instructions.
+accept_lookup() {
+  local path=$1
+  if [[ ! -f $path || -L $path || ! -r $path || ! -s $path ]] ||
+    ! grep -q '[^[:space:]]' "$path"; then
+    return 1
+  fi
+  LOOKUP_TEXT=$(<"$path")
+  [[ -n ${LOOKUP_TEXT//[[:space:]]/} ]]
 }
 
 # note <message>  Records in the run log only.
@@ -1280,9 +1308,17 @@ if UNREVIEWED_START=$(unreviewed_count); then
 else
   UNREVIEWED_SUMMARY="unknown (cbugs reviewed pending failed)"
 fi
+if ((${#SCOPE[@]})); then
+  DISCOVERY_SUMMARY="skipped (explicit scope)"
+elif ((CONSENSUS == 0)) || { [[ -n $MAX_ITERATIONS ]] && ((MAX_ITERATIONS == 0)); }; then
+  DISCOVERY_SUMMARY="skipped (no agent can start)"
+else
+  DISCOVERY_SUMMARY="pending"
+fi
 PANEL_ROWS=(
   "run dir|$(home_relative "$RUN_DIR")"
   "scope|$SCOPE_SUMMARY"
+  "requirements|$DISCOVERY_SUMMARY"
   "run log|$(home_relative "$RUN_LOG")"
 )
 # A daemon session shows its output through the client, from the file named
@@ -1388,12 +1424,17 @@ run_agent() {
   case $role in
     coach) glyph=$G_COACH ;;
     reviewer) glyph=$G_REVIEW ;;
+    discovery) glyph=$G_REVIEW ;;
   esac
   # CV-HARN-14: each role steps through its own list in round-robin order,
   # one entry per started invocation. CV-HARN-15: the invocation line and
   # log both name the full canonical profile, including explicit effort.
-  pick_profile "$role"
-  RUN_PROFILE=$PICKED_PROFILE
+  if [[ $role == discovery ]]; then
+    RUN_PROFILE=${WORKER_PROFILES[0]}
+  else
+    pick_profile "$role"
+    RUN_PROFILE=$PICKED_PROFILE
+  fi
   split_profile "$RUN_PROFILE"
   INVOCATION_HARNESS=$SPLIT_HARNESS
   local model=$SPLIT_MODEL effort=$SPLIT_EFFORT
@@ -2166,7 +2207,7 @@ You may log a defect you find but will not fix in this iteration with
 `cbugs add`. When you do, run `cbugs search` first so you do not log a
 duplicate, then `cbugs add --kind code` (defect in the code) or `--kind spec`
 (ambiguity, gap, or contradiction in the requirements), citing the
-requirement with `--cite <path>[:<id>]`. Never log `--kind task`; an agent
+requirement with `--cite <path>[:<id>]` or `--cite <uri>`. Never log `--kind task`; an agent
 must never log one unless a human user directed it, and the command refuses
 one from you anyway.
 
@@ -2186,12 +2227,22 @@ EOF
     read_line="Read the code and these requirements documents, and work on them only: $(scope_list). A path that is a directory names every requirements document under it. A change that contradicts a requirements document outside this scope is still a spec bug: log it, and do not make the change."
     vote_line="Do not vote while an open code bug or an open task exists. If you judge that the repository satisfies the requirements documents of the scope, no open code bug and no open task remain, and no work remains: do no work, write the exact token CONVERGED on a line of its own in your final message, and stop. The loop counts only that: the token alone on a line, in a final message where you did no work, with no open code bug and no open task remaining. The token inside a sentence never votes."
   else
-    read_line="Read the code and the requirements documents; find them under the run directory. They describe behavior, not implementation steps."
+    read_line="Read the code and use the session's accepted lookup instructions below to read the current requirements. Do not repeat discovery or select replacement sources."
     vote_line="Do not vote while an open code bug or an open task exists. If every requirements document is satisfied, no open code bug and no open task remain, and no work remains: do no work, write the exact token CONVERGED on a line of its own in your final message, and stop. The loop counts only that: the token alone on a line, in a final message where you did no work, with no open code bug and no open task remaining. The token inside a sentence never votes."
   fi
   body=${body/__SCOPE_READ__/$read_line}
   body=${body/__SCOPE_VOTE__/$vote_line}
   printf '%s\n' "$body"
+
+  if ((${#SCOPE[@]} == 0)) && [[ -n $LOOKUP_TEXT ]]; then
+    printf '\nResolved requirements lookup instructions for this session:\n\n%s\n' "$LOOKUP_TEXT"
+    printf '\nRead current source content on this invocation.\n'
+    printf 'If a required source is unavailable, report the lookup failure.\n'
+    printf 'Do not choose a replacement source.\n'
+    printf 'Do not implement against incomplete requirements.\n'
+    printf 'Do not vote for convergence.\n'
+    printf 'Cite the original local path or source URI in each bug.\n'
+  fi
 
   if [[ -s $GUIDANCE ]]; then
     printf '\nGuidance from the coach. Earlier iterations made these mistakes.\nApply this guidance:\n\n'
@@ -2247,7 +2298,7 @@ reviewer_prompt() {
   if ((${#SCOPE[@]})); then
     scope_line=" Judge them against these requirements documents only, and no other: $(scope_list). A path that is a directory names every requirements document under it. A change that contradicts a requirements document outside this scope is still a spec bug, not a code bug."
   else
-    scope_line=" Find the requirements documents under the run directory."
+    scope_line=" Use the session's accepted lookup instructions below to read current requirements. Do not repeat discovery or select replacement sources."
   fi
   cat <<EOF
 You are the reviewer for an autonomous loop that converges a repository on
@@ -2266,14 +2317,14 @@ review.
    open bug already names.
 3. For each defect in the code (behavior that contradicts a requirement, an
    unhandled case, or a regression), log
-   \`cbugs add --kind code --title <text>\` with \`--cite <path>[:<id>]\`
+   \`cbugs add --kind code --title <text>\` with \`--cite <path>[:<id>]\` or \`--cite <uri>\`
    naming the requirement the code violates. If you cannot name the
    requirement, you have found no code defect; consider whether you have
    found a spec bug instead.
 4. When the code reveals a requirement that is ambiguous, absent, or in
    conflict with another, log \`cbugs add --kind spec --title <text>\`, cite
    each document and requirement that raised the question with
-   \`--cite <path>[:<id>]\`, and say in the note what you could
+   \`--cite <path>[:<id>]\` or \`--cite <uri>\`, and say in the note what you could
    not decide and why the code raised it.
 5. Log nothing when you find nothing. That is a normal result, and an
    invented defect costs a worker a whole iteration.
@@ -2283,6 +2334,13 @@ requirements documents, write the guidance file, close a bug, or stop the
 loop. Never log \`--kind task\`; only a human user directs that record, and
 the command refuses one from you anyway.
 EOF
+  if ((${#SCOPE[@]} == 0)) && [[ -n $LOOKUP_TEXT ]]; then
+    printf '\nResolved requirements lookup instructions for this session:\n\n%s\n' "$LOOKUP_TEXT"
+    printf '\nRead current source content on this invocation.\n'
+    printf 'If a required source is unavailable, report an incomplete review.\n'
+    printf 'Do not choose a replacement source.\n'
+    printf 'Cite the original local path or source URI for each code bug.\n'
+  fi
 }
 
 # cadence_focus <pending lines> <pending count>   Prints the text that names
@@ -2469,7 +2527,7 @@ run_review_pass() {
       new_bugs='[]'
       for ((i = 0; i < ${#logged_ids[@]}; i++)); do
         new_bugs=$(jq --argjson id "${logged_ids[$i]}" --arg kind "${logged_kinds[$i]}" \
-          --arg title "$(printf '%s' "${logged_titles[$i]}" | base64 -d)" \
+          --arg title "$(jq -nr --arg encoded "${logged_titles[$i]}" '$encoded | @base64d')" \
           '. + [{id: $id, kind: $kind, title: $title}]' \
           <<<"$new_bugs")
       done
@@ -2491,7 +2549,7 @@ run_review_pass() {
   elif ((count > 0)); then
     local id kind_ title
     while IFS=$'\t' read -r id kind_ title_b64; do
-      title=$(printf '%s' "$title_b64" | base64 -d)
+      title=$(jq -nr --arg encoded "$title_b64" '$encoded | @base64d')
       printf '  %s%s%s bug #%s %s%s%s %s\n' \
         "$YELLOW" "$G_WARN" "$OFF" "$id" "$DIM" "$kind_" "$OFF" "$title"
       note "review logged bug #$id ($kind_): $title"
@@ -2568,6 +2626,17 @@ run_vote_panel() {
     export CONVERGE_RUN_DIR="$RUN_DIR"
     export CONVERGE_COLS="$COLS"
     export CONVERGE_REVIEW_PANEL_PROFILE="$(join_list "${PANEL_PROFILES[@]}")"
+    if (("${#SCOPE[@]}" == 0)); then
+      export CONVERGE_REQUIREMENTS_LOOKUP_REQUIRED=1
+      unset CONVERGE_REQUIREMENTS_LOOKUP_FILE
+      if [[ -n $LOOKUP_TEXT && ! -L $LOOKUP_FILE ]] &&
+        { chmod 600 "$LOOKUP_FILE" 2>/dev/null || true; } &&
+        printf '%s\n' "$LOOKUP_TEXT" >"$LOOKUP_FILE" &&
+        [[ -f $LOOKUP_FILE && -r $LOOKUP_FILE && $(<"$LOOKUP_FILE") == "$LOOKUP_TEXT" ]]; then
+        export CONVERGE_REQUIREMENTS_LOOKUP_FILE="$LOOKUP_FILE"
+        chmod 400 "$LOOKUP_FILE" 2>/dev/null || true
+      fi
+    fi
     [[ -z $PANEL_MERGE_PROFILE ]] || \
       export CONVERGE_REVIEW_PANEL_MERGE_PROFILE="$PANEL_MERGE_PROFILE"
     exec setsid "$BIN_DIR/review-panel" --timeout "$TIMEOUT" \
@@ -2655,8 +2724,8 @@ print_cost_summary() {
     }
     END {
       OFS = "\t"
-      split("worker reviewer coach", RL, " ")
-      for (i = 1; i <= 3; i++) {
+      split("worker reviewer coach discovery", RL, " ")
+      for (i = 1; i <= 4; i++) {
         rr = RL[i]
         print "ROLE", rr, srn[rr] + 0, \
           (srn[rr] > 0 ? sprintf("%.6f", srp[rr] / srn[rr]) : "0"), \
@@ -2748,6 +2817,32 @@ stop_due() {
   return 1
 }
 
+DISCOVERY_FAILED=0
+if ((${#SCOPE[@]} == 0 && CONSENSUS > 0)) &&
+  { [[ -z $MAX_ITERATIONS ]] || ((MAX_ITERATIONS > 0)); } &&
+  ((!STOP_REQUESTED)); then
+  rm -f "$LOOKUP_FILE" "$LOOKUP_RESULT"
+  info "requirements discovery"
+  run_agent discovery "$(discovery_prompt "$LOOKUP_FILE")"
+  if ((STOP_REQUESTED)); then
+    printf 'status=stopped\nprofile=%s\nlog=%s\n' "$RUN_PROFILE" "$LOG_FILE" >"$LOOKUP_RESULT"
+  elif ((RUN_STATUS == 0)) && accept_lookup "$LOOKUP_FILE"; then
+    chmod 400 "$LOOKUP_FILE" 2>/dev/null || true
+    printf 'status=accepted\nprofile=%s\nlog=%s\nlookup=%s\n' \
+      "$RUN_PROFILE" "$LOG_FILE" "$LOOKUP_FILE" >"$LOOKUP_RESULT"
+    good "accepted requirements lookup instructions $LOOKUP_FILE"
+    printf '%s\n' "$LOOKUP_TEXT"
+    while IFS= read -r lookup_line; do note "requirements lookup: $lookup_line"; done <<<"$LOOKUP_TEXT"
+  else
+    DISCOVERY_FAILED=1
+    EXIT_STATUS=2
+    printf 'status=failed\nprofile=%s\nlog=%s\nlookup=%s\n' \
+      "$RUN_PROFILE" "$LOG_FILE" "$LOOKUP_FILE" >"$LOOKUP_RESULT"
+    bad "requirements discovery failed; no normal agent will start"
+  fi
+fi
+
+if ((DISCOVERY_FAILED == 0)); then
 while true; do
   # Step 3 (CV-CONV-24): stop on an operator signal otherwise, then run the
   # vote panel if the count changed from zero to one. The panel runs before
@@ -2865,6 +2960,7 @@ while true; do
     handle_invocation_wait "$WORKER_LOG" "$WORKER_HARNESS"
   fi
 done
+fi
 
 TOTAL=$(duration $((SECONDS - RUN_START)))
 if ((EXIT_STATUS == 0)); then
@@ -2874,6 +2970,9 @@ elif ((STOP_REQUESTED)); then
   EXIT_STATUS=130
   CLOSING_TEXT="stopped on the request of the operator after $(plural "$ITERATION" iteration) in $TOTAL"
   banner "$YELLOW" "$E_STOP" "$CLOSING_TEXT"
+elif ((EXIT_STATUS == 2)); then
+  CLOSING_TEXT="stopped because requirements discovery failed after $(plural "$ITERATION" iteration) in $TOTAL"
+  banner "$RED" "$E_STOP" "$CLOSING_TEXT"
 else
   CLOSING_TEXT="stopped after $(plural "$ITERATION" iteration) in $TOTAL, without convergence"
   banner "$YELLOW" "$E_STOP" "$CLOSING_TEXT"

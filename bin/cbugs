@@ -1248,6 +1248,19 @@ CITE_REQS=()
 # add_citation <path[:id]>   Validates one --cite value and records it.
 add_citation() {
   local value=$1 path req="" has_colon=0 test_path i
+  if [[ $value =~ ^[A-Za-z][A-Za-z0-9+.-]*:// ]]; then
+    if [[ $value == *[[:space:]]* || $value == *:// ]]; then
+      echo "cbugs: --cite '$value' must be a URI with no whitespace and content after ://" >&2
+      exit 2
+    fi
+    path=$value
+    for i in ${CITE_PATHS[@]+"${!CITE_PATHS[@]}"}; do
+      [[ ${CITE_PATHS[$i]} == "$path" && -z ${CITE_REQS[$i]} ]] && return 0
+    done
+    CITE_PATHS+=("$path")
+    CITE_REQS+=("")
+    return 0
+  fi
   if [[ $value == *:* ]]; then
     has_colon=1
     path=${value%:*}

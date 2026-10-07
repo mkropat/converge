@@ -683,6 +683,9 @@ harness_argv() {
 # per-run log files. The timestamp, PID, and random suffix distinguish
 # overlapping invocations, including calls started in the same second.
 PANEL_ID="panel-$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
+LOOKUP_FILE="$STATE_DIR/$PANEL_ID.requirements-lookup.txt"
+LOOKUP_RESULT="$STATE_DIR/$PANEL_ID.discovery.result"
+LOOKUP_TEXT=""
 
 # decode_tsv_field <value>   Undo jq @tsv escaping without interpreting
 # ordinary backslashes as printf %b escape sequences.
@@ -796,7 +799,7 @@ reviewer_scope_line() {
   if ((${#SCOPE[@]})); then
     printf 'You judge them against these requirements documents only, and no other: %s. A path that is a directory names every requirements document under it. A change that contradicts a requirements document outside this scope is still a spec bug, not a code bug.' "$(scope_list)"
   else
-    printf 'Find the requirements documents under the run directory.'
+    printf 'Use the accepted lookup instructions below to read current requirements. Do not repeat discovery or select replacement sources.'
   fi
 }
 
@@ -820,14 +823,14 @@ assume another reviewer examined identical content.
    open bug already names.
 3. For each defect in the code (behavior that contradicts a requirement, an
    unhandled case, or a regression), log
-   \`cbugs add --kind code --title <text>\` with \`--cite <path>[:<id>]\`
+   \`cbugs add --kind code --title <text>\` with \`--cite <path>[:<id>]\` or \`--cite <uri>\`
    naming the requirement the code violates. If you cannot name the
    requirement, you have found no code defect; consider whether you have
    found a spec bug instead.
 4. When the code reveals a requirement that is ambiguous, absent, or in
    conflict with another, log \`cbugs add --kind spec --title <text>\`,
    cite each document and requirement that raised the question with
-   \`--cite <path>[:<id>]\`, and say in the note what you could not decide
+   \`--cite <path>[:<id>]\` or \`--cite <uri>\`, and say in the note what you could not decide
    and why the code raised it.
 5. Log nothing when you find nothing. Finding no defect is a normal result,
    and an invented defect costs a worker a whole iteration.
@@ -836,6 +839,13 @@ Rules: file your findings directly with \`cbugs\`, and nothing else. Do not
 fix code, edit requirements or guidance files, close or dismiss a bug, log
 a task (the command refuses it from an agent), or create a commit.
 EOF
+  if ((${#SCOPE[@]} == 0)) && [[ -n $LOOKUP_TEXT ]]; then
+    printf '\nResolved requirements lookup instructions for this panel run:\n\n%s\n' "$LOOKUP_TEXT"
+    printf '\nRead current source content during this review.\n'
+    printf 'If a required source is unavailable, report an incomplete review.\n'
+    printf 'Do not choose a replacement source.\n'
+    printf 'Cite the original local path or source URI for each code bug.\n'
+  fi
 }
 
 merge_prompt() {
@@ -876,7 +886,7 @@ per bug in the form id, kind, status, title.
    created: never dismiss or close a bug that a different run created.
 5. When a duplicate held evidence, note text, or requirement citations
    that the retained bug lacks, write
-   \`cbugs note <retained-id> <text> --cite <path>[:<id>]\`
+   \`cbugs note <retained-id> <text> --cite <path>[:<id>]\` or \`--cite <uri>\`
    on the retained bug, so that the unique part of the duplicate survives
    where readers look.
  6. Before you change a bug, read it again with \`cbugs show <id>\`. Other
@@ -931,7 +941,7 @@ $findings
    created: never dismiss or close a bug that a different run created.
 4. When a duplicate held evidence, note text, or requirement citations
    that the retained bug lacks, write
-   \`cbugs note <retained-id> <text> --cite <path>[:<id>]\`
+   \`cbugs note <retained-id> <text> --cite <path>[:<id>]\` or \`--cite <uri>\`
    on the retained bug, so that the unique part of the duplicate survives
    where readers look.
  5. Before you change a bug, read it again with \`cbugs show <id>\`. Other
@@ -1523,6 +1533,85 @@ record_invocation_cost() {
   note "cost recorded: role=$role profile=$profile cost=${cost_record:-absent}"
 }
 
+# run_discovery <profile> selects requirements once and records the call.
+run_discovery() {
+  local profile=$1 started=$SECONDS stem fifo
+  split_profile "$profile"
+  local harness=$SPLIT_HARNESS model=$SPLIT_MODEL effort=$SPLIT_EFFORT
+  printf -v seq '%04d' $((++SEQ))
+  stem="$PANEL_ID-$seq-discovery"
+  DISCOVERY_LOG="$LOG_DIR/$stem.jsonl"
+  local prompt
+  prompt=$(cat <<EOF
+Follow the applicable project instructions to locate the requirements for this repository. If those instructions give no discovery rule, find requirements documents under the run directory. Sources can be local documents or external sources that this harness can read.
+
+Write specific lookup instructions to this file only when you can identify usable sources: $LOOKUP_FILE
+
+The instructions must name the selected sources and explain how to read their current requirements. Resolve choices such as issue identities from branch names. State how to follow linked sources. Resolve every path against the run directory. The output must contain lookup instructions only. Do not write a requirements summary, implementation plan, or instruction to repeat general discovery.
+
+Do not change anything except the supplied output file. Do not edit repository files, requirements, project instructions, or guidance. Do not commit. Do not write bugs. If you cannot identify usable sources, leave the output file absent and explain the failure in your final message.
+EOF
+)
+  harness_argv "$harness" "$model" "$effort" "$prompt"
+  INVOCATION_HARNESS=$harness
+  invocation_event discovery "$profile" "$harness" "$model" "$effort" "$DISCOVERY_LOG"
+  printf '%s\n' "$prompt" >"$LOG_DIR/$stem.prompt.md"
+  note "discovery start: profile=$profile log=$DISCOVERY_LOG prompt=$LOG_DIR/$stem.prompt.md"
+  print_start_line "$G_REVIEW" "requirements discovery" "$profile" "$DISCOVERY_LOG"
+  if ((STOP_REQUESTED || HARD_STOP)); then
+    DISCOVERY_STATUS=$SIGNAL_STATUS
+    return 0
+  fi
+
+  fifo="$RUNTIME_DIR/panel-stream-$PANEL_ID-$stem"
+  rm -f "$fifo"
+  if ! mkfifo "$fifo" 2>/dev/null; then
+    DISCOVERY_STATUS=1
+    warn "cannot create the stream pipe for requirements discovery"
+    return 0
+  fi
+  STREAM_LABEL="panel $PANEL_ID requirements discovery profile $profile"
+  ( trap - INT TERM; tee -a "$DISCOVERY_LOG" <"$fifo" | format_stream "$CYAN" "$DISCOVERY_LOG" ) &
+  FORMATTER=$!
+  FORMATTERS+=("$FORMATTER")
+  FORMATTER_FIFOS[$FORMATTER]=$fifo
+  LAUNCH_CRITICAL=1
+  (
+    trap '' INT
+    exec setsid env -u CONVERGE_ITERATION -u CONVERGE_SESSION \
+      -u CONVERGE_DAEMON -u CONVERGE_COST_LEDGER \
+      CONVERGE_ROLE=discovery CONVERGE_RUN_DIR="$RUN_DIR" \
+      REVIEW_PANEL_RUN="$PANEL_ID" REVIEW_PANEL_PROFILE="$profile" \
+      REVIEW_PANEL_INVOCATION="$stem" PATH="$AGENT_PATH" \
+      timeout --foreground -k 10 "$TIMEOUT" "${ARGV[@]}"
+  ) >"$fifo" 2>>"$LOG_DIR/$stem.err" </dev/null &
+  DISCOVERY_PID=$!
+  AGENT_PIDS+=("$DISCOVERY_PID")
+  finish_launch_critical
+  DISCOVERY_STATUS=0
+  wait_child "$DISCOVERY_PID" || DISCOVERY_STATUS=$?
+  wait_child "$FORMATTER" 2>/dev/null || true
+  unset 'FORMATTER_FIFOS[$FORMATTER]'
+  FORMATTERS=()
+  FORMATTER=0
+  STREAM_LABEL=""
+  rm -f "$fifo"
+  DISCOVERY_SECONDS=$((SECONDS - started))
+  if ((DISCOVERY_STATUS == 124 || DISCOVERY_STATUS == 137)); then
+    warn "requirements discovery exceeded the ${TIMEOUT}s timeout; killed it"
+    show_stderr "$LOG_DIR/$stem" "requirements discovery ($profile)"
+    printf '{"type":"review_panel_event","event":"timeout","run":"%s","seconds":%s}\n' "$PANEL_ID" "$TIMEOUT" >>"$DISCOVERY_LOG"
+  elif ((DISCOVERY_STATUS != 0)); then
+    warn "requirements discovery exited with status $DISCOVERY_STATUS after $(duration "$DISCOVERY_SECONDS")"
+    show_stderr "$LOG_DIR/$stem" "requirements discovery ($profile)"
+    printf '{"type":"review_panel_event","event":"error","run":"%s","status":%s}\n' "$PANEL_ID" "$DISCOVERY_STATUS" >>"$DISCOVERY_LOG"
+  else
+    good "requirements discovery finished in $(duration "$DISCOVERY_SECONDS")"
+  fi
+  note "discovery end: profile=$profile status=$DISCOVERY_STATUS seconds=$DISCOVERY_SECONDS"
+  record_invocation_cost discovery "$profile" "$DISCOVERY_LOG" || true
+}
+
 # print_cost_summary   Reports this panel session and cumulative ledger costs
 # on every graceful panel exit (CV-COST-6 through CV-COST-8).
 print_cost_summary() {
@@ -1545,14 +1634,14 @@ print_cost_summary() {
         if (c != "") { srn[r]++; srp[r]+=c; spn[p]++; spp[p]+=c; stn++; stp+=c } }
       if (c != "") { crn[r]++; crp[r]+=c; cpn[p]++; cpp[p]+=c; ctn++; ctp+=c }
     }
-    END { OFS="\t"; split("worker reviewer coach", roles, " ")
-      for (i=1;i<=3;i++) { r=roles[i]; print "ROLE",r,srn[r]+0,(srn[r]?sprintf("%.6f",srp[r]/srn[r]):"0"),crn[r]+0,(crn[r]?sprintf("%.6f",crp[r]/crn[r]):"0") }
+    END { OFS="\t"; split("worker reviewer coach discovery", roles, " ")
+      for (i=1;i<=4;i++) { r=roles[i]; print "ROLE",r,srn[r]+0,(srn[r]?sprintf("%.6f",srp[r]/srn[r]):"0"),crn[r]+0,(crn[r]?sprintf("%.6f",crp[r]/crn[r]):"0") }
       for (i=1;i<=np;i++) { p=pk[i]; print "PROF",p,spn[p]+0,(spn[p]?sprintf("%.6f",spp[p]):"0"),cpn[p]+0,(cpn[p]?sprintf("%.6f",cpp[p]):"0") }
       print "TOTAL","total",stn+0,sprintf("%.6f",stp+0),ctn+0,sprintf("%.6f",ctp+0)
     }' "$COST_LEDGER" 2>/dev/null)
   cost_cell() { (($1 > 0)) && fmt_usd "$2" || printf '—'; }
   labels+=("Total spend"); left+=("$(cost_cell "$total_sn" "$total_sv")"); right+=("$(cost_cell "$total_cn" "$total_cv")")
-  for key in worker reviewer coach; do
+  for key in worker reviewer coach discovery; do
     labels+=("Average per $key invocation")
     left+=("$(cost_cell "${role_n[$key]:-0}" "${role_v[$key]:-0}")")
     right+=("$(cost_cell "${cum_n[$key]:-0}" "${cum_v[$key]:-0}")")
@@ -2010,6 +2099,72 @@ for row in "${PANEL_ROWS[@]}"; do
   note "${row%%|*}: ${row#*|}"
 done
 
+# RP-DISC-2: accept the parent's session instructions or discover them once.
+DISCOVERY_FAILED=0
+DISCOVERY_STATUS=0
+COST_RECORD_FAILED=0
+FORMATTERS=()
+FORMATTER_FIFOS=()
+if (("${#SCOPE[@]}" == 0)); then
+  if ((STOP_REQUESTED || HARD_STOP)); then
+    printf 'status=stopped\n' >"$LOOKUP_RESULT"
+  elif [[ ${CONVERGE_REQUIREMENTS_LOOKUP_REQUIRED:-} == 1 ]] &&
+    [[ -z ${CONVERGE_REQUIREMENTS_LOOKUP_FILE+x} ]]; then
+    DISCOVERY_FAILED=1
+    DISCOVERY_STATUS=2
+    printf 'status=failed\nphase=parent lookup validation\n' >"$LOOKUP_RESULT"
+    bad "the parent did not provide its required requirements lookup instructions"
+  elif [[ -n ${CONVERGE_REQUIREMENTS_LOOKUP_FILE+x} ]]; then
+    parent_lookup=$CONVERGE_REQUIREMENTS_LOOKUP_FILE
+    if [[ -f $parent_lookup && ! -L $parent_lookup && -r $parent_lookup && -s $parent_lookup ]] &&
+      grep -q '[^[:space:]]' "$parent_lookup" &&
+      cp "$parent_lookup" "$LOOKUP_FILE" && [[ -s $LOOKUP_FILE ]]; then
+      LOOKUP_TEXT=$(<"$LOOKUP_FILE")
+      chmod 400 "$LOOKUP_FILE" 2>/dev/null || true
+      printf 'status=inherited\nsource=%s\nlookup=%s\n' "$parent_lookup" "$LOOKUP_FILE" >"$LOOKUP_RESULT"
+    else
+      DISCOVERY_FAILED=1
+      DISCOVERY_STATUS=2
+      printf 'status=failed\nphase=parent lookup validation\nsource=%s\n' "$parent_lookup" >"$LOOKUP_RESULT"
+      bad "the parent's requirements lookup instructions are missing or invalid"
+    fi
+  else
+    worker_raw=${CONVERGE_WORKER_PROFILE-claude:sonnet}
+    if [[ -z $worker_raw ]]; then
+      DISCOVERY_FAILED=1
+      DISCOVERY_STATUS=2
+      printf 'status=failed\nphase=worker profile validation\n' >"$LOOKUP_RESULT"
+      bad "CONVERGE_WORKER_PROFILE is set but empty; requirements discovery needs one worker profile"
+    else
+      WORKER_PROFILES=()
+      parse_profile_list worker "$worker_raw" WORKER_PROFILES
+      rm -f "$LOOKUP_FILE"
+      run_discovery "${WORKER_PROFILES[0]}"
+      if ((STOP_REQUESTED || HARD_STOP)); then
+        printf 'status=stopped\nprofile=%s\nlog=%s\n' "${WORKER_PROFILES[0]}" "${DISCOVERY_LOG:-}" >"$LOOKUP_RESULT"
+      elif ((DISCOVERY_STATUS == 0)) && [[ -f $LOOKUP_FILE && ! -L $LOOKUP_FILE && -r $LOOKUP_FILE && -s $LOOKUP_FILE ]] &&
+        grep -q '[^[:space:]]' "$LOOKUP_FILE"; then
+        LOOKUP_TEXT=$(<"$LOOKUP_FILE")
+        chmod 400 "$LOOKUP_FILE" 2>/dev/null || true
+        printf 'status=accepted\nprofile=%s\nlog=%s\nlookup=%s\n' \
+          "${WORKER_PROFILES[0]}" "$DISCOVERY_LOG" "$LOOKUP_FILE" >"$LOOKUP_RESULT"
+      else
+        DISCOVERY_FAILED=1
+        DISCOVERY_STATUS=2
+        printf 'status=failed\nprofile=%s\nlog=%s\nlookup=%s\n' \
+          "${WORKER_PROFILES[0]}" "${DISCOVERY_LOG:-}" "$LOOKUP_FILE" >"$LOOKUP_RESULT"
+        bad "requirements discovery failed; no reviewer or merge agent will start"
+      fi
+    fi
+  fi
+  if ((DISCOVERY_FAILED == 0 && STOP_REQUESTED == 0 && HARD_STOP == 0)) && [[ -n $LOOKUP_TEXT ]]; then
+    good "requirements lookup instructions $LOOKUP_FILE"
+    cat "$LOOKUP_FILE"
+    while IFS= read -r lookup_line; do note "requirements lookup: $lookup_line"; done <"$LOOKUP_FILE"
+  fi
+fi
+AGENT_PIDS=()
+
 # RP-COV-1: capture, at startup, the commits that pending review covers for
 # the run directory, under the existing cbugs coverage rules. A failed read
 # is not an empty backlog: it makes the required coverage recording
@@ -2037,7 +2192,6 @@ FORMATTERS=()
 FORMATTER_FIFOS=()
 FALLBACK_STREAMS=()
 REVIEW_FAILED=0
-COST_RECORD_FAILED=0
 # The finding bookkeeping is defined from the start, so an operator stop
 # that arrives at any point leaves the same honest report.
 FINDINGS_COLLECT_FAILED=0
@@ -2048,14 +2202,20 @@ NEW_COUNT=0
 # One review invocation per configured reviewer profile, started without
 # waiting for another (RP-REV-1). An operator stop that arrives during the
 # launches prevents the invocations that have not started (RP-REV-1).
-for ((i = 0; i < REVIEWER_COUNT; i++)); do
-  ((STOP_REQUESTED || HARD_STOP)) && break
-  run_reviewer $((i + 1)) "$REVIEWER_COUNT" "${REVIEWER_PROFILES[$i]}"
-done
+if ((DISCOVERY_FAILED == 0)); then
+  for ((i = 0; i < REVIEWER_COUNT; i++)); do
+    ((STOP_REQUESTED || HARD_STOP)) && break
+    run_reviewer $((i + 1)) "$REVIEWER_COUNT" "${REVIEWER_PROFILES[$i]}"
+  done
+fi
 RUN_STARTED=${#AGENT_PIDS[@]}
 if ((RUN_STARTED < REVIEWER_COUNT)); then
-  warn "started $(plural "$RUN_STARTED" reviewer) of $REVIEWER_COUNT; the operator stop prevented the rest"
-  note "reviewers not started after the operator stop: $((REVIEWER_COUNT - RUN_STARTED))"
+  if ((STOP_REQUESTED || HARD_STOP)); then
+    warn "started $(plural "$RUN_STARTED" reviewer) of $REVIEWER_COUNT; the operator stop prevented the rest"
+    note "reviewers not started after the operator stop: $((REVIEWER_COUNT - RUN_STARTED))"
+  elif ((DISCOVERY_FAILED)); then
+    note "reviewers not started because requirements discovery failed"
+  fi
 fi
 
 # The controller waits for every started reviewer, one after another, while
@@ -2162,7 +2322,9 @@ fi
 # (RP-MERGE-2): the merge agent collects the bugs of the run itself.
 MERGE_FAILED=0
 MERGE_RAN=0
-if ((STOP_REQUESTED || HARD_STOP)); then
+if ((DISCOVERY_FAILED)); then
+  note "merge skipped: requirements discovery failed"
+elif ((STOP_REQUESTED || HARD_STOP)); then
   warn "operator stop: the merge agent and the coverage recording step do not start"
   note "merge skipped: operator stop"
 elif ((FINDINGS_COLLECT_FAILED)); then
@@ -2228,6 +2390,7 @@ is_number "$RETAINED_SPEC" || RETAINED_SPEC=0
 # (RP-COV-2). A reviewer failure, a merge failure, an operator stop, a
 # failed capture, or a failed read-back prevents it (RP-COV-5).
 coverage_enabled=1
+((DISCOVERY_FAILED)) && coverage_enabled=0
 ((STOP_REQUESTED || HARD_STOP)) && coverage_enabled=0
 ((RUN_STARTED < REVIEWER_COUNT)) && coverage_enabled=0
 ((REVIEW_FAILED)) && coverage_enabled=0
@@ -2269,12 +2432,19 @@ TOTAL=$(duration $((SECONDS - RUN_START)))
 # The failed profiles and phases, for an incomplete run (RP-OUT-6).
 FAILED_ROWS=()
 ((STOP_REQUESTED || HARD_STOP)) && FAILED_ROWS+=("stopped on the request of the operator")
+((DISCOVERY_FAILED)) && FAILED_ROWS+=("requirements discovery: phase failed with status $DISCOVERY_STATUS")
 ((PENDING_FAILED)) && FAILED_ROWS+=("coverage capture: cbugs reviewed pending failed at startup")
 for ((i = 0; i < RUN_STARTED; i++)); do
   status=${REVIEW_STATUSES[$i]}
   [[ $status == 0 ]] || FAILED_ROWS+=("reviewer $((i + 1))/$REVIEWER_COUNT (${REVIEWER_PROFILES[$i]}): exit status $status")
 done
-((RUN_STARTED < REVIEWER_COUNT)) && FAILED_ROWS+=("reviewer: invocations not started: $((REVIEWER_COUNT - RUN_STARTED))")
+if ((RUN_STARTED < REVIEWER_COUNT)); then
+  if ((DISCOVERY_FAILED)); then
+    FAILED_ROWS+=("reviewer: invocations not started because requirements discovery failed")
+  else
+    FAILED_ROWS+=("reviewer: invocations not started: $((REVIEWER_COUNT - RUN_STARTED))")
+  fi
+fi
 ((MERGE_FAILED)) && FAILED_ROWS+=("merge agent: exit status $MERGE_STATUS")
 ((COVERAGE_FAILED)) && FAILED_ROWS+=("coverage recording: cbugs reviewed add failed")
 ((FINDINGS_COLLECT_FAILED)) && \
