@@ -136,6 +136,16 @@ An identifier must not change its meaning. Removed requirements leave their iden
   retrieve it by attribution or id. It must mark the bug as hidden and use the
   title from the revision that created it. It must not present an unreachable
   revision as current.
+- **RP-OUT-11**: Terminal labels for discovery, reviewers, and the merge agent
+  must not contain the panel run ID or invocation ID. They must not include
+  the `panel <run-id>` prefix. Reviewer stream labels must use
+  `reviewer <index>/<count> <full canonical profile>`. Discovery stream labels
+  must use `discovery <full canonical profile>`. The rule applies to progress,
+  tool calls, messages, final output, statistics, and errors. It also applies
+  when panel runs overlap. The command must keep full run and invocation
+  identity in logs and bug records. Displayed log paths and filenames may
+  contain these IDs. This rule takes priority over **RP-OUT-2** and
+  **RP-RUN-4** for terminal labels.
 
 ## Stops
 
