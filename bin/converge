@@ -1616,6 +1616,9 @@ run_agent() {
 # rotation. A failed attempt cannot leave output for the next attempt to use.
 run_discovery_chain() {
   local prompt=$1 profile
+  RUN_PROFILE=${WORKER_PROFILES[0]}
+  LOG_FILE=""
+  RUN_STATUS=130
   for profile in "${WORKER_PROFILES[@]}"; do
     ((STOP_REQUESTED)) && return 0
     rm -f "$LOOKUP_FILE"
@@ -2866,7 +2869,7 @@ if ((${#SCOPE[@]} == 0 && CONSENSUS > 0)) &&
   info "requirements discovery"
   run_discovery_chain "$(discovery_prompt "$LOOKUP_FILE")"
   if ((STOP_REQUESTED)); then
-    printf 'status=stopped\nprofile=%s\nlog=%s\n' "$RUN_PROFILE" "$LOG_FILE" >"$LOOKUP_RESULT"
+    printf 'status=stopped\nprofile=%s\nlog=%s\n' "${RUN_PROFILE:-${WORKER_PROFILES[0]:-}}" "${LOG_FILE:-}" >"$LOOKUP_RESULT"
   elif ((RUN_STATUS == 0)) && accept_lookup "$LOOKUP_FILE"; then
     chmod 400 "$LOOKUP_FILE" 2>/dev/null || true
     printf 'status=accepted\nprofile=%s\nlog=%s\nlookup=%s\n' \
