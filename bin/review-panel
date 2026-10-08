@@ -1611,6 +1611,25 @@ EOF
   record_invocation_cost discovery "$profile" "$DISCOVERY_LOG" || true
 }
 
+# run_discovery_chain <profiles...>
+# Start with the first worker profile. A nonzero exit starts the next entry.
+# A timeout, success, or operator stop ends the chain.
+run_discovery_chain() {
+  local profile
+  for profile in "$@"; do
+    if ((STOP_REQUESTED || HARD_STOP)); then
+      DISCOVERY_STATUS=$SIGNAL_STATUS
+      return 0
+    fi
+    rm -f "$LOOKUP_FILE"
+    DISCOVERY_PROFILE=$profile
+    run_discovery "$profile"
+    if ((DISCOVERY_STATUS == 0 || DISCOVERY_STATUS == 124 || DISCOVERY_STATUS == 137 || STOP_REQUESTED || HARD_STOP)); then
+      return 0
+    fi
+  done
+}
+
 # print_cost_summary   Reports this panel session and cumulative ledger costs
 # on every graceful panel exit (CV-COST-6 through CV-COST-8).
 print_cost_summary() {
@@ -2179,20 +2198,20 @@ if (("${#SCOPE[@]}" == 0)); then
       WORKER_PROFILES=()
       parse_profile_list worker "$worker_raw" WORKER_PROFILES
       rm -f "$LOOKUP_FILE"
-      run_discovery "${WORKER_PROFILES[0]}"
+      run_discovery_chain "${WORKER_PROFILES[@]}"
       if ((STOP_REQUESTED || HARD_STOP)); then
-        printf 'status=stopped\nprofile=%s\nlog=%s\n' "${WORKER_PROFILES[0]}" "${DISCOVERY_LOG:-}" >"$LOOKUP_RESULT"
+        printf 'status=stopped\nprofile=%s\nlog=%s\n' "${DISCOVERY_PROFILE:-${WORKER_PROFILES[0]}}" "${DISCOVERY_LOG:-}" >"$LOOKUP_RESULT"
       elif ((DISCOVERY_STATUS == 0)) && [[ -f $LOOKUP_FILE && ! -L $LOOKUP_FILE && -r $LOOKUP_FILE && -s $LOOKUP_FILE ]] &&
         grep -q '[^[:space:]]' "$LOOKUP_FILE"; then
         LOOKUP_TEXT=$(<"$LOOKUP_FILE")
         chmod 400 "$LOOKUP_FILE" 2>/dev/null || true
         printf 'status=accepted\nprofile=%s\nlog=%s\nlookup=%s\n' \
-          "${WORKER_PROFILES[0]}" "$DISCOVERY_LOG" "$LOOKUP_FILE" >"$LOOKUP_RESULT"
+          "$DISCOVERY_PROFILE" "$DISCOVERY_LOG" "$LOOKUP_FILE" >"$LOOKUP_RESULT"
       else
         DISCOVERY_FAILED=1
         DISCOVERY_STATUS=2
         printf 'status=failed\nprofile=%s\nlog=%s\nlookup=%s\n' \
-          "${WORKER_PROFILES[0]}" "${DISCOVERY_LOG:-}" "$LOOKUP_FILE" >"$LOOKUP_RESULT"
+          "${DISCOVERY_PROFILE:-${WORKER_PROFILES[0]}}" "${DISCOVERY_LOG:-}" "$LOOKUP_FILE" >"$LOOKUP_RESULT"
         bad "requirements discovery failed; no reviewer or merge agent will start"
       fi
     fi

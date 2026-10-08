@@ -66,7 +66,8 @@ Each role -- worker, reviewer, coach -- selects its agents through an
 environment variable: CONVERGE_WORKER_PROFILE, CONVERGE_REVIEWER_PROFILE,
 CONVERGE_COACH_PROFILE. Each holds a comma-separated list of profiles of the
 form harness:model[:effort], where harness is claude, opencode, or codex. The role
-steps through its list in round robin order, one entry per invocation.
+starts each scheduled run at its next profile. A nonzero exit starts the next
+profile at once. A timeout ends the run. Each attempt uses one profile.
 Unset, the worker defaults to claude:sonnet and the reviewer and coach
 default to claude:opus. converge accepts no --harness, --model,
 --coach-model, or --review-model option, and no arguments after --: it
@@ -1199,7 +1200,7 @@ WORKER_PROFILE_IDX=0
 REVIEWER_PROFILE_IDX=0
 COACH_PROFILE_IDX=0
 
-# CV-HARN-16: vote panels resolve profiles through CONVERGE_REVIEW_PANEL_PROFILE,
+# CV-HARN-25: vote panels resolve profiles through CONVERGE_REVIEW_PANEL_PROFILE,
 # then CONVERGE_REVIEWER_PROFILE, then claude:opus. The merge profile comes
 # from CONVERGE_REVIEW_PANEL_MERGE_PROFILE, or the first resolved panel
 # profile when unset. These settings belong to the session (CV-HARN-13), so
@@ -1219,15 +1220,11 @@ resolve_panel_env() {
   fi
   if [[ -n ${CONVERGE_REVIEW_PANEL_MERGE_PROFILE+x} ]]; then
     if [[ -z $CONVERGE_REVIEW_PANEL_MERGE_PROFILE ]]; then
-      echo "converge: CONVERGE_REVIEW_PANEL_MERGE_PROFILE is set but empty; give one profile" >&2
+      echo "converge: CONVERGE_REVIEW_PANEL_MERGE_PROFILE is set but empty; give one or more profiles" >&2
       exit 2
     fi
     parse_profile_list merge "$CONVERGE_REVIEW_PANEL_MERGE_PROFILE" PANEL_MERGE_PROFILES
-    if ((${#PANEL_MERGE_PROFILES[@]} != 1)); then
-      echo "converge: CONVERGE_REVIEW_PANEL_MERGE_PROFILE must name exactly one merge profile, not a list" >&2
-      exit 2
-    fi
-    PANEL_MERGE_PROFILE=${PANEL_MERGE_PROFILES[0]}
+    PANEL_MERGE_PROFILE=$(join_list "${PANEL_MERGE_PROFILES[@]}")
   else
     # Unset: the panel falls back to the first resolved panel profile.
     PANEL_MERGE_PROFILE=""
@@ -1418,7 +1415,7 @@ trap 'on_signal USR1' USR1
 # INVOCATION_HARNESS. INVOCATION_SKIPPED is true when setup prevented it
 # from starting.
 run_agent() {
-  local role=$1 prompt=$2 glyph=$G_WORKER started=$SECONDS seq_text
+  local role=$1 prompt=$2 profile_override=${3:-} glyph=$G_WORKER started=$SECONDS seq_text
   local fifo_failed=0 cost_record
   INVOCATION_SKIPPED=0
   case $role in
@@ -1429,7 +1426,9 @@ run_agent() {
   # CV-HARN-14: each role steps through its own list in round-robin order,
   # one entry per started invocation. CV-HARN-15: the invocation line and
   # log both name the full canonical profile, including explicit effort.
-  if [[ $role == discovery ]]; then
+  if [[ -n $profile_override ]]; then
+    RUN_PROFILE=$profile_override
+  elif [[ $role == discovery ]]; then
     RUN_PROFILE=${WORKER_PROFILES[0]}
   else
     pick_profile "$role"
@@ -1612,6 +1611,49 @@ run_agent() {
   note "$role end: status=$RUN_STATUS seconds=$RUN_SECONDS cost=${cost_record:-absent} bytes=${bytes// } stderr=${err_bytes// }"
 }
 
+# run_discovery_chain <prompt>
+# Discovery starts at the first worker profile and does not advance worker
+# rotation. A failed attempt cannot leave output for the next attempt to use.
+run_discovery_chain() {
+  local prompt=$1 profile
+  for profile in "${WORKER_PROFILES[@]}"; do
+    ((STOP_REQUESTED)) && return 0
+    rm -f "$LOOKUP_FILE"
+    run_agent discovery "$prompt" "$profile"
+    if ((RUN_STATUS == 0 || RUN_STATUS == 124 || RUN_STATUS == 137 || STOP_REQUESTED || INVOCATION_SKIPPED)); then
+      return 0
+    fi
+  done
+}
+
+# run_agent_chain <role> <prompt>
+# Run one scheduled role chain. A nonzero exit starts the next profile at
+# once. A successful attempt, timeout, stop, or skipped launch ends the chain.
+# Sets CHAIN_PRODUCED_OUTPUT when any started attempt emitted model output.
+# Sets CHAIN_LOGS to the logs of all attempts that started.
+run_agent_chain() {
+  local role=$1 prompt=$2 attempts i
+  case $role in
+    worker) attempts=${#WORKER_PROFILES[@]} ;;
+    reviewer) attempts=${#REVIEWER_PROFILES[@]} ;;
+    coach) attempts=${#COACH_PROFILES[@]} ;;
+    *) echo "converge: unknown chain role '$role'" >&2; return 2 ;;
+  esac
+  CHAIN_PRODUCED_OUTPUT=0
+  CHAIN_LOGS=()
+  for ((i = 0; i < attempts; i++)); do
+    ((STOP_REQUESTED)) && return 0
+    run_agent "$role" "$prompt"
+    ((!INVOCATION_SKIPPED)) && CHAIN_LOGS+=("$LOG_FILE")
+    if ((!INVOCATION_SKIPPED)) && produced_output "$LOG_FILE" "$INVOCATION_HARNESS"; then
+      CHAIN_PRODUCED_OUTPUT=1
+    fi
+    if ((INVOCATION_SKIPPED || RUN_STATUS == 0 || RUN_STATUS == 124 || RUN_STATUS == 137 || STOP_REQUESTED)); then
+      return 0
+    fi
+  done
+}
+
 # wait_seconds <seconds>
 # Sleeps in a child process, so that a signal stops the wait immediately.
 wait_seconds() {
@@ -1641,16 +1683,11 @@ produced_output() {
   esac
 }
 
-# handle_invocation_wait <log file> <harness>
-# The wait that "Signals, timeouts, and failures" requires: when an invocation
-# -- a worker, a review pass, or a coach run -- fails before it produces any
-# output, the loop waits before it moves on, doubling the wait with each
-# consecutive fast failure, from 10 seconds up to 15 minutes. This is the
-# signature of an exhausted token quota, and the growing wait keeps the loop
-# alive until the quota period resets. An invocation that produced output,
-# whether it succeeded or failed, resets the wait to zero.
-handle_invocation_wait() {
-  if produced_output "$1" "$2"; then
+# handle_chain_wait <produced-output 0|1>
+# Wait once after a scheduled chain whose every attempt failed before output.
+# Any output from any attempt resets the wait, even when the attempt failed.
+handle_chain_wait() {
+  if (( $1 )); then
     FAIL_WAIT=0
     return 0
   fi
@@ -2487,8 +2524,8 @@ run_review_pass() {
     <<<"$before_revision_lines" 2>/dev/null) || bugs_before_ok=0
   [[ -n $before_revision_ids ]] || before_revision_ids='[]'
 
-  run_agent reviewer "$prompt"
-  ((STOP_REQUESTED)) || handle_invocation_wait "$LOG_FILE" "$INVOCATION_HARNESS"
+  run_agent_chain reviewer "$prompt"
+  ((STOP_REQUESTED)) || handle_chain_wait "$CHAIN_PRODUCED_OUTPUT"
 
   if ((RUN_STATUS == 0)); then
     # CV-REV-20: one completion timestamp for the whole pass, from the
@@ -2827,7 +2864,7 @@ if ((${#SCOPE[@]} == 0 && CONSENSUS > 0)) &&
   ((!STOP_REQUESTED)); then
   rm -f "$LOOKUP_FILE" "$LOOKUP_RESULT"
   info "requirements discovery"
-  run_agent discovery "$(discovery_prompt "$LOOKUP_FILE")"
+  run_discovery_chain "$(discovery_prompt "$LOOKUP_FILE")"
   if ((STOP_REQUESTED)); then
     printf 'status=stopped\nprofile=%s\nlog=%s\n' "$RUN_PROFILE" "$LOG_FILE" >"$LOOKUP_RESULT"
   elif ((RUN_STATUS == 0)) && accept_lookup "$LOOKUP_FILE"; then
@@ -2869,8 +2906,8 @@ while true; do
     # The guarded form, on its own line: inside a double-nested command
     # substitution, the single-quoted printf format derails the parser.
     PENDING_LOGS_TEXT=$(printf '%s\n' ${PENDING_LOGS[@]+"${PENDING_LOGS[@]}"})
-    run_agent coach "$(coach_prompt "$PENDING_LOGS_TEXT")"
-    ((STOP_REQUESTED)) || handle_invocation_wait "$LOG_FILE" "$INVOCATION_HARNESS"
+    run_agent_chain coach "$(coach_prompt "$PENDING_LOGS_TEXT")"
+    ((STOP_REQUESTED)) || handle_chain_wait "$CHAIN_PRODUCED_OUTPUT"
     show_guidance "$GUIDANCE_BEFORE"
     # CV-COACH-10's cadence counts worker iterations, not a backlog: a started
     # coach resets the cadence whether or not the run itself succeeded. A
@@ -2898,26 +2935,20 @@ while true; do
   note "iteration $ITERATION at $(date '+%Y-%m-%d %H:%M:%S')"
 
   HEAD_BEFORE=$(git rev-parse HEAD 2>/dev/null) || HEAD_BEFORE=
-  run_agent worker "$(worker_prompt)"
+  run_agent_chain worker "$(worker_prompt)"
   # The loop must report what a worker committed even when a first SIGINT
   # arrived while it ran: the invocation still finished, and the report is
   # about what it did, not about scheduling more work.
   report_changes "$HEAD_BEFORE"
   if ((!INVOCATION_SKIPPED)); then
-    PENDING_LOGS+=("$LOG_FILE")
+    PENDING_LOGS+=("${CHAIN_LOGS[@]+${CHAIN_LOGS[@]}}")
     ((++SINCE_COACH))
   fi
-  # A review pass below overwrites $LOG_FILE and $INVOCATION_HARNESS with
-  # its own; keep this invocation's so the wait at the end of this iteration
-  # judges it, and not the reviewer's.
-  WORKER_LOG=$LOG_FILE
-  WORKER_HARNESS=$INVOCATION_HARNESS
-
-  if ! produced_output "$LOG_FILE" "$WORKER_HARNESS"; then
+  if ((!CHAIN_PRODUCED_OUTPUT)); then
     # A failure that produced no output at all is the signature of an
     # exhausted quota: the invocation could not even start. A failure that did
     # produce output is a different kind of problem, and does not grow the
-    # wait; handle_invocation_wait below tells the two apart.
+    # wait; the chain result tells the two cases apart.
     CONVERGED_VOTES=0
     if ((RUN_STATUS != 0)); then
       warn "iteration $ITERATION failed; see $LOG_FILE"
@@ -2961,7 +2992,7 @@ while true; do
   if ((STOP_REQUESTED)) || { [[ -n $MAX_ITERATIONS ]] && ((ITERATION >= MAX_ITERATIONS)); }; then
     :
   else
-    handle_invocation_wait "$WORKER_LOG" "$WORKER_HARNESS"
+    handle_chain_wait "$CHAIN_PRODUCED_OUTPUT"
   fi
 done
 fi
