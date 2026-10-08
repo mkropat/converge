@@ -137,17 +137,31 @@ form `harness:model[:effort]`. Supported harnesses are `claude`, `opencode`, and
 
 | Variable | Default | Use |
 | --- | --- | --- |
-| `CONVERGE_WORKER_PROFILE` | `claude:sonnet` | Worker profiles, rotated per invocation. |
-| `CONVERGE_REVIEWER_PROFILE` | `claude:opus` | Cadence reviewer profiles, rotated per invocation; fallback for panels. |
-| `CONVERGE_COACH_PROFILE` | `claude:opus` | Coach profiles, rotated per invocation. |
+| `CONVERGE_WORKER_PROFILE` | `claude:sonnet` | Worker profiles, rotated per run, with fallback. |
+| `CONVERGE_REVIEWER_PROFILE` | `claude:opus` | Cadence reviewer profiles, rotated per run, with fallback; default for panels. |
+| `CONVERGE_COACH_PROFILE` | `claude:opus` | Coach profiles, rotated per run, with fallback. |
 | `CONVERGE_REVIEW_PANEL_PROFILE` | Reviewer profile list | Panel reviewers, all run concurrently once per panel. |
-| `CONVERGE_REVIEW_PANEL_MERGE_PROFILE` | First panel profile | One profile for combining duplicate findings. |
+| `CONVERGE_REVIEW_PANEL_MERGE_PROFILE` | First panel profile | Merge profiles, tried in order until one succeeds. |
 
 For example, to use two different reviewers in each panel:
 
 ```sh
 export CONVERGE_REVIEW_PANEL_PROFILE='claude:opus,claude:sonnet'
 converge docs/requirements.md
+```
+
+Each worker, reviewer, and coach run starts with the next profile in its
+rotation. Discovery starts with the first worker profile. If an attempt exits
+with a nonzero status, the run tries the next profile at once. It stops at the
+first success, or after it has tried every profile once. A timeout does not
+trigger a fallback. The next run of a role starts after the last profile that
+the role tried. Put profiles from more than one subscription in a list to keep
+the loop running when one subscription hits its quota:
+
+```sh
+export CONVERGE_WORKER_PROFILE='claude:sonnet,codex:gpt-5-codex'
+export CONVERGE_REVIEWER_PROFILE='claude:opus,codex:gpt-5-codex:high'
+export CONVERGE_COACH_PROFILE='claude:opus,codex:gpt-5-codex'
 ```
 
 Role rotations restart with each loop session. Panel calls do not advance them.
@@ -183,7 +197,8 @@ findings when there are new findings. It files code and spec bugs in the same
 tracker as `converge`, reports findings, and exits. A complete panel records
 coverage for the commits pending at startup under each reviewer profile. A
 failed reviewer, failed merge, or stopped run prevents this coverage step.
-Panel calls get no retry or fallback profile. The merge still runs after a
+Panel reviewers get no retry or fallback profile. The merge agent tries each
+profile in its list in order until one succeeds. The merge still runs after a
 reviewer failure if findings exist or the controller cannot read the findings.
 An operator stop prevents a merge that has not started.
 

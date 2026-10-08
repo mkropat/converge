@@ -22,6 +22,7 @@ An identifier must not change its meaning. Removed requirements leave their iden
 - **Complete run**: a run in which every configured reviewer and the required merge pass finish successfully, and required result recording succeeds.
 - **Scope**: the requirements paths named by the operator. With no paths, reviewers use lookup instructions from discovery or the parent session.
 - **Lookup instructions**: the specific instructions to read sources defined in `docs/converge-requirements.md`.
+- **Fallback chain**: the attempts that one agent run makes through its profile list, as `docs/converge-requirements.md` defines it.
 
 ## Relationship to existing commands
 
@@ -43,12 +44,13 @@ An identifier must not change its meaning. Removed requirements leave their iden
 
 ## Requirements discovery
 
-- **RP-DISC-1**: Explicit scope paths must skip discovery. With no paths and no parent lookup instructions, the command must run one discovery invocation before starting reviewers. It must use `docs/converge-requirements.md:CV-DISC-2` through **CV-DISC-7** and **CV-DISC-11**. The output path must be specific to this panel run. Help and operator stops must start no discovery agent.
+- **RP-DISC-1**: Explicit scope paths must skip discovery. With no paths and no parent lookup instructions, the command must run one discovery invocation before starting reviewers. It must use `docs/converge-requirements.md:CV-DISC-3` through **CV-DISC-6**, **CV-DISC-11**, **CV-DISC-13**, and **CV-DISC-14**. The output path must be specific to this panel run. Help and operator stops must start no discovery agent.
 - **RP-DISC-2**: A panel started by converge with no scope paths must receive the parent's accepted lookup text. It must use that text without new discovery. Missing or invalid required parent lookup instructions must make the panel incomplete with status `2`. Explicit scope paths must take precedence over a parent lookup block.
 - **RP-DISC-3**: The accepted lookup text must remain fixed for this panel run. A standalone panel must not select sources from an earlier run's lookup file. Requirements content must remain live. The command must not claim that all reviewers read identical content.
-- **RP-DISC-4**: Discovery must use the first worker profile under `CONVERGE_WORKER_PROFILE`, with `claude:sonnet` when unset. The command must validate that list only when it needs discovery. It must not require worker profiles for explicit scope or inherited lookup instructions. It must not require coach profiles.
+- **RP-DISC-4**: Retired. Used the first worker profile with no fallback. **RP-DISC-7** replaces this behavior.
 - **RP-DISC-5**: After discovery, or acceptance of parent instructions, the command must print the full lookup text and its file path. It must retain the text with this run's records. Merge prompts must not include the lookup block.
 - **RP-DISC-6**: Discovery failures must start no reviewer or merge agent and must record no review coverage. The command must report the failed phase and return status `2`. Operator-stop rules and statuses must take priority. Discovery must follow the normal panel stop and process-ownership rules.
+- **RP-DISC-7**: Discovery must run as a fallback chain over the `CONVERGE_WORKER_PROFILE` list, from its first entry, with `claude:sonnet` when unset, under `docs/converge-requirements.md:CV-DISC-13` and **CV-DISC-14**. The command must validate that list only when it needs discovery. It must not require worker profiles for explicit scope or inherited lookup instructions. It must not require coach profiles.
 
 ## Profiles
 
@@ -60,13 +62,14 @@ An identifier must not change its meaning. Removed requirements leave their iden
 - **RP-PROF-6**: The command must resolve profiles once at startup. It must not rotate profiles between runs or store a profile selection for later runs.
 
 - **RP-PROF-7**: `CONVERGE_REVIEW_PANEL_PROFILE` must select an ordered, comma-separated reviewer list. If unset, the command must use `CONVERGE_REVIEWER_PROFILE`. If both are unset, it must use `claude:opus`.
-- **RP-PROF-8**: `CONVERGE_REVIEW_PANEL_MERGE_PROFILE` must select exactly one merge profile. If unset, it must use the first resolved panel profile. An empty or invalid value must be an error.
+- **RP-PROF-8**: Retired. Selected exactly one merge profile. **RP-PROF-13** replaces this behavior.
 - **RP-PROF-9**: The command must reject set `REVIEW_PANEL_PROFILES` and `REVIEW_PANEL_MERGE_PROFILE`, including empty values. The error must name the replacement variable.
 
 - **RP-PROF-10**: Codex reviewer and merge invocations must follow `docs/converge-requirements.md:CV-HARN-19` through `CV-HARN-22`, including CLI-only effort validation, fresh ephemeral sessions, full access, inherited configuration, output normalization, and success determined by process exit status. Panel logs must retain the emitted stream under the existing log conventions. A Codex invocation that reports no dollar cost must follow the existing absent-cost rules.
 
 - **RP-PROF-11**: Profiles must follow the syntax, canonical form, supported harnesses, and effort rules of `docs/converge-requirements.md:CV-HARN-17` and `CV-HARN-18`. Duplicate canonical reviewer profiles must be rejected.
-- **RP-PROF-12**: The command must validate the resolved reviewer list and merge profile before it starts any agent. Worker profile validation must follow **RP-DISC-4**. A missing harness must fail its invocation under the normal harness convention.
+- **RP-PROF-12**: The command must validate the resolved reviewer list and merge profile list before it starts any agent. Worker profile validation must follow **RP-DISC-7**. A missing harness must fail its invocation under the normal harness convention.
+- **RP-PROF-13**: `CONVERGE_REVIEW_PANEL_MERGE_PROFILE` must select an ordered, comma-separated merge profile list. If unset, the command must use the first resolved panel profile alone. An empty value or an invalid entry must be an error. Duplicate canonical merge profiles must be rejected. The merge pass must run as a fallback chain over this list under `docs/converge-requirements.md:CV-HARN-24`. A nonzero exit must start the next entry at once. A timeout must end the chain. The chain ends with the first successful attempt, or after every entry has started once.
 
 ## Reviewer execution
 
@@ -103,11 +106,12 @@ An identifier must not change its meaning. Removed requirements leave their iden
 - **RP-MERGE-4**: The merge agent may update a retained bug, including an existing bug, to preserve unique evidence and requirement citations from a duplicate. It may close only bugs created by this panel run. A duplicate closure must identify the retained bug and explain the duplicate relationship.
 - **RP-MERGE-5**: Combining duplicates must preserve useful details and revision history. The merge agent must not delete bugs, fix code or requirements, create tasks, file unrelated findings, or close a bug as fixed. Combining spec duplicates does not resolve the underlying spec issue.
 - **RP-MERGE-6**: The merge agent must account for current bug state before changing it. Concurrent merging must not leave a duplicate set with no retained bug or with circular duplicate references. It must not discard changes made by other writers.
-- **RP-MERGE-7**: A failed or timed-out merge pass must make the run incomplete. The command must not retry it automatically. It must preserve findings and completed revisions and identify the summary as incomplete.
+- **RP-MERGE-7**: Retired. Forbade an automatic retry of the merge pass. **RP-MERGE-10** replaces this behavior.
 - **RP-MERGE-8**: The merge agent must use cbugs visibility and current state at
   repository `HEAD` when it selects an existing bug as a current duplicate. It
   may inspect hidden bugs as audit history. It must not leave a current finding
   represented only by a bug that remains hidden.
+- **RP-MERGE-10**: A merge chain with no successful attempt, or a timed-out merge attempt, must make the run incomplete. The command must perform no attempt beyond the chain. It must preserve findings and completed revisions and identify the summary as incomplete. A later attempt must account for changes that an earlier attempt made, under **RP-MERGE-6**. Each attempt is one invocation under the log, cost, and output rules.
 - **RP-MERGE-9**: When the merge agent writes a revision, cbugs must copy status
   and title from the newest revision visible at the resolved write commit.
 
@@ -166,3 +170,4 @@ An identifier must not change its meaning. Removed requirements leave their iden
 - **RP-OOS-1**: The command must not run workers, a coach, repair iterations, or a reviewer consensus loop.
 - **RP-OOS-2**: The command must not require a vote from reviewers or require them to agree on findings.
 - **RP-OOS-3**: The command must not replace cbugs with a separate report store or hide findings until all reviewers finish.
+- **RP-OOS-4**: The command must not retry or replace a failed reviewer. **RP-REV-6** holds. The merge chain under **RP-PROF-13** is the only fallback in a panel run. `docs/converge-requirements.md:CV-OOS-35` gives the reason.
