@@ -62,8 +62,9 @@ Profiles come from the environment only:
                                  CONVERGE_REVIEWER_PROFILE. Unset, that
                                  defaults to claude:opus.
   CONVERGE_REVIEW_PANEL_MERGE_PROFILE
-                                 The single merge profile. Unset, the command
-                                 uses the first reviewer profile.
+                                 Ordered, comma-separated merge profiles.
+                                 Unset, the command uses the first reviewer
+                                 profile.
 
 An explicitly empty variable is an error, not a request for the default.
 Duplicate canonical reviewer profiles are rejected. Unknown options are
@@ -609,22 +610,15 @@ resolve_reviewer_env() {
   fi
 }
 
-# resolve_merge_env <fallback>   CV-HARN-16 and RP-PROF-8:
-# CONVERGE_REVIEW_PANEL_MERGE_PROFILE must name exactly one merge profile;
-# unset, the command uses the value given here, which is the first resolved
-# reviewer profile. An empty value is an error, and a value that holds a
-# comma does not name one profile.
+# resolve_merge_env <fallback>   RP-PROF-13: resolve the ordered merge
+# profile list; unset, use the first resolved reviewer profile.
 resolve_merge_env() {
   local fallback=$1
   if [[ -z ${CONVERGE_REVIEW_PANEL_MERGE_PROFILE+x} ]]; then
     MERGE_PROFILE_RAW=$fallback
   else
     if [[ -z $CONVERGE_REVIEW_PANEL_MERGE_PROFILE ]]; then
-      echo "review-panel: CONVERGE_REVIEW_PANEL_MERGE_PROFILE is set but empty; give one profile" >&2
-      exit 2
-    fi
-    if [[ $CONVERGE_REVIEW_PANEL_MERGE_PROFILE == *,* ]]; then
-      echo "review-panel: CONVERGE_REVIEW_PANEL_MERGE_PROFILE must name exactly one merge profile, not a list" >&2
+      echo "review-panel: CONVERGE_REVIEW_PANEL_MERGE_PROFILE is set but empty; give one or more profiles" >&2
       exit 2
     fi
     MERGE_PROFILE_RAW=$CONVERGE_REVIEW_PANEL_MERGE_PROFILE
@@ -1848,7 +1842,7 @@ ARGV=(bash -c 'end="$1"; shift; setsid "$@" & child=$!; trap "kill -TERM -$child
 }
 
 # run_merge_agent <prompt> <profile>
-# Runs the one merge-agent invocation: live transcript on the terminal,
+# Runs one merge-agent invocation: live transcript on the terminal,
 # every message in the log file. The merge stream runs alone, so its lines
 # carry no label and the tag scheme of its notes does not change. Sets
 # MERGE_STATUS and MERGE_SECONDS.
@@ -1981,12 +1975,12 @@ run_merge_agent() {
 
   if ((MERGE_STATUS == 124 || MERGE_STATUS == 137)); then
     warn "merge exceeded the ${TIMEOUT}s timeout; killed it"
-    show_stderr "$LOG_DIR/$MERGE_STEM" "merge ($MERGE_PROFILE)"
+    show_stderr "$LOG_DIR/$MERGE_STEM" "merge ($profile)"
     printf '{"type":"review_panel_event","event":"timeout","run":"%s","seconds":%s}\n' \
       "$PANEL_ID" "$TIMEOUT" >>"$LOG_FILE"
   elif ((MERGE_STATUS != 0)); then
     bad "merge exited with status $MERGE_STATUS after $(duration "$MERGE_SECONDS")"
-    show_stderr "$LOG_DIR/$MERGE_STEM" "merge ($MERGE_PROFILE)"
+    show_stderr "$LOG_DIR/$MERGE_STEM" "merge ($profile)"
     printf '{"type":"review_panel_event","event":"error","run":"%s","status":%s}\n' \
       "$PANEL_ID" "$MERGE_STATUS" >>"$LOG_FILE"
   else
@@ -1996,6 +1990,28 @@ run_merge_agent() {
   # CV-COST-10: the merge records its own line, under the distinct merge
   # cost role.
   record_invocation_cost merge "$profile" "$LOG_FILE" || true
+}
+
+# run_merge_chain <prompt>
+# Try each configured merge profile once. A nonzero exit starts the next
+# attempt at once. A timeout or an operator stop ends the chain.
+run_merge_chain() {
+  local prompt=$1 profile attempt_seconds total_seconds=0
+  MERGE_STATUS=1
+  MERGE_SECONDS=0
+  for profile in "${MERGE_PROFILES[@]}"; do
+    if ((STOP_REQUESTED || HARD_STOP)); then
+      MERGE_STATUS=$SIGNAL_STATUS
+      return 0
+    fi
+    run_merge_agent "$prompt" "$profile"
+    attempt_seconds=$MERGE_SECONDS
+    ((total_seconds += attempt_seconds))
+    MERGE_SECONDS=$total_seconds
+    if ((MERGE_STATUS == 0 || MERGE_STATUS == 124 || MERGE_STATUS == 137 || STOP_REQUESTED || HARD_STOP)); then
+      return 0
+    fi
+  done
 }
 
 # ---------------------------------------------------------------------- main
@@ -2008,14 +2024,10 @@ resolve_reviewer_env
 parse_profile_list reviewer "$REVIEWER_RAW" REVIEWER_PROFILES
 REVIEWER_COUNT=${#REVIEWER_PROFILES[@]}
 resolve_merge_env "${REVIEWER_PROFILES[0]:-}"
-# The merge profile must parse as exactly one profile (CV-HARN-16,
-# RP-PROF-8).
+# The merge profile list must use the normal list syntax and reject
+# duplicate canonical entries (RP-PROF-13).
 parse_profile_list merge "$MERGE_PROFILE_RAW" MERGE_PROFILES
-if ((${#MERGE_PROFILES[@]} != 1)); then
-  echo "review-panel: CONVERGE_REVIEW_PANEL_MERGE_PROFILE must name exactly one merge profile, not a list" >&2
-  exit 2
-fi
-MERGE_PROFILE=${MERGE_PROFILES[0]}
+MERGE_PROFILE=$(join_list "${MERGE_PROFILES[@]}")
 
 # CV-COST-10: the parent loop passes its existing CONVERGE_SESSION and an
 # explicit absolute CONVERGE_COST_LEDGER path. With both present, the
@@ -2339,7 +2351,7 @@ elif ((STOP_REQUESTED || HARD_STOP)); then
 elif ((FINDINGS_COLLECT_FAILED)); then
   heading "$MAGENTA" "merge duplicates" "$(date '+%H:%M:%S')"
   note "merge phase: the findings read failed before the merge, so the merge agent collects the bugs of this panel run itself"
-  run_merge_agent "$(merge_prompt "" 1)" "$MERGE_PROFILE"
+  run_merge_chain "$(merge_prompt "" 1)"
   # A graceful stop lets an active merge finish. Its successful read-back is
   # still the known outcome for this incomplete report.
   MERGE_FAILED=1
@@ -2352,7 +2364,7 @@ elif ((NEW_COUNT == 0)); then
 else
   heading "$MAGENTA" "merge duplicates" "$(date '+%H:%M:%S')"
   note "merge phase: $(plural "$NEW_COUNT" "new bug") to reconcile"
-  run_merge_agent "$(merge_prompt "$NEW_LINES")" "$MERGE_PROFILE"
+  run_merge_chain "$(merge_prompt "$NEW_LINES")"
   # A graceful stop lets an active merge finish. Its successful read-back is
   # still the known outcome for this incomplete report.
   MERGE_FAILED=1
