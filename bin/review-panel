@@ -1612,11 +1612,11 @@ EOF
   DISCOVERY_SECONDS=$((SECONDS - started))
   if ((DISCOVERY_STATUS == 124 || DISCOVERY_STATUS == 137)); then
     warn "discovery $profile exceeded the ${TIMEOUT}s timeout; killed it"
-    show_stderr "$LOG_DIR/$stem" "requirements discovery ($profile)"
+    show_stderr "$LOG_DIR/$stem" "discovery $profile"
     printf '{"type":"review_panel_event","event":"timeout","run":"%s","seconds":%s}\n' "$PANEL_ID" "$TIMEOUT" >>"$DISCOVERY_LOG"
   elif ((DISCOVERY_STATUS != 0)); then
     warn "discovery $profile exited with status $DISCOVERY_STATUS after $(duration "$DISCOVERY_SECONDS")"
-    show_stderr "$LOG_DIR/$stem" "requirements discovery ($profile)"
+    show_stderr "$LOG_DIR/$stem" "discovery $profile"
     printf '{"type":"review_panel_event","event":"error","run":"%s","status":%s}\n' "$PANEL_ID" "$DISCOVERY_STATUS" >>"$DISCOVERY_LOG"
   else
     good "discovery $profile finished in $(duration "$DISCOVERY_SECONDS")"
