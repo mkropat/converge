@@ -1034,6 +1034,12 @@ resolve_note() {
 
 # ------------------------------------------------------------------- output
 
+# human_text <text>   Prints text with terminal control characters and other
+# JSON-special characters escaped, so one title cannot alter the human output.
+human_text() {
+  jq -rn --arg text "$1" '$text | @json | .[1:-1]'
+}
+
 # row_line <id> <kind> <status> <title> [hidden]   One aligned, colored
 # listing line. A fifth argument marks the row with 'hidden': an audit row
 # whose stored values must not read as current at repository HEAD
@@ -1079,6 +1085,7 @@ print_listing() {
   while IFS=$'\t' read -r id kind status title hidden; do
     # Decode jq's @tsv transport escaping before printing the title.
     printf -v title '%b' "$title"
+    title=$(human_text "$title")
     row_line "$id" "$kind" "$status" "$title" "$hidden"
   done < <(jq -r '.[] | [.id, .kind, .status, .title, (.hidden // false)] | @tsv' <<<"$rows")
 }
@@ -1154,6 +1161,7 @@ FROM ($(current_inner_sql all "id = $id"));") || exit 1
   IFS=$'\t' read -r id kind status title < <(jq -r '.[0] | [.id, .kind, .status, .title] | @tsv' <<<"$rows")
   # Decode jq's @tsv transport escaping before printing the title.
   printf -v title '%b' "$title"
+  title=$(human_text "$title")
   row_line "$id" "$kind" "$status" "$title"
 }
 
@@ -1619,6 +1627,7 @@ FROM (
   kind=$(jq -r '.[0].kind' <<<"$bug")
   status=$(jq -r '.[0].status // empty' <<<"$bug")
   title=$(jq -r '.[0].title // empty' <<<"$bug")
+  title=$(human_text "$title")
   hidden=$(jq -r '.[0].hidden' <<<"$bug")
   if [[ $hidden == 1 || $hidden == true ]]; then
     # A hidden bug shows no revision as current at repository HEAD
@@ -1635,6 +1644,7 @@ FROM (
     rid=$(jq -r '.id' <<<"$revision")
     rstatus=$(jq -r '.status' <<<"$revision")
     rtitle=$(jq -r '.title' <<<"$revision")
+    rtitle=$(human_text "$rtitle")
     rrole=$(jq -r '.role // "-"' <<<"$revision")
     riter=$(jq -r '.iteration // "-"' <<<"$revision")
     rcommit=$(jq -r '.commit_id // "-"' <<<"$revision")
@@ -2127,6 +2137,7 @@ WHERE c.id IS NULL;") || exit 1
     while IFS=$'\t' read -r id kind status title hidden; do
       # Decode jq's @tsv transport escaping before printing the title.
       printf -v title '%b' "$title"
+      title=$(human_text "$title")
       row_line "$id" "$kind" "$status" "$title" "$hidden"
     done < <(jq -r '.[] | [.id, .kind, .status, .title, (.hidden // false)] | @tsv' <<<"$rows")
   else
