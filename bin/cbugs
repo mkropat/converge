@@ -516,7 +516,15 @@ sqlite3_run() {
 # sql_quote <text>   Escapes text for embedding inside a single-quoted
 # SQL string literal.
 sql_quote() {
-  printf '%s' "${1//\'/\'\'}"
+  local text=${1//\'/\'\'}
+  # Callers place this output inside SQL quotes with command substitution.
+  # That substitution removes trailing newlines, so encode each one as SQL
+  # concatenation before it reaches the substitution boundary.
+  while [[ $text == *$'\n' ]]; do
+    text=${text%$'\n'}
+    text+="'||char(10)||'"
+  done
+  printf '%s' "$text"
 }
 
 # like_escape <text>   Escapes text for embedding inside a LIKE pattern that
@@ -1345,7 +1353,8 @@ verb_add() {
     exit 1
   fi
 
-  note=$(resolve_note add "$note_set" "$note") || exit $?
+  note=$(resolve_note add "$note_set" "$note" && printf '\001') || exit $?
+  note=${note%$'\001'}
   provenance "$commit" "$commit_set"
 
   # The citation inserts that citation_sql adds below run after the revision
@@ -1441,7 +1450,8 @@ verb_note() {
   ((title_set)) && title_is_one_line note "$TITLE_OVERRIDE"
   local id; id=$(parse_id "$id_arg") || exit $?
   require_bug "$id"
-  note=$(resolve_note note "$note_set" "$note") || exit $?
+  note=$(resolve_note note "$note_set" "$note" && printf '\001') || exit $?
+  note=${note%$'\001'}
   provenance "$commit" "$commit_set"
   write_revision "$id" "r.status" "$note"
   print_bug "$id" "$json"
@@ -1487,7 +1497,8 @@ WHERE b.id = $id;") || exit 1
       *) echo "cbugs reopen: bug #$id has invalid status '$current_status'" >&2; exit 2 ;;
     esac
   fi
-  note=$(resolve_note "$verb" "$note_set" "$note") || exit $?
+  note=$(resolve_note "$verb" "$note_set" "$note" && printf '\001') || exit $?
+  note=${note%$'\001'}
   provenance "$commit" "$commit_set"
   write_revision "$id" "'$status'" "$note"
   print_bug "$id" "$json"
