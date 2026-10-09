@@ -1757,6 +1757,7 @@ run_reviewer() {
   local stem="$PANEL_ID-$seq-reviewer" end_file fallback_stream
   LOG="$LOG_DIR/$stem.jsonl"
   RUN_REVIEWS[$((index - 1))]=$stem
+  REVIEWER_HARNESSES[$((index - 1))]=$harness
   INV_STARTS[$((index - 1))]=$SECONDS
 
   harness_argv "$harness" "$model" "$effort" "$PANEL_PROMPT"
@@ -2254,6 +2255,7 @@ REVIEW_STATUSES=()
 FORMATTERS=()
 FORMATTER_FIFOS=()
 FALLBACK_STREAMS=()
+REVIEWER_HARNESSES=()
 REVIEW_FAILED=0
 # The finding bookkeeping is defined from the start, so an operator stop
 # that arrives at any point leaves the same honest report.
@@ -2308,7 +2310,17 @@ for ((i = 0; i < RUN_STARTED; i++)); do
   fi
   if [[ -n ${FALLBACK_STREAMS[$i]:-} && -f ${FALLBACK_STREAMS[$i]} ]]; then
     cat "${FALLBACK_STREAMS[$i]}" >>"$LOG_DIR/$stem.jsonl"
+    # A fallback stream is formatted after every reviewer has been launched.
+    # Restore this reviewer's harness and attribution before parsing it. The
+    # main shell otherwise holds the last launcher's harness and blank labels,
+    # which can select the wrong normalizer and lose the source label
+    # (RP-OUT-2, RP-OUT-9, RP-PROF-11, CV-HARN-21).
+    INVOCATION_HARNESS=${REVIEWER_HARNESSES[$i]}
+    STREAM_LABEL="panel $PANEL_ID reviewer $((i + 1))/$REVIEWER_COUNT profile $profile invocation $stem"
+    STREAM_DISPLAY_LABEL="reviewer $((i + 1))/$REVIEWER_COUNT $profile"
     format_stream "$BLUE" "$LOG_DIR/$stem.jsonl" <"${FALLBACK_STREAMS[$i]}" >/dev/null
+    STREAM_LABEL=""
+    STREAM_DISPLAY_LABEL=""
     rm -f "${FALLBACK_STREAMS[$i]}"
   fi
   # The invocation recorded its own runtime when the harness exited. The
