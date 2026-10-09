@@ -483,7 +483,7 @@ strip_style() {
 # It must not contain the run id or invocation id (RP-OUT-11). gutter prints
 # it before every transcript line and tags the event log with the full label
 # (RP-OUT-2, RP-OUT-9).
-# It is empty for the merge stream, which runs alone.
+# The merge stream uses the merge role and profile.
 STREAM_LABEL=""
 STREAM_DISPLAY_LABEL=""
 
@@ -1862,15 +1862,13 @@ ARGV=(bash -c 'end="$1"; shift; setsid "$@" & child=$!; trap "kill -TERM -$child
 
 # run_merge_agent <prompt> <profile>
 # Runs one merge-agent invocation: live transcript on the terminal,
-# every message in the log file. The merge stream runs alone, so its lines
-# carry no label and the tag scheme of its notes does not change. Sets
+# every message in the log file. Its transcript shows the merge role and
+# profile. Sets
 # MERGE_STATUS and MERGE_SECONDS.
 run_merge_agent() {
   local prompt=$1 profile=$2 fallback_stream=""
   TRANSCRIPT_ACCENT=$MAGENTA
   FINAL_DRAWN=0
-  STREAM_LABEL=""
-  STREAM_DISPLAY_LABEL=""
   split_profile "$profile"
   local harness=$SPLIT_HARNESS model=$SPLIT_MODEL effort=$SPLIT_EFFORT
   local started=$SECONDS
@@ -1895,6 +1893,9 @@ run_merge_agent() {
 
   ((STOP_REQUESTED || HARD_STOP)) && { MERGE_STATUS=$SIGNAL_STATUS; return 0; }
 
+  STREAM_LABEL="panel $PANEL_ID merge profile $profile invocation $MERGE_STEM"
+  STREAM_DISPLAY_LABEL="merge $profile"
+
   # The message stream goes through a pipe to two readers: the log file
   # keeps every message, and the terminal shows the work as it happens,
   # the way converge renders one invocation. Another panel may run at the
@@ -1917,6 +1918,8 @@ run_merge_agent() {
       unset 'FORMATTER_FIFOS[$FORMATTER]'
       FORMATTER=0
       rm -f "$fifo"
+      STREAM_LABEL=""
+      STREAM_DISPLAY_LABEL=""
       MERGE_STATUS=$SIGNAL_STATUS
       return 0
     fi
@@ -1991,6 +1994,8 @@ run_merge_agent() {
     rm -f "$fallback_stream"
   fi
   rm -f "$RUNTIME_DIR/panel-stream-$PANEL_ID"
+  STREAM_LABEL=""
+  STREAM_DISPLAY_LABEL=""
 
   if ((MERGE_STATUS == 124 || MERGE_STATUS == 137)); then
     warn "merge exceeded the ${TIMEOUT}s timeout; killed it"
