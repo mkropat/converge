@@ -2499,7 +2499,7 @@ FAILED_ROWS=()
 ((PENDING_FAILED)) && FAILED_ROWS+=("coverage capture: cbugs reviewed pending failed at startup")
 for ((i = 0; i < RUN_STARTED; i++)); do
   status=${REVIEW_STATUSES[$i]}
-  [[ $status == 0 ]] || FAILED_ROWS+=("reviewer $((i + 1))/$REVIEWER_COUNT (${REVIEWER_PROFILES[$i]}): exit status $status")
+  [[ $status == 0 ]] || FAILED_ROWS+=("reviewer $((i + 1))/$REVIEWER_COUNT ${REVIEWER_PROFILES[$i]}: exit status $status")
 done
 if ((RUN_STARTED < REVIEWER_COUNT)); then
   if ((DISCOVERY_FAILED)); then
