@@ -1034,10 +1034,17 @@ resolve_note() {
 
 # ------------------------------------------------------------------- output
 
-# human_text <text>   Prints text with terminal control characters and other
-# JSON-special characters escaped, so one title cannot alter the human output.
+# human_text <text>   Prints text with terminal control characters escaped,
+# so one title cannot alter the human output. Printable text stays readable.
 human_text() {
-  jq -rn --arg text "$1" '$text | @json | .[1:-1]'
+  jq -rn --arg text "$1" '
+    $text | explode
+    | map(if . < 32 or . == 127
+          then ([.] | implode | @json | .[1:-1])
+          else ([.] | implode)
+          end)
+    | join("")
+  '
 }
 
 # row_line <id> <kind> <status> <title> [hidden]   One aligned, colored
