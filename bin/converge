@@ -88,6 +88,7 @@ need_value() {
 SCOPE=()
 REJECTED_RETIRED=()
 REJECTED_AFTER_DASH=()
+REJECTED_UNKNOWN=()
 while (($#)); do
   case $1 in
     # CV-INV-11: the script accepts no passthrough. Every argument after --
@@ -130,8 +131,8 @@ while (($#)); do
     # An option this script does not know is a typo: there is no passthrough
     # left for it to reach (CV-INV-11).
     -*)
-      echo "converge: unknown option '$1'" >&2
-      exit 2
+      REJECTED_UNKNOWN+=("$1")
+      shift
       ;;
     # A positional argument names part of the requirements scope.
     *)
@@ -144,12 +145,15 @@ done
 # CV-INV-11: report every retired option and every argument after `--` in
 # this call. Do this after parsing so one rejected argument cannot hide
 # another one later in the argument list.
-if ((${#REJECTED_RETIRED[@]} || ${#REJECTED_AFTER_DASH[@]})); then
+if ((${#REJECTED_RETIRED[@]} || ${#REJECTED_AFTER_DASH[@]} || ${#REJECTED_UNKNOWN[@]})); then
+  for arg in "${REJECTED_UNKNOWN[@]}"; do
+    printf "converge: unknown option '%s'\n" "$arg" >&2
+  done
   for arg in "${REJECTED_RETIRED[@]}"; do
-    echo "converge: '$arg' is retired; set CONVERGE_WORKER_PROFILE, CONVERGE_REVIEWER_PROFILE, or CONVERGE_COACH_PROFILE instead" >&2
+    printf "converge: '%s' is retired; set CONVERGE_WORKER_PROFILE, CONVERGE_REVIEWER_PROFILE, or CONVERGE_COACH_PROFILE instead\n" "$arg" >&2
   done
   for arg in "${REJECTED_AFTER_DASH[@]}"; do
-    echo "converge: unexpected argument '$arg' after --; converge accepts no passthrough" >&2
+    printf "converge: unexpected argument '%s' after --; converge accepts no passthrough\n" "$arg" >&2
   done
   exit 2
 fi
