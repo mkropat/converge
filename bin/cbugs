@@ -1205,10 +1205,10 @@ panel_clause() {
   printf '%s' "EXISTS (SELECT 1 FROM revision fp WHERE fp.bug_id = $1 AND fp.id = (SELECT MIN(f2.id) FROM revision f2 WHERE f2.bug_id = $1) AND fp.panel_run = '$(sql_quote "$2")')"
 }
 
-# parse_panel_run <value>   Stops when the value is empty; a panel run id is
-# the identity of the selection, and an empty one selects nothing.
+# parse_panel_run <value>   Rejects an empty panel run id. Callers propagate
+# its status because they run this function in a command substitution.
 parse_panel_run() {
-  [[ -n $1 ]] || { echo "cbugs: --panel-run must name a panel run id" >&2; exit 2; }
+  [[ -n $1 ]] || { echo "cbugs: --panel-run must name a panel run id" >&2; return 2; }
   printf '%s' "$1"
 }
 
@@ -1516,8 +1516,8 @@ verb_list() {
       --visibility=*)
         ((visibility_set)) && { echo "cbugs list: --visibility occurs more than once" >&2; exit 2; }
         visibility=${1#*=}; visibility_set=1; shift ;;
-      --panel-run) need_value "$1" $#; panel_run=$(parse_panel_run "$2"); shift 2 ;;
-      --panel-run=*) panel_run=$(parse_panel_run "${1#*=}"); shift ;;
+      --panel-run) need_value "$1" $#; panel_run=$(parse_panel_run "$2") || exit $?; shift 2 ;;
+      --panel-run=*) panel_run=$(parse_panel_run "${1#*=}") || exit $?; shift ;;
       --json) json=1; shift ;;
       -h|--help) usage_list; exit 0 ;;
       *) echo "cbugs list: unexpected argument '$1'" >&2; exit 2 ;;
@@ -1692,8 +1692,8 @@ verb_search() {
       --visibility|--visibility=*)
         echo "cbugs search: --visibility is not a search option; audit history is 'cbugs list --visibility hidden|all'" >&2
         exit 2 ;;
-      --panel-run) need_value "$1" $#; panel_run=$(parse_panel_run "$2"); shift 2 ;;
-      --panel-run=*) panel_run=$(parse_panel_run "${1#*=}"); shift ;;
+      --panel-run) need_value "$1" $#; panel_run=$(parse_panel_run "$2") || exit $?; shift 2 ;;
+      --panel-run=*) panel_run=$(parse_panel_run "${1#*=}") || exit $?; shift ;;
       --json) json=1; shift ;;
       -h|--help) usage_search; exit 0 ;;
       *) echo "cbugs search: unexpected argument '$1'" >&2; exit 2 ;;
