@@ -1644,7 +1644,8 @@ run_discovery_chain() {
 # Run one scheduled role chain. A nonzero exit starts the next profile at
 # once. A successful attempt, timeout, stop, or skipped launch ends the chain.
 # Sets CHAIN_PRODUCED_OUTPUT when any started attempt emitted model output.
-# Sets CHAIN_LOGS to the logs of all attempts that started.
+# Sets CHAIN_LOGS to the logs of all attempts that started, and CHAIN_STARTED
+# when at least one attempt in the chain started.
 run_agent_chain() {
   local role=$1 prompt=$2 attempts i
   case $role in
@@ -1654,11 +1655,15 @@ run_agent_chain() {
     *) echo "converge: unknown chain role '$role'" >&2; return 2 ;;
   esac
   CHAIN_PRODUCED_OUTPUT=0
+  CHAIN_STARTED=0
   CHAIN_LOGS=()
   for ((i = 0; i < attempts; i++)); do
     ((STOP_REQUESTED)) && return 0
     run_agent "$role" "$prompt"
-    ((!INVOCATION_SKIPPED)) && CHAIN_LOGS+=("$LOG_FILE")
+    if ((!INVOCATION_SKIPPED)); then
+      CHAIN_STARTED=1
+      CHAIN_LOGS+=("$LOG_FILE")
+    fi
     if ((!INVOCATION_SKIPPED)) && produced_output "$LOG_FILE" "$INVOCATION_HARNESS"; then
       CHAIN_PRODUCED_OUTPUT=1
     fi
@@ -2923,13 +2928,13 @@ while true; do
     run_agent_chain coach "$(coach_prompt "$PENDING_LOGS_TEXT")"
     ((STOP_REQUESTED)) || handle_chain_wait "$CHAIN_PRODUCED_OUTPUT"
     show_guidance "$GUIDANCE_BEFORE"
-    # CV-COACH-10's cadence counts worker iterations, not a backlog: a started
-    # coach resets the cadence whether or not the run itself succeeded. A
-    # skipped invocation never ran and consumes neither cadence nor a turn.
+    # CV-COACH-10's cadence counts worker iterations, not a backlog: a coach
+    # chain with any started attempt resets the cadence, even if a later
+    # fallback setup skips. A chain with no started attempt consumes no turn.
     # PENDING_LOGS is different -- it is the backlog of logs the coach has not
     # yet reviewed -- so it clears only on success, letting a retry still see
     # the unprocessed logs.
-    if ((!INVOCATION_SKIPPED)); then
+    if ((CHAIN_STARTED)); then
       SINCE_COACH=0
       COACH_DUE_AT=$COACH_EVERY
       if ((RUN_STATUS == 0)); then
@@ -2954,7 +2959,7 @@ while true; do
   # arrived while it ran: the invocation still finished, and the report is
   # about what it did, not about scheduling more work.
   report_changes "$HEAD_BEFORE"
-  if ((!INVOCATION_SKIPPED)); then
+  if ((CHAIN_STARTED)); then
     PENDING_LOGS+=("${CHAIN_LOGS[@]+${CHAIN_LOGS[@]}}")
     ((++SINCE_COACH))
   fi
@@ -2997,8 +3002,8 @@ while true; do
   # iteration," and --max-iterations means there is none. Without this, a
   # backoff that grew to 15 minutes would sit idle that long right before
   # printing "reached the limit" and exiting anyway.
-  if ((INVOCATION_SKIPPED)); then
-    # The attempted iteration was never started, so undo its provisional
+  if ((!CHAIN_STARTED)); then
+    # No attempt in the chain started, so undo the provisional iteration
     # number after result reporting and leave coach cadence and backlog
     # unchanged.
     ((--ITERATION))
