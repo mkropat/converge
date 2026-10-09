@@ -2023,6 +2023,7 @@ run_merge_chain() {
   local prompt=$1 profile attempt_seconds total_seconds=0
   MERGE_STATUS=1
   MERGE_SECONDS=0
+  MERGE_FAILURE_ROWS=()
   for profile in "${MERGE_PROFILES[@]}"; do
     if ((STOP_REQUESTED || HARD_STOP)); then
       MERGE_STATUS=$SIGNAL_STATUS
@@ -2032,6 +2033,9 @@ run_merge_chain() {
     attempt_seconds=$MERGE_SECONDS
     ((total_seconds += attempt_seconds))
     MERGE_SECONDS=$total_seconds
+    if ((MERGE_STATUS != 0)); then
+      MERGE_FAILURE_ROWS+=("merge profile $profile: exit status $MERGE_STATUS")
+    fi
     if ((MERGE_STATUS == 0 || MERGE_STATUS == 124 || MERGE_STATUS == 137 || STOP_REQUESTED || HARD_STOP)); then
       return 0
     fi
@@ -2490,7 +2494,13 @@ if ((RUN_STARTED < REVIEWER_COUNT)); then
     FAILED_ROWS+=("reviewer: invocations not started: $((REVIEWER_COUNT - RUN_STARTED))")
   fi
 fi
-((MERGE_FAILED)) && FAILED_ROWS+=("merge agent: exit status $MERGE_STATUS")
+if ((MERGE_FAILED)); then
+  if ((${#MERGE_FAILURE_ROWS[@]})); then
+    FAILED_ROWS+=("${MERGE_FAILURE_ROWS[@]}")
+  else
+    FAILED_ROWS+=("merge phase: no merge profile completed")
+  fi
+fi
 ((COVERAGE_FAILED)) && FAILED_ROWS+=("coverage recording: cbugs reviewed add failed")
 ((FINDINGS_COLLECT_FAILED)) && \
   FAILED_ROWS+=("findings: cbugs list --panel-run failed before the merge")
