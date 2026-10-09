@@ -80,15 +80,17 @@ EOF
 
 need_value() {
   if (($2 < 2)); then
-    echo "converge: $1 needs a value" >&2
-    exit 2
+    REJECTED_MISSING_VALUE+=("$1")
+    return 1
   fi
+  return 0
 }
 
 SCOPE=()
 REJECTED_RETIRED=()
 REJECTED_AFTER_DASH=()
 REJECTED_UNKNOWN=()
+REJECTED_MISSING_VALUE=()
 while (($#)); do
   case $1 in
     # CV-INV-11: the script accepts no passthrough. Every argument after --
@@ -108,19 +110,19 @@ while (($#)); do
       REJECTED_RETIRED+=("$1")
       shift
       ;;
-    --consensus) need_value "$1" $#; CONSENSUS=$2; shift 2 ;;
+    --consensus) need_value "$1" $# || { shift; continue; }; CONSENSUS=$2; shift 2 ;;
     --consensus=*) CONSENSUS=${1#*=}; shift ;;
-    --coach-first) need_value "$1" $#; COACH_FIRST=$2; shift 2 ;;
+    --coach-first) need_value "$1" $# || { shift; continue; }; COACH_FIRST=$2; shift 2 ;;
     --coach-first=*) COACH_FIRST=${1#*=}; shift ;;
-    --coach-every) need_value "$1" $#; COACH_EVERY=$2; shift 2 ;;
+    --coach-every) need_value "$1" $# || { shift; continue; }; COACH_EVERY=$2; shift 2 ;;
     --coach-every=*) COACH_EVERY=${1#*=}; shift ;;
     --no-coach) COACH_ENABLED=0; shift ;;
-    --review-after) need_value "$1" $#; REVIEW_AFTER=$2; shift 2 ;;
+    --review-after) need_value "$1" $# || { shift; continue; }; REVIEW_AFTER=$2; shift 2 ;;
     --review-after=*) REVIEW_AFTER=${1#*=}; shift ;;
     --no-review) REVIEW_ENABLED=0; shift ;;
-    --timeout) need_value "$1" $#; TIMEOUT=$2; shift 2 ;;
+    --timeout) need_value "$1" $# || { shift; continue; }; TIMEOUT=$2; shift 2 ;;
     --timeout=*) TIMEOUT=${1#*=}; shift ;;
-    --max-iterations) need_value "$1" $#; MAX_ITERATIONS=$2; shift 2 ;;
+    --max-iterations) need_value "$1" $# || { shift; continue; }; MAX_ITERATIONS=$2; shift 2 ;;
     --max-iterations=*) MAX_ITERATIONS=${1#*=}; shift ;;
     --foreground) FOREGROUND=1; shift ;;
     --init-state) INIT_STATE=1; shift ;;
@@ -145,7 +147,10 @@ done
 # CV-INV-11: report every retired option and every argument after `--` in
 # this call. Do this after parsing so one rejected argument cannot hide
 # another one later in the argument list.
-if ((${#REJECTED_RETIRED[@]} || ${#REJECTED_AFTER_DASH[@]} || ${#REJECTED_UNKNOWN[@]})); then
+if ((${#REJECTED_RETIRED[@]} || ${#REJECTED_AFTER_DASH[@]} || ${#REJECTED_UNKNOWN[@]} || ${#REJECTED_MISSING_VALUE[@]})); then
+  for arg in "${REJECTED_MISSING_VALUE[@]}"; do
+    printf "converge: '%s' needs a value\n" "$arg" >&2
+  done
   for arg in "${REJECTED_UNKNOWN[@]}"; do
     printf "converge: unknown option '%s'\n" "$arg" >&2
   done
