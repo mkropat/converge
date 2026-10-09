@@ -1546,7 +1546,7 @@ record_invocation_cost() {
 
 # run_discovery <profile> selects requirements once and records the call.
 run_discovery() {
-  local profile=$1 started=$SECONDS stem fifo
+  local profile=$1 started=$SECONDS stem fifo end_file
   split_profile "$profile"
   local harness=$SPLIT_HARNESS model=$SPLIT_MODEL effort=$SPLIT_EFFORT
   printf -v seq '%04d' $((++SEQ))
@@ -1587,6 +1587,15 @@ EOF
   FORMATTER=$!
   FORMATTERS+=("$FORMATTER")
   FORMATTER_FIFOS[$FORMATTER]=$fifo
+  # GNU timeout in foreground mode signals its direct child. Keep the
+  # harness in its own process group and make this wrapper stop that group
+  # when the timeout fires. Otherwise a harness child can keep the FIFO open
+  # after discovery times out, and the controller can wait forever
+  # (RP-DISC-1, CV-DISC-13).
+  end_file="$RUNTIME_DIR/$stem.end"
+  rm -f "$end_file"
+  ARGV=(bash -c 'end="$1"; shift; setsid "$@" & child=$!; trap "kill -TERM -$child 2>/dev/null; kill -TERM $child 2>/dev/null; wait $child; exit 124" TERM INT; wait "$child"; rc=$?; printf "%s\n" "$SECONDS" >"$end"; exit "$rc"' \
+       _ "$end_file" "${ARGV[@]}")
   LAUNCH_CRITICAL=1
   (
     trap '' INT
@@ -1622,6 +1631,7 @@ EOF
     good "discovery $profile finished in $(duration "$DISCOVERY_SECONDS")"
   fi
   note "discovery end: profile=$profile status=$DISCOVERY_STATUS seconds=$DISCOVERY_SECONDS"
+  rm -f "$end_file"
   record_invocation_cost discovery "$profile" "$DISCOVERY_LOG" || true
 }
 
