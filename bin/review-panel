@@ -1842,7 +1842,7 @@ ARGV=(bash -c 'end="$1"; shift; setsid "$@" & child=$!; trap "kill -TERM -$child
     finish_launch_critical
   else
     FORMATTERS[$((index - 1))]=0
-    warn "cannot create the stream pipe for reviewer $index/$count; it runs without a live transcript"
+    warn "reviewer $index/$count $profile cannot create the stream pipe; it runs without a live transcript"
     fallback_stream="$RUNTIME_DIR/$stem.stream"
     if ((STOP_REQUESTED || HARD_STOP)); then
       unset 'RUN_REVIEWS[index - 1]' 'INV_STARTS[index - 1]'
@@ -2325,17 +2325,17 @@ for ((i = 0; i < RUN_STARTED; i++)); do
     rm -f "$end_file"
   fi
   if ((status == 124 || status == 137)); then
-    warn "reviewer $((i + 1))/$REVIEWER_COUNT ($profile) exceeded the ${TIMEOUT}s timeout; killed it"
-    show_stderr "$LOG_DIR/$stem" "reviewer $((i + 1))/$REVIEWER_COUNT ($profile)"
+    warn "reviewer $((i + 1))/$REVIEWER_COUNT $profile exceeded the ${TIMEOUT}s timeout; killed it"
+    show_stderr "$LOG_DIR/$stem" "reviewer $((i + 1))/$REVIEWER_COUNT $profile"
     [[ -z $stem ]] || printf '{"type":"review_panel_event","event":"timeout","run":"%s","seconds":%s}\n' \
       "$PANEL_ID" "$TIMEOUT" >>"$LOG_DIR/$stem.jsonl"
   elif ((status != 0)); then
-    warn "reviewer $((i + 1))/$REVIEWER_COUNT ($profile) exited with status $status after $(duration "$seconds")"
-    show_stderr "$LOG_DIR/$stem" "reviewer $((i + 1))/$REVIEWER_COUNT ($profile)"
+    warn "reviewer $((i + 1))/$REVIEWER_COUNT $profile exited with status $status after $(duration "$seconds")"
+    show_stderr "$LOG_DIR/$stem" "reviewer $((i + 1))/$REVIEWER_COUNT $profile"
     [[ -z $stem ]] || printf '{"type":"review_panel_event","event":"error","run":"%s","status":%s}\n' \
       "$PANEL_ID" "$status" >>"$LOG_DIR/$stem.jsonl"
   else
-    good "reviewer $((i + 1))/$REVIEWER_COUNT ($profile) finished in $(duration "$seconds")"
+    good "reviewer $((i + 1))/$REVIEWER_COUNT $profile finished in $(duration "$seconds")"
     [[ -z $stem ]] || printf '{"type":"review_panel_event","event":"result","run":"%s","status":0}\n' \
       "$PANEL_ID" >>"$LOG_DIR/$stem.jsonl"
   fi
