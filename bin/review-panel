@@ -2316,6 +2316,7 @@ for ((i = 0; i < RUN_STARTED; i++)); do
   profile=${REVIEWER_PROFILES[$i]}
   stem=${RUN_REVIEWS[$i]:-}
   seconds=$((SECONDS - INV_STARTS[$i]))
+  invocation_finished=0
   # The writer (the harness) closed the pipe. Let the reviewer's transcript
   # finish before the result line reports its outcome, so that the lines
   # stay in order and the drain belongs to this invocation's position
@@ -2350,21 +2351,22 @@ for ((i = 0; i < RUN_STARTED; i++)); do
   if [[ -n $stem ]]; then
     end_file="$RUNTIME_DIR/$stem.end"
     if [[ -s $end_file ]]; then
+      invocation_finished=1
       recorded=$(<"$end_file")
       is_number "$recorded" && seconds=$recorded
     fi
     rm -f "$end_file"
   fi
-  if ((HARD_STOP && status != 0)); then
-    warn "reviewer $((i + 1))/$REVIEWER_COUNT $profile stopped by the operator (status $SIGNAL_STATUS)"
-    show_stderr "$LOG_DIR/$stem" "reviewer $((i + 1))/$REVIEWER_COUNT $profile"
-    [[ -z $stem ]] || printf '{"type":"review_panel_event","event":"stopped","run":"%s","status":%s}\n' \
-      "$PANEL_ID" "$SIGNAL_STATUS" >>"$LOG_DIR/$stem.jsonl"
-  elif ((status == 124 || status == 137)); then
+  if ((status == 124 || status == 137)); then
     warn "reviewer $((i + 1))/$REVIEWER_COUNT $profile exceeded the ${TIMEOUT}s timeout; killed it"
     show_stderr "$LOG_DIR/$stem" "reviewer $((i + 1))/$REVIEWER_COUNT $profile"
     [[ -z $stem ]] || printf '{"type":"review_panel_event","event":"timeout","run":"%s","seconds":%s}\n' \
       "$PANEL_ID" "$TIMEOUT" >>"$LOG_DIR/$stem.jsonl"
+  elif ((HARD_STOP && status != 0 && invocation_finished == 0)); then
+    warn "reviewer $((i + 1))/$REVIEWER_COUNT $profile stopped by the operator (status $SIGNAL_STATUS)"
+    show_stderr "$LOG_DIR/$stem" "reviewer $((i + 1))/$REVIEWER_COUNT $profile"
+    [[ -z $stem ]] || printf '{"type":"review_panel_event","event":"stopped","run":"%s","status":%s}\n' \
+      "$PANEL_ID" "$SIGNAL_STATUS" >>"$LOG_DIR/$stem.jsonl"
   elif ((status != 0)); then
     warn "reviewer $((i + 1))/$REVIEWER_COUNT $profile exited with status $status after $(duration "$seconds")"
     show_stderr "$LOG_DIR/$stem" "reviewer $((i + 1))/$REVIEWER_COUNT $profile"
