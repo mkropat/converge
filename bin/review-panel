@@ -1568,7 +1568,7 @@ EOF
   invocation_event discovery "$profile" "$harness" "$model" "$effort" "$DISCOVERY_LOG"
   printf '%s\n' "$prompt" >"$LOG_DIR/$stem.prompt.md"
   note "discovery start: profile=$profile log=$DISCOVERY_LOG prompt=$LOG_DIR/$stem.prompt.md"
-  print_start_line "$G_REVIEW" "requirements discovery" "$profile" "$DISCOVERY_LOG"
+  print_start_line "$G_REVIEW" "discovery" "$profile" "$DISCOVERY_LOG"
   if ((STOP_REQUESTED || HARD_STOP)); then
     DISCOVERY_STATUS=$SIGNAL_STATUS
     return 0
@@ -1578,7 +1578,7 @@ EOF
   rm -f "$fifo"
   if ! mkfifo "$fifo" 2>/dev/null; then
     DISCOVERY_STATUS=1
-    warn "cannot create the stream pipe for requirements discovery"
+    warn "discovery $profile cannot create the stream pipe"
     return 0
   fi
   STREAM_LABEL="panel $PANEL_ID requirements discovery profile $profile invocation $stem"
@@ -1611,15 +1611,15 @@ EOF
   rm -f "$fifo"
   DISCOVERY_SECONDS=$((SECONDS - started))
   if ((DISCOVERY_STATUS == 124 || DISCOVERY_STATUS == 137)); then
-    warn "requirements discovery exceeded the ${TIMEOUT}s timeout; killed it"
+    warn "discovery $profile exceeded the ${TIMEOUT}s timeout; killed it"
     show_stderr "$LOG_DIR/$stem" "requirements discovery ($profile)"
     printf '{"type":"review_panel_event","event":"timeout","run":"%s","seconds":%s}\n' "$PANEL_ID" "$TIMEOUT" >>"$DISCOVERY_LOG"
   elif ((DISCOVERY_STATUS != 0)); then
-    warn "requirements discovery exited with status $DISCOVERY_STATUS after $(duration "$DISCOVERY_SECONDS")"
+    warn "discovery $profile exited with status $DISCOVERY_STATUS after $(duration "$DISCOVERY_SECONDS")"
     show_stderr "$LOG_DIR/$stem" "requirements discovery ($profile)"
     printf '{"type":"review_panel_event","event":"error","run":"%s","status":%s}\n' "$PANEL_ID" "$DISCOVERY_STATUS" >>"$DISCOVERY_LOG"
   else
-    good "requirements discovery finished in $(duration "$DISCOVERY_SECONDS")"
+    good "discovery $profile finished in $(duration "$DISCOVERY_SECONDS")"
   fi
   note "discovery end: profile=$profile status=$DISCOVERY_STATUS seconds=$DISCOVERY_SECONDS"
   record_invocation_cost discovery "$profile" "$DISCOVERY_LOG" || true
@@ -2235,7 +2235,7 @@ if (("${#SCOPE[@]}" == 0)); then
         DISCOVERY_STATUS=2
         printf 'status=failed\nprofile=%s\nlog=%s\nlookup=%s\n' \
           "${DISCOVERY_PROFILE:-${WORKER_PROFILES[0]}}" "${DISCOVERY_LOG:-}" "$LOOKUP_FILE" >"$LOOKUP_RESULT"
-        bad "requirements discovery failed; no reviewer or merge agent will start"
+        bad "discovery ${DISCOVERY_PROFILE:-${WORKER_PROFILES[0]}} failed; no reviewer or merge agent will start"
       fi
     fi
   fi
