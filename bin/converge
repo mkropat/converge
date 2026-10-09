@@ -205,7 +205,7 @@ validate_start_options() {
   done
   # Bash arithmetic uses a signed integer. Reject values outside that range
   # before normalization, because overflow can invert a setting's meaning.
-  for pair in "consensus:$CONSENSUS" "coach-first:$COACH_FIRST" "coach-every:$COACH_EVERY" "review-after:$REVIEW_AFTER"; do
+  for pair in "consensus:$CONSENSUS" "coach-first:$COACH_FIRST" "coach-every:$COACH_EVERY" "review-after:$REVIEW_AFTER" "timeout:$TIMEOUT"; do
     if ! fits_bash_integer "${pair#*:}"; then
       echo "converge: --${pair%%:*} exceeds the supported integer range" >&2
       exit 2

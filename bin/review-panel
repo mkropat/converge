@@ -118,6 +118,16 @@ is_number() {
   [[ $1 =~ ^[0-9]+$ ]]
 }
 
+# fits_bash_integer <text>   True when a whole number fits in bash arithmetic.
+fits_bash_integer() {
+  local value=$1
+  while [[ ${value:0:1} == 0 && ${#value} -gt 1 ]]; do
+    value=${value:1}
+  done
+  ((${#value} < 19)) || \
+    { ((${#value} == 19)) && [[ $value < 9223372036854775808 ]]; }
+}
+
 # The scope paths and the timeout must hold before any agent starts
 # (RP-INV-1, RP-PROF-5). A typo must not become a review that silently
 # ignores the scope. The timeout follows the same validation as converge.
@@ -129,6 +139,10 @@ for scope_path in ${SCOPE[@]+"${SCOPE[@]}"}; do
 done
 if ! is_number "$TIMEOUT"; then
   echo "review-panel: --timeout needs a whole number, got '$TIMEOUT'" >&2
+  exit 2
+fi
+if ! fits_bash_integer "$TIMEOUT"; then
+  echo "review-panel: --timeout exceeds the supported integer range" >&2
   exit 2
 fi
 # A leading zero reads as octal in bash arithmetic. Normalize here, before
