@@ -1096,7 +1096,8 @@ print_listing() {
 current_rows_sql() {
   local vis=$1 extra=$2 limit=${3:-}
   [[ $VIS_HEAD == all ]] || printf '%s\n' "$(vis_prelude head)"
-  printf '%s;' "$(current_inner_sql "$vis" "$extra" "$limit")"
+  printf "SELECT json_group_array(json_object('id', id, 'kind', kind, 'status', status, 'title', title, 'hidden', hidden, 'revision_key', revision_key)) FROM (%s);" \
+    "$(current_inner_sql "$vis" "$extra" "$limit")"
 }
 
 # current_inner_sql <visible|hidden|all> <extra where> [limit]   The
@@ -1131,15 +1132,9 @@ ${extra:+WHERE $extra
 # print_bug <id> <json flag>   Prints one bug's current state after a write.
 print_bug() {
   local id=$1 json=$2 rows row
-  rows=$(sqlite3_run json "$(vis_prelude head)
-SELECT b.id, b.kind,
-       CASE WHEN c.id IS NOT NULL THEN c.status ELSE s.status END AS status,
-       CASE WHEN c.id IS NOT NULL THEN c.title ELSE s.title END AS title,
-       (c.id IS NULL) AS hidden
-FROM bug b
-LEFT JOIN revision c ON c.id = (SELECT MAX(r2.id) FROM revision r2 WHERE r2.bug_id = b.id AND ($(vis_pred head r2)))
-LEFT JOIN revision s ON s.id = (SELECT MAX(r3.id) FROM revision r3 WHERE r3.bug_id = b.id)
-WHERE b.id = $id;") || exit 1
+  rows=$(sqlite3_run raw "$(vis_prelude head)
+SELECT json_group_array(json_object('id', id, 'kind', kind, 'status', status, 'title', title, 'hidden', hidden))
+FROM ($(current_inner_sql all "id = $id"));") || exit 1
   case $json in
     0) ;;
     *) jq -M '.[0]' <<<"$rows"; return ;;
@@ -1546,7 +1541,7 @@ verb_list() {
   local rows extra
   extra=$(where_clause ${kinds[@]+"${kinds[@]}"} -- ${statuses[@]+"${statuses[@]}"})
   [[ -z $panel_run ]] || extra="${extra:+$extra AND }$(panel_clause t.id "$panel_run")"
-  rows=$(sqlite3_run json "$(current_rows_sql "$visibility" "$extra")") || exit 1
+  rows=$(sqlite3_run raw "$(current_rows_sql "$visibility" "$extra")") || exit 1
   print_listing "$rows" "$json"
 }
 
@@ -1571,11 +1566,12 @@ verb_show() {
   # The bug's current state at the captured HEAD (CB-SHOW-5): the newest
   # visible revision, with the current revision id to mark it, and the
   # hidden flag when no revision is visible.
-  bug=$(sqlite3_run json "${prelude}SELECT b.id, b.kind,
-       CASE WHEN c.id IS NOT NULL THEN c.status ELSE NULL END AS status,
-       CASE WHEN c.id IS NOT NULL THEN c.title ELSE NULL END AS title,
-       (c.id IS NULL) AS hidden,
-       c.id AS current_revision
+  bug=$(sqlite3_run raw "${prelude}SELECT json_group_array(json_object(
+  'id', b.id, 'kind', b.kind,
+  'status', CASE WHEN c.id IS NOT NULL THEN c.status ELSE NULL END,
+  'title', CASE WHEN c.id IS NOT NULL THEN c.title ELSE NULL END,
+  'hidden', (c.id IS NULL), 'current_revision', c.id
+))
 FROM bug b
 LEFT JOIN revision c ON c.id = (SELECT MAX(r2.id) FROM revision r2 WHERE r2.bug_id = b.id AND ($(vis_pred head r2)))
 WHERE b.id = $id;") || exit 1
@@ -1583,18 +1579,22 @@ WHERE b.id = $id;") || exit 1
   # captured HEAD (CB-SHOW-7): a revision with no commit is visible at
   # every HEAD, and a revision with a commit is visible when the set of
   # HEAD names it.
-  revs=$(sqlite3_run json "${prelude}SELECT r.id, r.status, r.title, r.note, r.role, r.iteration, r.commit_id, r.created_at, r.panel_run, r.panel_profile, r.panel_invocation,
+  revs=$(sqlite3_run raw "${prelude}SELECT json_group_array(json_object(
+  'id', id, 'status', status, 'title', title, 'note', note, 'role', role,
+  'iteration', iteration, 'commit_id', commit_id, 'created_at', created_at,
+  'panel_run', panel_run, 'panel_profile', panel_profile,
+  'panel_invocation', panel_invocation, 'visible', visible
+)) FROM (
+SELECT r.id, r.status, r.title, r.note, r.role, r.iteration, r.commit_id, r.created_at, r.panel_run, r.panel_profile, r.panel_invocation,
        ($(vis_pred head r)) AS visible
-FROM revision r WHERE r.bug_id = $id ORDER BY r.id ASC;") || exit 1
-  cites=$(sqlite3_run json "
-SELECT c.revision_id, c.path, c.req
-FROM citation c JOIN revision r ON r.id = c.revision_id
-WHERE r.bug_id = $id ORDER BY c.id ASC;
-") || exit 1
-  # sqlite3 -json prints nothing at all, not "[]", when a query matches no
-  # row. A bug with no citation on any revision must still show its
-  # revisions, so jq --argjson needs a valid empty array here.
-  [[ -n $cites ]] || cites='[]'
+FROM revision r WHERE r.bug_id = $id ORDER BY r.id ASC
+);") || exit 1
+  cites=$(sqlite3_run raw "SELECT json_group_array(json_object('revision_id', revision_id, 'path', path, 'req', req))
+FROM (
+  SELECT c.revision_id, c.path, c.req
+  FROM citation c JOIN revision r ON r.id = c.revision_id
+  WHERE r.bug_id = $id ORDER BY c.id ASC
+);") || exit 1
   # Every revision carries the citations that it wrote, so a reader of the
   # JSON sees which requirement each role named, and when, the same way the
   # human form does. The current flag rides along: the reader sees which
@@ -1719,7 +1719,8 @@ verb_search() {
   # The filter sits inside the current-row subquery, where both revision
   # aliases have status columns. Apply status to the selected current state.
   where=${where//status IN/CASE WHEN c.id IS NOT NULL THEN c.status ELSE s.status END IN}
-  rows=$(sqlite3_run json "${prelude} SELECT json_object(
+  rows=$(sqlite3_run raw "${prelude} SELECT json_group_array(json_object('value', json(value)))
+ FROM (SELECT json_object(
    'id', t.id, 'kind', t.kind, 'status', t.status, 'title', t.title,
    'revisions', (SELECT json_group_array(json_object(
      'title', rv.title, 'note', rv.note,
@@ -1738,14 +1739,14 @@ verb_search() {
    LEFT JOIN revision s ON s.id = (SELECT MAX(r3.id) FROM revision r3 WHERE r3.bug_id = b.id)
    WHERE c.id IS NOT NULL${where:+ AND $where}$panel_extra
  ) AS t
- ORDER BY t.cur_id DESC;
+ ORDER BY t.cur_id DESC);
  ") || exit 1
   rows=$(python3 -c '
 import json, sys
 needle = sys.argv[1].casefold()
 result = []
 for record in json.load(sys.stdin):
-    bug = json.loads(record["value"])
+    bug = record["value"]
     texts = []
     for revision in bug.pop("revisions"):
         texts.extend((revision.get("title") or "", revision.get("note") or ""))
@@ -2100,8 +2101,7 @@ COMMIT;
 # option, has no --json form, and always exits 0.
 verb_summary() {
   local rows total hidden_pre hidden_total n
-  rows=$(sqlite3_run json "$(current_rows_sql visible "status = 'open'" 10)") || exit 1
-  [[ -n $rows ]] || rows='[]'
+  rows=$(sqlite3_run raw "$(current_rows_sql visible "status = 'open'" 10)") || exit 1
   n=$(jq 'length' <<<"$rows")
   # "status = 'open'" filtered the last LIMIT of the wrapped rows: the total
   # count must run over every open visible bug, not just the shown ones.
