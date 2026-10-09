@@ -1594,7 +1594,7 @@ EOF
   # (RP-DISC-1, CV-DISC-13).
   end_file="$RUNTIME_DIR/$stem.end"
   rm -f "$end_file"
-  ARGV=(bash -c 'end="$1"; shift; setsid "$@" & child=$!; trap "kill -TERM -$child 2>/dev/null; kill -TERM $child 2>/dev/null; (sleep 8; kill -KILL -$child 2>/dev/null) >/dev/null 2>&1 & killer=\$!; wait $child; rc=\$?; kill \$killer 2>/dev/null; exit 124" TERM INT; wait "$child"; rc=$?; printf "%s\n" "$SECONDS" >"$end"; exit "$rc"' \
+  ARGV=(bash -c 'end="$1"; shift; setsid "$@" & child=$!; trap "kill -TERM -$child 2>/dev/null; kill -TERM $child 2>/dev/null; (sleep 8; kill -KILL -$child 2>/dev/null) >/dev/null 2>&1 & wait $child; rc=\$?; exit 124" TERM INT; wait "$child"; rc=$?; printf "%s\n" "$SECONDS" >"$end"; exit "$rc"' \
        _ "$end_file" "${ARGV[@]}")
   LAUNCH_CRITICAL=1
   (
@@ -1791,7 +1791,7 @@ run_reviewer() {
 # finish the reap: the invocation would outlive --timeout indefinitely
 # (RP-REV-6, RP-RUN-4). The plain kill is the fallback for a child whose
 # group is already gone.
-ARGV=(bash -c 'end="$1"; shift; setsid "$@" & child=$!; trap "kill -TERM -$child 2>/dev/null; kill -TERM $child 2>/dev/null; (sleep 8; kill -KILL -$child 2>/dev/null) >/dev/null 2>&1 & killer=\$!; wait $child; rc=\$?; kill \$killer 2>/dev/null; exit 124" TERM INT; wait "$child"; rc=$?; printf "%s\n" "$SECONDS" >"$end"; exit "$rc"' \
+ARGV=(bash -c 'end="$1"; shift; setsid "$@" & child=$!; trap "kill -TERM -$child 2>/dev/null; kill -TERM $child 2>/dev/null; (sleep 8; kill -KILL -$child 2>/dev/null) >/dev/null 2>&1 & wait $child; rc=\$?; exit 124" TERM INT; wait "$child"; rc=$?; printf "%s\n" "$SECONDS" >"$end"; exit "$rc"' \
      _ "$end_file" "${ARGV[@]}")
   invocation_event reviewer "$profile" "$harness" "$model" "$effort" "$LOG"
   printf '%s\n' "$PANEL_PROMPT" >"$LOG_DIR/$stem.prompt.md"
@@ -1911,7 +1911,7 @@ run_merge_agent() {
   # RP-MERGE-7).
   local end_file="$RUNTIME_DIR/$MERGE_STEM.end"
   rm -f "$end_file"
-  ARGV=(bash -c 'end="$1"; shift; setsid "$@" & child=$!; trap "kill -TERM -$child 2>/dev/null; kill -TERM $child 2>/dev/null; (sleep 8; kill -KILL -$child 2>/dev/null) >/dev/null 2>&1 & killer=\$!; wait $child; rc=\$?; kill \$killer 2>/dev/null; exit 124" TERM INT; wait "$child"; rc=$?; printf "%s\n" "$SECONDS" >"$end"; exit "$rc"' \
+  ARGV=(bash -c 'end="$1"; shift; setsid "$@" & child=$!; trap "kill -TERM -$child 2>/dev/null; kill -TERM $child 2>/dev/null; (sleep 8; kill -KILL -$child 2>/dev/null) >/dev/null 2>&1 & wait $child; rc=\$?; exit 124" TERM INT; wait "$child"; rc=$?; printf "%s\n" "$SECONDS" >"$end"; exit "$rc"' \
        _ "$end_file" "${ARGV[@]}")
   note "merge start: profile=$profile log=$LOG_FILE"
   print_start_line "$G_COACH" "merge" "$profile" "$LOG_FILE"
