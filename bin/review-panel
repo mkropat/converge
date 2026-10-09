@@ -2570,7 +2570,11 @@ findings_block() {
       local shown_json
       shown_json=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" show "$id" --json 2>/dev/null) || shown_json=
       shown_title=$(jq -r '.revisions[0].title // empty' <<<"$shown_json" 2>/dev/null)
-      [[ -n $shown_title ]] || shown_title='[creation title unavailable]'
+      if [[ -z $shown_title ]]; then
+        shown_title='[creation title read failed]'
+        FAILED_ROWS+=("findings: creation title read failed for hidden bug #$id")
+        COMPLETE=0
+      fi
       printf '  %s%s%s %s\n' "$YELLOW" "$G_WARN" "$OFF" \
         "new $kind bug #$id (hidden): $shown_title"
       note "$word bug #$id ($kind, hidden): $shown_title"
