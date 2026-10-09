@@ -1619,7 +1619,11 @@ EOF
   STREAM_DISPLAY_LABEL=""
   rm -f "$fifo"
   DISCOVERY_SECONDS=$((SECONDS - started))
-  if ((DISCOVERY_STATUS == 124 || DISCOVERY_STATUS == 137)); then
+  if ((HARD_STOP && DISCOVERY_STATUS != 0)); then
+    warn "discovery $profile stopped by the operator (status $SIGNAL_STATUS)"
+    show_stderr "$LOG_DIR/$stem" "discovery $profile"
+    printf '{"type":"review_panel_event","event":"stopped","run":"%s","status":%s}\n' "$PANEL_ID" "$SIGNAL_STATUS" >>"$DISCOVERY_LOG"
+  elif ((DISCOVERY_STATUS == 124 || DISCOVERY_STATUS == 137)); then
     warn "discovery $profile exceeded the ${TIMEOUT}s timeout; killed it"
     show_stderr "$LOG_DIR/$stem" "discovery $profile"
     printf '{"type":"review_panel_event","event":"timeout","run":"%s","seconds":%s}\n' "$PANEL_ID" "$TIMEOUT" >>"$DISCOVERY_LOG"
@@ -2022,7 +2026,12 @@ run_merge_agent() {
   STREAM_LABEL=""
   STREAM_DISPLAY_LABEL=""
 
-  if ((MERGE_STATUS == 124 || MERGE_STATUS == 137)); then
+  if ((HARD_STOP && MERGE_STATUS != 0)); then
+    warn "merge ($profile) stopped by the operator (status $SIGNAL_STATUS)"
+    show_stderr "$LOG_DIR/$MERGE_STEM" "merge ($profile)"
+    printf '{"type":"review_panel_event","event":"stopped","run":"%s","status":%s}\n' \
+      "$PANEL_ID" "$SIGNAL_STATUS" >>"$LOG_FILE"
+  elif ((MERGE_STATUS == 124 || MERGE_STATUS == 137)); then
     warn "merge ($profile) exceeded the ${TIMEOUT}s timeout; killed it"
     show_stderr "$LOG_DIR/$MERGE_STEM" "merge ($profile)"
     printf '{"type":"review_panel_event","event":"timeout","run":"%s","seconds":%s}\n' \
@@ -2346,7 +2355,12 @@ for ((i = 0; i < RUN_STARTED; i++)); do
     fi
     rm -f "$end_file"
   fi
-  if ((status == 124 || status == 137)); then
+  if ((HARD_STOP && status != 0)); then
+    warn "reviewer $((i + 1))/$REVIEWER_COUNT $profile stopped by the operator (status $SIGNAL_STATUS)"
+    show_stderr "$LOG_DIR/$stem" "reviewer $((i + 1))/$REVIEWER_COUNT $profile"
+    [[ -z $stem ]] || printf '{"type":"review_panel_event","event":"stopped","run":"%s","status":%s}\n' \
+      "$PANEL_ID" "$SIGNAL_STATUS" >>"$LOG_DIR/$stem.jsonl"
+  elif ((status == 124 || status == 137)); then
     warn "reviewer $((i + 1))/$REVIEWER_COUNT $profile exceeded the ${TIMEOUT}s timeout; killed it"
     show_stderr "$LOG_DIR/$stem" "reviewer $((i + 1))/$REVIEWER_COUNT $profile"
     [[ -z $stem ]] || printf '{"type":"review_panel_event","event":"timeout","run":"%s","seconds":%s}\n' \
