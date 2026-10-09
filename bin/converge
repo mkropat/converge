@@ -86,6 +86,8 @@ need_value() {
 }
 
 SCOPE=()
+REJECTED_RETIRED=()
+REJECTED_AFTER_DASH=()
 while (($#)); do
   case $1 in
     # CV-INV-11: the script accepts no passthrough. Every argument after --
@@ -94,16 +96,16 @@ while (($#)); do
       shift
       if (($#)); then
         for arg in "$@"; do
-          echo "converge: unexpected argument '$arg' after --; converge accepts no passthrough" >&2
+          REJECTED_AFTER_DASH+=("$arg")
         done
-        exit 2
+        break
       fi
       ;;
     # CV-INV-11: these options are retired. Selection comes from the role
     # profile variables alone (CV-HARN-8).
     --harness|--harness=*|--model|--model=*|--coach-model|--coach-model=*|--review-model|--review-model=*)
-      echo "converge: '${1%%=*}' is retired; set CONVERGE_WORKER_PROFILE, CONVERGE_REVIEWER_PROFILE, or CONVERGE_COACH_PROFILE instead" >&2
-      exit 2
+      REJECTED_RETIRED+=("$1")
+      shift
       ;;
     --consensus) need_value "$1" $#; CONSENSUS=$2; shift 2 ;;
     --consensus=*) CONSENSUS=${1#*=}; shift ;;
@@ -138,6 +140,19 @@ while (($#)); do
       ;;
   esac
 done
+
+# CV-INV-11: report every retired option and every argument after `--` in
+# this call. Do this after parsing so one rejected argument cannot hide
+# another one later in the argument list.
+if ((${#REJECTED_RETIRED[@]} || ${#REJECTED_AFTER_DASH[@]})); then
+  for arg in "${REJECTED_RETIRED[@]}"; do
+    echo "converge: '$arg' is retired; set CONVERGE_WORKER_PROFILE, CONVERGE_REVIEWER_PROFILE, or CONVERGE_COACH_PROFILE instead" >&2
+  done
+  for arg in "${REJECTED_AFTER_DASH[@]}"; do
+    echo "converge: unexpected argument '$arg' after --; converge accepts no passthrough" >&2
+  done
+  exit 2
+fi
 
 # The init operation knows no settings: it works on the current directory
 # alone, as CV-INV-10.1 gives. A positional argument or another option of
