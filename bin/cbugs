@@ -1038,11 +1038,18 @@ resolve_note() {
 # so one title cannot alter the human output. Printable text stays readable.
 human_text() {
   jq -rn --arg text "$1" '
+    def hex:
+      . as $n
+      | if $n < 16
+        then ("0123456789abcdef" | explode | .[$n] | [.] | implode)
+        else (($n / 16 | floor | hex)
+              + ("0123456789abcdef" | explode | .[$n % 16] | [.] | implode))
+        end;
     $text | explode
     | map(if . < 32 or . == 127
           then ([.] | implode | @json | .[1:-1])
           elif . >= 128 and . <= 159
-          then ("\\u{\(.)}")
+          then ("\\u{" + (hex) + "}")
           else ([.] | implode)
           end)
     | join("")
