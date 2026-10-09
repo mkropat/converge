@@ -2012,17 +2012,17 @@ run_merge_agent() {
   STREAM_DISPLAY_LABEL=""
 
   if ((MERGE_STATUS == 124 || MERGE_STATUS == 137)); then
-    warn "merge exceeded the ${TIMEOUT}s timeout; killed it"
+    warn "merge ($profile) exceeded the ${TIMEOUT}s timeout; killed it"
     show_stderr "$LOG_DIR/$MERGE_STEM" "merge ($profile)"
     printf '{"type":"review_panel_event","event":"timeout","run":"%s","seconds":%s}\n' \
       "$PANEL_ID" "$TIMEOUT" >>"$LOG_FILE"
   elif ((MERGE_STATUS != 0)); then
-    bad "merge exited with status $MERGE_STATUS after $(duration "$MERGE_SECONDS")"
+    bad "merge ($profile) exited with status $MERGE_STATUS after $(duration "$MERGE_SECONDS")"
     show_stderr "$LOG_DIR/$MERGE_STEM" "merge ($profile)"
     printf '{"type":"review_panel_event","event":"error","run":"%s","status":%s}\n' \
       "$PANEL_ID" "$MERGE_STATUS" >>"$LOG_FILE"
   else
-    good "merge finished in $(duration "$MERGE_SECONDS")"
+    good "merge ($profile) finished in $(duration "$MERGE_SECONDS")"
   fi
   note "merge end: profile=$profile status=$MERGE_STATUS seconds=$MERGE_SECONDS"
   # CV-COST-10: the merge records its own line, under the distinct merge
