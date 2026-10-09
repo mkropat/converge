@@ -166,6 +166,16 @@ is_number() {
   [[ $1 =~ ^[0-9]+$ ]]
 }
 
+# fits_bash_integer <text>   True when a whole number fits in bash arithmetic.
+fits_bash_integer() {
+  local value=$1
+  while [[ ${value:0:1} == 0 && ${#value} -gt 1 ]]; do
+    value=${value:1}
+  done
+  ((${#value} < 19)) || \
+    { ((${#value} == 19)) && [[ $value < 9223372036854775808 ]]; }
+}
+
 # validate_start_options   Checks the settings that only a run needs to hold:
 # each scope path must exist, resolved against the run directory, and each
 # count must be a whole number. The script never changes its own working
@@ -193,17 +203,14 @@ validate_start_options() {
       exit 2
     fi
   done
-  # Bash arithmetic uses a signed integer. Reject a consensus value outside
-  # that range before normalization, because overflow can turn a positive
-  # vote requirement into zero and make the loop converge without a vote.
-  while [[ ${CONSENSUS:0:1} == 0 && ${#CONSENSUS} -gt 1 ]]; do
-    CONSENSUS=${CONSENSUS:1}
+  # Bash arithmetic uses a signed integer. Reject values outside that range
+  # before normalization, because overflow can invert a setting's meaning.
+  for pair in "consensus:$CONSENSUS" "coach-first:$COACH_FIRST" "coach-every:$COACH_EVERY" "review-after:$REVIEW_AFTER"; do
+    if ! fits_bash_integer "${pair#*:}"; then
+      echo "converge: --${pair%%:*} exceeds the supported integer range" >&2
+      exit 2
+    fi
   done
-  if ((${#CONSENSUS} > 19)) || \
-    { ((${#CONSENSUS} == 19)) && [[ $CONSENSUS > 9223372036854775807 ]]; }; then
-    echo "converge: --consensus exceeds the supported integer range" >&2
-    exit 2
-  fi
   # A leading zero (e.g. "010") is a whole number, but bash arithmetic reads
   # it as octal, and every later ((...)) check in this script uses these
   # values without a base. Normalize here, the one place every start path
@@ -228,6 +235,10 @@ validate_start_options() {
   if [[ -n $MAX_ITERATIONS ]]; then
     if ! is_number "$MAX_ITERATIONS"; then
       echo "converge: --max-iterations needs a whole number" >&2
+      exit 2
+    fi
+    if ! fits_bash_integer "$MAX_ITERATIONS"; then
+      echo "converge: --max-iterations exceeds the supported integer range" >&2
       exit 2
     fi
     MAX_ITERATIONS=$((10#$MAX_ITERATIONS))
