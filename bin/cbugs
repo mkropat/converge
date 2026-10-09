@@ -1041,6 +1041,8 @@ human_text() {
     $text | explode
     | map(if . < 32 or . == 127
           then ([.] | implode | @json | .[1:-1])
+          elif . >= 128 and . <= 159
+          then ("\\u{\(.)}")
           else ([.] | implode)
           end)
     | join("")
