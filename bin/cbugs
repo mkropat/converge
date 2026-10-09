@@ -928,7 +928,7 @@ vis_pred() {
 # as before). An empty value counts as an absent one.
 provenance() {
   local override=$1 explicit=${2:-0} commit=""
-  if [[ -n ${CONVERGE_ROLE:-} ]]; then
+  if [[ ${CONVERGE_ROLE+x} ]]; then
     ROLE_SQL="'$(sql_quote "$CONVERGE_ROLE")'"
   else
     ROLE_SQL="NULL"
