@@ -193,6 +193,17 @@ validate_start_options() {
       exit 2
     fi
   done
+  # Bash arithmetic uses a signed integer. Reject a consensus value outside
+  # that range before normalization, because overflow can turn a positive
+  # vote requirement into zero and make the loop converge without a vote.
+  while [[ ${CONSENSUS:0:1} == 0 && ${#CONSENSUS} -gt 1 ]]; do
+    CONSENSUS=${CONSENSUS:1}
+  done
+  if ((${#CONSENSUS} > 19)) || \
+    { ((${#CONSENSUS} == 19)) && [[ $CONSENSUS > 9223372036854775807 ]]; }; then
+    echo "converge: --consensus exceeds the supported integer range" >&2
+    exit 2
+  fi
   # A leading zero (e.g. "010") is a whole number, but bash arithmetic reads
   # it as octal, and every later ((...)) check in this script uses these
   # values without a base. Normalize here, the one place every start path
