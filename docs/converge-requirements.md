@@ -140,6 +140,27 @@ These principles explain the intent behind the requirements. Apply them when a r
     call carries settings that the init operation cannot use.
   - **CV-INV-10.5**: A run tests no harness commands; a missing harness fails on its first invocation. The init operation must test none, because it makes directories and runs no agent.
 - **CV-INV-11**: The script must reject `--harness`, `--model`, `--review-model`, and `--coach-model`. It must reject all arguments after `--`. It must name each rejected argument. It must accept no profile option and read no profile configuration file.
+- **CV-INV-12**: The script must accept `--state-dir`. A call that holds it
+  must start no loop and must attach to none. It must instead perform the
+  state query and exit:
+  - **CV-INV-12.1**: The state query must work on the run directory: the
+    current working directory of the call, as CV-INV-2 gives. It must accept no
+    argument that names a run directory, for the reason that CV-INV-10.1 gives.
+  - **CV-INV-12.2**: The state query must print one line that names the path
+    of the state directory that a run in this directory uses, as CV-ID-1 gives.
+    It must exit with the status 0. It must print the same path that
+    `--init-state` prints for the same directory.
+  - **CV-INV-12.3**: The state query must create no directory and no file. It
+    must not test whether the state directory exists. It must write no session
+    output, no session status, no harness record, and no log.
+  - **CV-INV-12.4**: The script must stop with an error when the call gives
+    `--state-dir` a positional argument, an option of CV-INV-3, or
+    `--init-state`. The error must name the argument. The state query answers
+    one question, and such a call asks a second one.
+  - **CV-INV-12.5**: The state query must test no harness command, because it
+    runs no agent. It must stop with an error that names `git` when `git` is
+    not on PATH, because the name of the state directory derives from the root
+    of the repository, and without `git` the script cannot find that root.
 
 ## Requirements scope
 
