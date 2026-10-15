@@ -118,6 +118,7 @@ reset votes or prevent convergence. It also runs with `--consensus 1`.
 | `--max-iterations N` | Unbounded | Limit worker iterations, including failed or timed-out calls. `0` starts no agents. |
 | `--foreground` | Background | Run in the current terminal. |
 | `--init-state` | — | Create state and runtime directories, print the state path, and exit without agents. Combine only with `--help`; that prints help without creating state. |
+| `--state-dir` | — | Print the state path for the current directory and exit. Create nothing. Combine only with `--help`. |
 
 Convergence returns status `0`; reaching the worker limit without convergence
 returns `1`. Invalid setup or arguments return `2`. Agent failures are logged;

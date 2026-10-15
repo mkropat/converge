@@ -24,6 +24,7 @@ TIMEOUT=3600
 MAX_ITERATIONS=""
 FOREGROUND=0
 INIT_STATE=0
+STATE_QUERY=0
 HELP_REQUESTED=0
 ORIGINAL_ARGS="$*"
 # The client starts the loop again, in the background, with the same options.
@@ -56,6 +57,8 @@ Options:
   --foreground            Run the loop in this terminal, not in the background.
   --init-state            Make the state and runtime directories of this run
                           directory and exit. Starts no loop.
+  --state-dir             Print the path of the state directory of this run
+                          directory and exit. Makes nothing. Starts no loop.
 
 A positional argument names a requirements document file or a directory of
 them. This is the scope: the agents work on those documents only. With no
@@ -128,6 +131,7 @@ while (($#)); do
     --max-iterations=*) MAX_ITERATIONS=${1#*=}; shift ;;
     --foreground) FOREGROUND=1; shift ;;
     --init-state) INIT_STATE=1; shift ;;
+    --state-dir) STATE_QUERY=1; shift ;;
     # Help does not act here: a call may combine it with --init-state and a
     # forbidden argument, and CV-INV-10.4 must judge that call in full. The
     # help action waits until the argument loop and the init check have run.
@@ -176,6 +180,21 @@ if ((INIT_STATE)); then
       --init-state|-h|--help) continue ;;
     esac
     echo "converge: --init-state cannot be combined with '$arg'" >&2
+    exit 2
+  done
+fi
+
+# The state query answers one question: which state directory a run in this
+# directory uses (CV-INV-12). A positional argument, an option of CV-INV-3, or
+# --init-state asks a second one, and the call stops and names the argument
+# (CV-INV-12.4). A call may still ask for help.
+if ((STATE_QUERY)); then
+  for arg in ${ORIGINAL_ARGV[@]+"${ORIGINAL_ARGV[@]}"}; do
+    [[ $arg == -- ]] && break
+    case $arg in
+      --state-dir|-h|--help) continue ;;
+    esac
+    echo "converge: --state-dir cannot be combined with '$arg'" >&2
     exit 2
   done
 fi
@@ -385,6 +404,16 @@ if ((INIT_STATE)); then
     echo "converge: cannot make the state directory or the runtime directory; check XDG_STATE_HOME, HOME, and TMPDIR" >&2
     exit 2
   fi
+  printf '%s\n' "$STATE_DIR"
+  exit 0
+fi
+
+# --state-dir performs the state query and exits (CV-INV-12). It prints the
+# one line that --init-state prints, and makes nothing: no directory, no file,
+# no log (CV-INV-12.3). It runs here, after the derivation of the name and
+# before the tool checks below, because the query needs git alone
+# (CV-INV-12.5), and the git check above has already run for it.
+if ((STATE_QUERY)); then
   printf '%s\n' "$STATE_DIR"
   exit 0
 fi
