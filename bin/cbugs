@@ -234,6 +234,8 @@ for arg in "$@"; do
   if ((skip_next)); then skip_next=0; continue; fi
   case $arg in
     --help) EARLY_HELP=1 ;;
+    -h) [[ ${1:-} == search ]] || EARLY_HELP=1 ;;
+    --) break ;;
     --title|--kind|--note|--cite|--commit|--status|--iteration|--profile|--completed-at|--panel-run) skip_next=1 ;;
   esac
 done
@@ -385,6 +387,8 @@ for arg in "$@"; do
   fi
   case $arg in
     --help) HELP_REQUESTED=1 ;;
+    -h) [[ ${1:-} == search ]] || HELP_REQUESTED=1 ;;
+    --) break ;;
     --title|--kind|--note|--cite|--commit|--status|--iteration|--profile|--completed-at|--panel-run) skip_next=1 ;;
   esac
 done
@@ -1459,13 +1463,18 @@ COMMIT;
 }
 
 verb_note() {
-  local id_arg="" note="" note_set=0 pos_note_set=0 commit="" commit_set=0 json=0 title_set=0
+  local id_arg="" note="" note_set=0 pos_note_set=0 positional_note=0 commit="" commit_set=0 json=0 title_set=0
   TITLE_OVERRIDE=""
   [[ ${1:-} == -h || ${1:-} == --help ]] && { usage_note; exit 0; }
   [[ $# -ge 1 ]] || { usage_note; exit 2; }
   id_arg=$1; shift
-  if [[ ${1:-} == -- ]]; then shift; fi
-  if (($#)); then
+  if [[ ${1:-} == -- ]]; then
+    shift
+    positional_note=1
+  elif (($#)) && [[ $1 != -* ]]; then
+    positional_note=1
+  fi
+  if ((positional_note)) && (($#)); then
     note=$1; note_set=1; pos_note_set=1; shift
   fi
   while (($#)); do
