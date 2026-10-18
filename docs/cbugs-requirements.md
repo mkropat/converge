@@ -68,8 +68,8 @@ through `CB-MIG-6` replace it.
 - **Run directory**: the directory that a run of `converge` works from, as
   `docs/converge-requirements.md` defines it. One run directory has one bug
   database.
-- **Bug**: one defect. A bug has an identifier and a kind, and nothing else
-  that cannot change.
+- **Bug**: one record of the bug tracker. A bug has an identifier and a kind,
+  and nothing else that cannot change.
 - **Kind**: `code`, `spec`, or `task`. See "Kinds of bug".
 - **Revision**: one assertion about a bug, by one role, at one commit. A
   revision carries the full state of the bug and a note.
