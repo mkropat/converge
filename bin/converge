@@ -1895,7 +1895,7 @@ new_relevant_commit() {
     if [[ -z $RUN_SUBPATH ]]; then
       git rev-list --count "$after" -- 2>/dev/null | grep -q '[1-9]'
     else
-      git rev-list --count "$after" -- "./$RUN_SUBPATH" 2>/dev/null | grep -q '[1-9]'
+      git rev-list --count "$after" -- ":(top,literal)$RUN_SUBPATH" 2>/dev/null | grep -q '[1-9]'
     fi
     return
   fi
@@ -1903,7 +1903,7 @@ new_relevant_commit() {
   if [[ -z $RUN_SUBPATH ]]; then
     git rev-list --count "$before..$after" 2>/dev/null | grep -q '[1-9]'
   else
-    git rev-list --count "$before..$after" -- "./$RUN_SUBPATH" 2>/dev/null | grep -q '[1-9]'
+    git rev-list --count "$before..$after" -- ":(top,literal)$RUN_SUBPATH" 2>/dev/null | grep -q '[1-9]'
   fi
 }
 
