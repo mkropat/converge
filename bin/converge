@@ -3118,11 +3118,11 @@ while true; do
         PENDING_LOGS=()
       fi
     fi
-    if ((RUN_STATUS == 0)) && voted_escalate "$RESULT_TEXT"; then
+    if ((CHAIN_STARTED && RUN_STATUS == 0)) && voted_escalate "$RESULT_TEXT"; then
       FIXER_PENDING=1
       good "coach escalated; the next worker iteration will be a fixer"
       note "coach escalation: fixer pending"
-    else
+    elif ((CHAIN_STARTED)); then
       info "coach did not escalate"
       note "coach escalation: no"
     fi
