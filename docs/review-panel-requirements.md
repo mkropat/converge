@@ -81,8 +81,8 @@ An identifier must not change its meaning. Removed requirements leave their iden
 - **RP-REV-6**: A failed or timed-out reviewer must not cause a retry or fallback invocation. Other reviewers must be allowed to finish. The run must remain incomplete even if later steps succeed.
 - **RP-REV-7**: The command must not repeat review to seek agreement, fix new bugs, or reach convergence. The merge pass is a separate role, not another code review.
 - **RP-REV-8**: Reviewer searches must use normal cbugs visibility at repository
-  `HEAD`. A hidden historical bug must not suppress a finding in the live
-  working tree.
+  `HEAD`. A hidden historical bug must not stop a reviewer from filing a defect in
+  the live working tree.
 - **RP-REV-9**: Each cbugs read during a panel run must use repository `HEAD` at
   the time of that read. The panel must not assume that visibility stays fixed
   from startup.
@@ -109,7 +109,7 @@ An identifier must not change its meaning. Removed requirements leave their iden
 - **RP-MERGE-7**: Retired. Forbade an automatic retry of the merge pass. **RP-MERGE-10** replaces this behavior.
 - **RP-MERGE-8**: The merge agent must use cbugs visibility and current state at
   repository `HEAD` when it selects an existing bug as a current duplicate. It
-  may inspect hidden bugs as audit history. It must not leave a current finding
+  may inspect hidden bugs as audit history. It must not leave a current defect
   represented only by a bug that remains hidden.
 - **RP-MERGE-10**: A merge chain with no successful attempt, or a timed-out merge attempt, must make the run incomplete. The command must perform no attempt beyond the chain. It must preserve new bugs and completed revisions and identify the summary as incomplete. A later attempt must account for changes that an earlier attempt made, under **RP-MERGE-6**. Each attempt is one invocation under the log, cost, and output rules.
 - **RP-MERGE-9**: When the merge agent writes a revision, cbugs must copy status
