@@ -203,7 +203,7 @@ _Avoid_: issue tracker, ticket system, store
 
 **Bug**:
 One record in the bug tracker. A bug has an identifier and a kind, and nothing else that cannot change.
-_Avoid_: issue, ticket, finding, record, item
+_Avoid_: issue, ticket, finding, item, record (when a bug is meant)
 
 **Kind**:
 The class of a bug: code, spec, or task. It decides who acts, and it never changes.
@@ -211,7 +211,7 @@ _Avoid_: type, category, label
 
 **Code bug**:
 A defect in the project code. A worker fixes it.
-_Avoid_: defect, bug (when the kind matters), error
+_Avoid_: bug (when the kind matters), error, flaw
 
 **Spec bug**:
 An ambiguity, a gap, or a contradiction in the requirements documents. The operator resolves it, and no agent works on it or waits for it.
