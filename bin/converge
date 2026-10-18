@@ -15,6 +15,8 @@ if ((BASH_VERSINFO[0] < 4)) || \
 fi
 
 CONSENSUS=2
+BLOCKED_LIMIT=2
+STALL_AFTER=3
 COACH_FIRST=5
 COACH_EVERY=10
 COACH_ENABLED=1
@@ -41,6 +43,8 @@ Usage: converge [options] [scope ...]
 
 Options:
   --consensus <N>         Consecutive converged votes that stop the loop. Default: 2.
+  --blocked <N>           Consecutive blocked votes that stop the loop. Default: 2.
+  --stall-after <K>       Stalled worker chains before the coach runs. Default: 3.
   --coach-first <F>       Worker iterations before the first coach run of a
                           session. F can be 0: the coach runs before the
                           first worker. Default: 5.
@@ -117,6 +121,10 @@ while (($#)); do
       ;;
     --consensus) need_value "$1" $# "${2:-}" || { shift; continue; }; CONSENSUS=$2; shift 2 ;;
     --consensus=*) CONSENSUS=${1#*=}; shift ;;
+    --blocked) need_value "$1" $# "${2:-}" || { shift; continue; }; BLOCKED_LIMIT=$2; shift 2 ;;
+    --blocked=*) BLOCKED_LIMIT=${1#*=}; shift ;;
+    --stall-after) need_value "$1" $# "${2:-}" || { shift; continue; }; STALL_AFTER=$2; shift 2 ;;
+    --stall-after=*) STALL_AFTER=${1#*=}; shift ;;
     --coach-first) need_value "$1" $# "${2:-}" || { shift; continue; }; COACH_FIRST=$2; shift 2 ;;
     --coach-first=*) COACH_FIRST=${1#*=}; shift ;;
     --coach-every) need_value "$1" $# "${2:-}" || { shift; continue; }; COACH_EVERY=$2; shift 2 ;;
@@ -242,7 +250,7 @@ validate_start_options() {
       exit 2
     fi
   done
-  for pair in "consensus:$CONSENSUS" "coach-first:$COACH_FIRST" "coach-every:$COACH_EVERY" "review-after:$REVIEW_AFTER" "timeout:$TIMEOUT"; do
+  for pair in "consensus:$CONSENSUS" "blocked:$BLOCKED_LIMIT" "stall-after:$STALL_AFTER" "coach-first:$COACH_FIRST" "coach-every:$COACH_EVERY" "review-after:$REVIEW_AFTER" "timeout:$TIMEOUT"; do
     if ! is_number "${pair#*:}"; then
       echo "converge: --${pair%%:*} needs a whole number, got '${pair#*:}'" >&2
       exit 2
@@ -250,7 +258,7 @@ validate_start_options() {
   done
   # Bash arithmetic uses a signed integer. Reject values outside that range
   # before normalization, because overflow can invert a setting's meaning.
-  for pair in "consensus:$CONSENSUS" "coach-first:$COACH_FIRST" "coach-every:$COACH_EVERY" "review-after:$REVIEW_AFTER" "timeout:$TIMEOUT"; do
+  for pair in "consensus:$CONSENSUS" "blocked:$BLOCKED_LIMIT" "stall-after:$STALL_AFTER" "coach-first:$COACH_FIRST" "coach-every:$COACH_EVERY" "review-after:$REVIEW_AFTER" "timeout:$TIMEOUT"; do
     if ! fits_bash_integer "${pair#*:}"; then
       echo "converge: --${pair%%:*} exceeds the supported integer range" >&2
       exit 2
@@ -261,6 +269,8 @@ validate_start_options() {
   # values without a base. Normalize here, the one place every start path
   # runs through, so no leading zero ever reaches an arithmetic context.
   CONSENSUS=$((10#$CONSENSUS))
+  BLOCKED_LIMIT=$((10#$BLOCKED_LIMIT))
+  STALL_AFTER=$((10#$STALL_AFTER))
   COACH_FIRST=$((10#$COACH_FIRST))
   COACH_EVERY=$((10#$COACH_EVERY))
   REVIEW_AFTER=$((10#$REVIEW_AFTER))
@@ -275,6 +285,14 @@ validate_start_options() {
   # positive integer. A coach on every check is --coach-first 0 --coach-every 1.
   if ((COACH_EVERY == 0)); then
     echo "converge: --coach-every needs a positive integer, got '$COACH_EVERY'" >&2
+    exit 2
+  fi
+  if ((BLOCKED_LIMIT == 0)); then
+    echo "converge: --blocked needs a positive integer, got '$BLOCKED_LIMIT'" >&2
+    exit 2
+  fi
+  if ((STALL_AFTER == 0)); then
+    echo "converge: --stall-after needs a positive integer, got '$STALL_AFTER'" >&2
     exit 2
   fi
   if [[ -n $MAX_ITERATIONS ]]; then
@@ -954,6 +972,15 @@ pick_profile() {
       PICKED_PROFILE=${COACH_PROFILES[$COACH_PROFILE_IDX]}
       COACH_PROFILE_IDX=$(( (COACH_PROFILE_IDX + 1) % ${#COACH_PROFILES[@]} ))
       ;;
+    fixer)
+      if ((FIXER_PROFILE_SET)); then
+        PICKED_PROFILE=${FIXER_PROFILES[$FIXER_PROFILE_IDX]}
+        FIXER_PROFILE_IDX=$(( (FIXER_PROFILE_IDX + 1) % ${#FIXER_PROFILES[@]} ))
+      else
+        PICKED_PROFILE=${WORKER_PROFILES[$WORKER_PROFILE_IDX]}
+        WORKER_PROFILE_IDX=$(( (WORKER_PROFILE_IDX + 1) % ${#WORKER_PROFILES[@]} ))
+      fi
+      ;;
   esac
 }
 
@@ -1276,6 +1303,15 @@ parse_profile_list coach "$COACH_PROFILE_RAW" COACH_PROFILES
 WORKER_PROFILE_IDX=0
 REVIEWER_PROFILE_IDX=0
 COACH_PROFILE_IDX=0
+FIXER_PROFILE_IDX=0
+FIXER_PROFILE_SET=0
+if [[ -n ${CONVERGE_FIXER_PROFILE+x} ]]; then
+  [[ -n $CONVERGE_FIXER_PROFILE ]] || { echo "converge: CONVERGE_FIXER_PROFILE is set but empty" >&2; exit 2; }
+  parse_profile_list fixer "$CONVERGE_FIXER_PROFILE" FIXER_PROFILES
+  FIXER_PROFILE_SET=1
+else
+  FIXER_PROFILES=()
+fi
 
 # CV-HARN-25: vote panels resolve profiles through CONVERGE_REVIEW_PANEL_PROFILE,
 # then CONVERGE_REVIEWER_PROFILE, then claude:opus. The merge profile comes
@@ -1342,7 +1378,7 @@ trap 'printf "%s\n" "$?" >"$SESSION_STATUS"' EXIT
 
 note "=== run start ==="
 note "command: $0 $ORIGINAL_ARGS"
-note "options: worker-profile=${WORKER_PROFILES[*]} reviewer-profile=${REVIEWER_PROFILES[*]} coach-profile=${COACH_PROFILES[*]} consensus=$CONSENSUS coach-first=$COACH_FIRST coach-every=$COACH_EVERY coach=$COACH_ENABLED review-after=$REVIEW_AFTER review=$REVIEW_ENABLED timeout=$TIMEOUT max-iterations=${MAX_ITERATIONS:-unbounded}"
+note "options: worker-profile=${WORKER_PROFILES[*]} reviewer-profile=${REVIEWER_PROFILES[*]} coach-profile=${COACH_PROFILES[*]} consensus=$CONSENSUS blocked=$BLOCKED_LIMIT stall-after=$STALL_AFTER coach-first=$COACH_FIRST coach-every=$COACH_EVERY coach=$COACH_ENABLED review-after=$REVIEW_AFTER review=$REVIEW_ENABLED timeout=$TIMEOUT max-iterations=${MAX_ITERATIONS:-unbounded}"
 if ((${#SCOPE[@]})); then
   SCOPE_SUMMARY=$(scope_list)
 else
@@ -1407,8 +1443,9 @@ PANEL_ROWS+=(
   "worker|$WORKER_SUMMARY"
   "review|$REVIEW_SUMMARY"
   "pending review|$UNREVIEWED_SUMMARY"
-  "coach|$COACH_SUMMARY"
-  "stop|$(plural "$CONSENSUS" "converged vote") in a row"
+  "coach|$COACH_SUMMARY; stall after $(plural "$STALL_AFTER" "stalled chain")"
+  "fixer|$(if ((FIXER_PROFILE_SET)); then join_list "${FIXER_PROFILES[@]}"; else echo "worker profile list"; fi)"
+  "stop|$(plural "$CONSENSUS" "converged vote") in a row; blocked after $(plural "$BLOCKED_LIMIT" "blocked vote")"
   "timeout|${TIMEOUT}s for one invocation"
 )
 PANEL_TEXT=$(panel "$G_LOOP converge" "${PANEL_ROWS[@]}")
@@ -1497,6 +1534,7 @@ run_agent() {
   INVOCATION_SKIPPED=0
   case $role in
     coach) glyph=$G_COACH ;;
+    fixer) glyph=$G_WORKER ;;
     reviewer) glyph=$G_REVIEW ;;
     discovery) glyph=$G_REVIEW ;;
   esac
@@ -1592,6 +1630,7 @@ run_agent() {
       # working directory, and never the bugs of another run directory that
       # it moved into.
       export CONVERGE_ROLE="$role"
+      [[ $role == fixer ]] && export CONVERGE_ROLE=worker
       if [[ $role == discovery ]]; then
         unset CONVERGE_ITERATION
       else
@@ -1668,6 +1707,7 @@ run_agent() {
     case $role in
       worker) WORKER_PROFILE_IDX=$(( (WORKER_PROFILE_IDX + ${#WORKER_PROFILES[@]} - 1) % ${#WORKER_PROFILES[@]} )) ;;
       reviewer) REVIEWER_PROFILE_IDX=$(( (REVIEWER_PROFILE_IDX + ${#REVIEWER_PROFILES[@]} - 1) % ${#REVIEWER_PROFILES[@]} )) ;;
+      fixer) if ((FIXER_PROFILE_SET)); then FIXER_PROFILE_IDX=$(( (FIXER_PROFILE_IDX + ${#FIXER_PROFILES[@]} - 1) % ${#FIXER_PROFILES[@]} )); else WORKER_PROFILE_IDX=$(( (WORKER_PROFILE_IDX + ${#WORKER_PROFILES[@]} - 1) % ${#WORKER_PROFILES[@]} )); fi ;;
       coach) COACH_PROFILE_IDX=$(( (COACH_PROFILE_IDX + ${#COACH_PROFILES[@]} - 1) % ${#COACH_PROFILES[@]} )) ;;
     esac
   elif ((RUN_STATUS == 124 || RUN_STATUS == 137)); then
@@ -1716,6 +1756,7 @@ run_agent_chain() {
   local role=$1 prompt=$2 attempts i
   case $role in
     worker) attempts=${#WORKER_PROFILES[@]} ;;
+    fixer) if ((FIXER_PROFILE_SET)); then attempts=${#FIXER_PROFILES[@]}; else attempts=${#WORKER_PROFILES[@]}; fi ;;
     reviewer) attempts=${#REVIEWER_PROFILES[@]} ;;
     coach) attempts=${#COACH_PROFILES[@]} ;;
     *) echo "converge: unknown chain role '$role'" >&2; return 2 ;;
@@ -1829,6 +1870,32 @@ voted_converged() {
     [[ $line =~ ^[[:space:]]*CONVERGED[[:space:]]*$ ]] && return 0
   done <<<"$1"
   return 1
+}
+
+voted_blocked() {
+  local line
+  while IFS= read -r line; do
+    [[ $line =~ ^[[:space:]]*BLOCKED[[:space:]]*$ ]] && return 0
+  done <<<"$1"
+  return 1
+}
+
+voted_escalate() {
+  local line
+  while IFS= read -r line; do
+    [[ $line =~ ^[[:space:]]*ESCALATE[[:space:]]*$ ]] && return 0
+  done <<<"$1"
+  return 1
+}
+
+new_relevant_commit() {
+  local before=$1 after=$2
+  [[ -n $before && -n $after && $before != "$after" ]] || return 1
+  if [[ -z $RUN_SUBPATH ]]; then
+    git rev-list --count "$before..$after" 2>/dev/null | grep -q '[1-9]'
+  else
+    git rev-list --count "$before..$after" -- "./$RUN_SUBPATH" 2>/dev/null | grep -q '[1-9]'
+  fi
 }
 
 # --------------------------------------------------------------- transcript
@@ -2352,7 +2419,7 @@ EOF
 
   if ((${#SCOPE[@]})); then
     read_line="Read the code and these requirements documents, and work on them only: $(scope_list). A path that is a directory names every requirements document under it. A change that contradicts a requirements document outside this scope is still a spec bug: log it, and do not make the change."
-    vote_line="Do not vote while an open code bug or an open task exists. If you judge that the repository satisfies the requirements documents of the scope, no open code bug and no open task remain, and no work remains: do no work, write the exact token CONVERGED on a line of its own in your final message, and stop. The loop counts only that: the token alone on a line, in a final message where you did no work, with no open code bug and no open task remaining. The token inside a sentence never votes."
+vote_line="Do not vote while an open code bug or an open task exists. If you judge that the repository satisfies the requirements documents of the scope, no open code bug and no open task remain, and no work remains: do no work, write the exact token CONVERGED on a line of its own in your final message, and stop. The loop counts only that: the token alone on a line, in a final message where you did no work, with no open code bug and no open task remaining. The token inside a sentence never votes."
   else
     read_line="Read the code and use the session's accepted lookup instructions below to read the current requirements. Do not repeat discovery or select replacement sources."
     vote_line="Do not vote while an open code bug or an open task exists. If every requirements document is satisfied, no open code bug and no open task remain, and no work remains: do no work, write the exact token CONVERGED on a line of its own in your final message, and stop. The loop counts only that: the token alone on a line, in a final message where you did no work, with no open code bug and no open task remaining. The token inside a sentence never votes."
@@ -2360,6 +2427,11 @@ EOF
   body=${body/__SCOPE_READ__/$read_line}
   body=${body/__SCOPE_VOTE__/$vote_line}
   printf '%s\n' "$body"
+  printf '\nIf no work remains because every remaining piece is blocked, follow these blocked-vote rules:\n'
+  printf '%s\n' '- Write BLOCKED alone on a line in your final message only when no open code bug or task you can do remains, and every remaining piece of work has a blocker.'
+  printf '%s\n' '- Before naming a spec blocker, search cbugs and log it with cbugs add --kind spec if no open spec bug names it.'
+  printf '%s\n' '- Name each blocker by spec bug id or unreachable tool or resource, and say what work it stops.'
+  printf '%s\n' '- Do no work in an iteration that votes BLOCKED. Do not vote BLOCKED because work is hard.'
 
   if ((${#SCOPE[@]} == 0)) && [[ -n $LOOKUP_TEXT ]]; then
     printf '\nResolved requirements lookup instructions for this session:\n\n%s\n' "$LOOKUP_TEXT"
@@ -2368,6 +2440,9 @@ EOF
   printf 'If a required source is unavailable, report the lookup failure, do not choose a replacement source, do not implement against incomplete requirements, and do not vote for convergence.\n'
   printf 'Cite the original local path or source URI in each bug.\n'
 
+  if ((FIXER_ITERATION)); then
+    printf '\nEarlier workers could not finish the work that this guidance names. This iteration runs on a more capable profile for one iteration only.\n'
+  fi
   if [[ -s $GUIDANCE ]]; then
     printf '\nGuidance from the coach. Earlier iterations made these mistakes.\nApply this guidance:\n\n'
     cat "$GUIDANCE"
@@ -2375,7 +2450,7 @@ EOF
 }
 
 coach_prompt() {
-  local logs=$1
+  local logs=$1 trigger=${2:-cadence} blocked_message=${3:-} stall_count=${4:-0}
   cat <<EOF
 You are the coach for an autonomous loop that runs one worker agent per
 iteration on this repository. Each worker starts with no memory. You improve
@@ -2389,6 +2464,11 @@ $JOURNAL.
 The worker logs since your previous run:
 
 $logs
+
+This coach run was triggered by: $trigger.
+Consecutive stalled chains: $stall_count.
+Final message of the last blocked worker, when present:
+${blocked_message:-none}
 
 Each log holds one invocation as JSON lines; the \`.prompt.md\` file beside it
 holds the prompt that invocation received, so you can see which guidance was
@@ -2404,6 +2484,19 @@ in force.
 4. Rewrite $GUIDANCE: short, concrete, corrective instructions for future
    workers. Append one entry to $JOURNAL: what you observed, what you
    changed, what result you expect.
+
+When a blocked vote or stall triggered this run, decide whether no worker can
+resolve the block, or whether the work is doable but the worker model cannot
+do it. Check every cited spec bug with cbugs show and confirm it is open. Find
+every claimed tool or resource failure in the worker log. For a real block,
+tell workers not to retry that work and to report BLOCKED when no other work
+remains. Do not escalate. For doable work, name the task and what workers got
+wrong, then escalate. You may also escalate on a cadence run when the same
+evidence holds.
+
+Write ESCALATE alone on a line in your final message only when you want one
+more capable worker iteration. It schedules one fixer iteration and nothing
+else. Do not use it to stop the loop.
 
 Rules:
 
@@ -2850,8 +2943,8 @@ print_cost_summary() {
     }
     END {
       OFS = "\t"
-      split("worker reviewer coach discovery", RL, " ")
-      for (i = 1; i <= 4; i++) {
+      split("worker reviewer coach discovery fixer", RL, " ")
+      for (i = 1; i <= 5; i++) {
         rr = RL[i]
         print "ROLE", rr, srn[rr] + 0, \
           (srn[rr] > 0 ? sprintf("%.6f", srp[rr] / srn[rr]) : "0"), \
@@ -2880,7 +2973,7 @@ print_cost_summary() {
   labels+=("Total spend")
   left+=("$(cell "$stn" "$stv")")
   right+=("$(cell "$ctn" "$ctv")")
-  for role in worker reviewer coach; do
+  for role in worker reviewer coach fixer; do
     labels+=("Average per $role invocation")
     left+=("$(cell "${srps[$role]:-0}" "${srp[$role]:-0}")")
     right+=("$(cell "${crps[$role]:-0}" "${crp[$role]:-0}")")
@@ -2910,6 +3003,11 @@ print_cost_summary() {
 
 ITERATION=0
 CONVERGED_VOTES=0
+BLOCKED_VOTES=0
+STALL_COUNT=0
+LAST_BLOCKED_MESSAGE=""
+FIXER_PENDING=0
+FIXER_ITERATION=0
 PANEL_DUE=0
 PANEL_PID=""
 PANEL_STATUS=""
@@ -2920,6 +3018,7 @@ PENDING_LOGS=()
 # --coach-every iterations since the run before it.
 SINCE_COACH=0
 COACH_DUE_AT=$COACH_FIRST
+COACH_BLOCKED_DUE=0
 EXIT_STATUS=1
 
 # stop_due   True when a signal, standing convergence, or the iteration
@@ -2933,6 +3032,10 @@ stop_due() {
   if convergence_holds; then
     note "converged after $ITERATION iterations"
     EXIT_STATUS=0
+    return 0
+  fi
+  if ((BLOCKED_VOTES >= BLOCKED_LIMIT)); then
+    EXIT_STATUS=3
     return 0
   fi
   if [[ -n $MAX_ITERATIONS ]] && ((ITERATION >= MAX_ITERATIONS)); then
@@ -2982,16 +3085,22 @@ while true; do
   stop_due && break
 
   # Step 4: a due coach.
-  if ((COACH_ENABLED && SINCE_COACH >= COACH_DUE_AT)) && ((! STOP_REQUESTED)); then
-    heading "$MAGENTA" "coach" "$(date '+%H:%M:%S')"
-    note "coach run at $(date '+%Y-%m-%d %H:%M:%S')"
+  COACH_TRIGGER=""
+  if ((COACH_ENABLED)); then
+    ((SINCE_COACH >= COACH_DUE_AT)) && COACH_TRIGGER="cadence"
+    if ((COACH_BLOCKED_DUE)); then COACH_TRIGGER="${COACH_TRIGGER:+$COACH_TRIGGER, }blocked vote"; fi
+    if ((STALL_COUNT >= STALL_AFTER)); then COACH_TRIGGER="${COACH_TRIGGER:+$COACH_TRIGGER, }stall"; fi
+  fi
+  if [[ -n $COACH_TRIGGER ]] && ((! STOP_REQUESTED)); then
+    heading "$MAGENTA" "coach ($COACH_TRIGGER)" "$(date '+%H:%M:%S')"
+    note "coach run at $(date '+%Y-%m-%d %H:%M:%S'); trigger=$COACH_TRIGGER"
     note "coach reviews: ${PENDING_LOGS[*]:-none}"
     info "reviews $(plural "${#PENDING_LOGS[@]}" "worker log")"
     GUIDANCE_BEFORE=$(guidance_state)
     # The guarded form, on its own line: inside a double-nested command
     # substitution, the single-quoted printf format derails the parser.
     PENDING_LOGS_TEXT=$(printf '%s\n' ${PENDING_LOGS[@]+"${PENDING_LOGS[@]}"})
-    run_agent_chain coach "$(coach_prompt "$PENDING_LOGS_TEXT")"
+    run_agent_chain coach "$(coach_prompt "$PENDING_LOGS_TEXT" "$COACH_TRIGGER" "$LAST_BLOCKED_MESSAGE" "$STALL_COUNT")"
     ((STOP_REQUESTED)) || handle_chain_wait "$CHAIN_PRODUCED_OUTPUT"
     show_guidance "$GUIDANCE_BEFORE"
     # CV-COACH-10's cadence counts worker iterations, not a backlog: a coach
@@ -3003,9 +3112,19 @@ while true; do
     if ((CHAIN_STARTED)); then
       SINCE_COACH=0
       COACH_DUE_AT=$COACH_EVERY
+      STALL_COUNT=0
+      COACH_BLOCKED_DUE=0
       if ((RUN_STATUS == 0)); then
         PENDING_LOGS=()
       fi
+    fi
+    if ((RUN_STATUS == 0)) && voted_escalate "$RESULT_TEXT"; then
+      FIXER_PENDING=1
+      good "coach escalated; the next worker iteration will be a fixer"
+      note "coach escalation: fixer pending"
+    else
+      info "coach did not escalate"
+      note "coach escalation: no"
     fi
   fi
   ((STOP_REQUESTED)) && break
@@ -3016,18 +3135,36 @@ while true; do
   fi
 
   ((++ITERATION))
-  heading "$CYAN" "iteration $ITERATION${MAX_ITERATIONS:+ of $MAX_ITERATIONS}" "$(date '+%H:%M:%S')"
-  note "iteration $ITERATION at $(date '+%Y-%m-%d %H:%M:%S')"
+  FIXER_ITERATION=$FIXER_PENDING
+  FIXER_PENDING=0
+  WORKER_ROLE=worker
+  if ((FIXER_ITERATION)); then WORKER_ROLE=fixer; fi
+  heading "$CYAN" "${WORKER_ROLE} iteration $ITERATION${MAX_ITERATIONS:+ of $MAX_ITERATIONS}" "$(date '+%H:%M:%S')"
+  note "${WORKER_ROLE} iteration $ITERATION at $(date '+%Y-%m-%d %H:%M:%S')"
 
   HEAD_BEFORE=$(git rev-parse HEAD 2>/dev/null) || HEAD_BEFORE=
-  run_agent_chain worker "$(worker_prompt)"
+  run_agent_chain "$WORKER_ROLE" "$(worker_prompt)"
   # The loop must report what a worker committed even when a first SIGINT
   # arrived while it ran: the invocation still finished, and the report is
   # about what it did, not about scheduling more work.
   report_changes "$HEAD_BEFORE"
+  HEAD_AFTER=$(git rev-parse HEAD 2>/dev/null) || HEAD_AFTER=
+  MADE_RELEVANT_COMMIT=0
+  new_relevant_commit "$HEAD_BEFORE" "$HEAD_AFTER" && MADE_RELEVANT_COMMIT=1
   if ((CHAIN_STARTED)); then
     PENDING_LOGS+=("${CHAIN_LOGS[@]+${CHAIN_LOGS[@]}}")
     ((++SINCE_COACH))
+  fi
+  WORKER_DONE_VOTE=0
+  WORKER_BLOCKED_VOTE=0
+  if ((CHAIN_STARTED && RUN_STATUS == 0)); then
+    if voted_converged "$RESULT_TEXT" && voted_blocked "$RESULT_TEXT"; then
+      info "worker final message contains both vote tokens; no vote"
+    elif voted_converged "$RESULT_TEXT"; then
+      WORKER_DONE_VOTE=1
+    elif voted_blocked "$RESULT_TEXT"; then
+      WORKER_BLOCKED_VOTE=1
+    fi
   fi
   if ((!CHAIN_PRODUCED_OUTPUT)); then
     # A failure that produced no output at all is the signature of an
@@ -3035,6 +3172,7 @@ while true; do
     # produce output is a different kind of problem, and does not grow the
     # wait; the chain result tells the two cases apart.
     CONVERGED_VOTES=0
+    BLOCKED_VOTES=0
     if ((RUN_STATUS != 0)); then
       warn "iteration $ITERATION failed; see $LOG_FILE"
     else
@@ -3042,11 +3180,14 @@ while true; do
     fi
   elif ((RUN_STATUS != 0)); then
     CONVERGED_VOTES=0
+    BLOCKED_VOTES=0
     warn "iteration $ITERATION failed; see $LOG_FILE"
     note "no converged vote; consecutive count reset to 0"
   else
-    if voted_converged "$RESULT_TEXT"; then
+    if ((WORKER_DONE_VOTE)); then
       ((++CONVERGED_VOTES))
+      BLOCKED_VOTES=0
+      STALL_COUNT=0
       # CV-CONV-23: each change of the count from zero to one starts one
       # vote panel, which the top of the loop runs at step 3.
       if ((CONVERGED_VOTES == 1)); then
@@ -3057,11 +3198,26 @@ while true; do
         "$GREEN" "$(votes "$CONVERGED_VOTES" "$CONSENSUS")" "$OFF" \
         "$CONVERGED_VOTES" "$CONSENSUS"
       note "converged vote $CONVERGED_VOTES of $CONSENSUS"
+    elif ((WORKER_BLOCKED_VOTE)); then
+      CONVERGED_VOTES=0
+      ((++BLOCKED_VOTES))
+      STALL_COUNT=0
+      COACH_BLOCKED_DUE=1
+      LAST_BLOCKED_MESSAGE=$RESULT_TEXT
+      printf '  %s%s%s blocked vote %s of %s\n' "$YELLOW" "$G_WARN" "$OFF" "$BLOCKED_VOTES" "$BLOCKED_LIMIT"
+      note "blocked vote $BLOCKED_VOTES of $BLOCKED_LIMIT"
     else
       CONVERGED_VOTES=0
-      info "no converged vote; work remains"
-      note "no converged vote; consecutive count reset to 0"
+      BLOCKED_VOTES=0
+      info "no worker vote; work remains"
+      note "no worker vote; done and blocked counts reset"
     fi
+  fi
+  if ((CHAIN_PRODUCED_OUTPUT && ! MADE_RELEVANT_COMMIT && ! WORKER_DONE_VOTE && ! WORKER_BLOCKED_VOTE)); then
+    ((COACH_ENABLED)) && ((++STALL_COUNT))
+    note "stalled chains: $STALL_COUNT"
+  elif ((MADE_RELEVANT_COMMIT || WORKER_DONE_VOTE || WORKER_BLOCKED_VOTE)); then
+    STALL_COUNT=0
   fi
   # A failure on the last permitted iteration has no next iteration to delay,
   # so skip the wait: CV-FAIL-7 grows it "before it starts the next
@@ -3093,6 +3249,10 @@ elif ((STOP_REQUESTED)); then
 elif ((EXIT_STATUS == 2)); then
   CLOSING_TEXT="stopped because requirements discovery failed after $(plural "$ITERATION" iteration) in $TOTAL"
   banner "$RED" "$E_STOP" "$CLOSING_TEXT"
+elif ((EXIT_STATUS == 3)); then
+  CLOSING_TEXT="stopped blocked after $BLOCKED_VOTES consecutive blocked votes in $TOTAL"
+  banner "$YELLOW" "$E_STOP" "$CLOSING_TEXT"
+  printf '\nLast blocked worker message:\n\n%s\n' "$LAST_BLOCKED_MESSAGE"
 else
   CLOSING_TEXT="stopped after $(plural "$ITERATION" iteration) in $TOTAL, without convergence"
   banner "$YELLOW" "$E_STOP" "$CLOSING_TEXT"
