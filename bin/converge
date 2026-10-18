@@ -3213,11 +3213,13 @@ while true; do
       note "no worker vote; done and blocked counts reset"
     fi
   fi
-  if ((CHAIN_PRODUCED_OUTPUT && ! MADE_RELEVANT_COMMIT && ! WORKER_DONE_VOTE && ! WORKER_BLOCKED_VOTE)); then
-    ((COACH_ENABLED)) && ((++STALL_COUNT))
-    note "stalled chains: $STALL_COUNT"
-  elif ((MADE_RELEVANT_COMMIT || WORKER_DONE_VOTE || WORKER_BLOCKED_VOTE)); then
-    STALL_COUNT=0
+  if ((CHAIN_PRODUCED_OUTPUT)); then
+    if ((MADE_RELEVANT_COMMIT || WORKER_DONE_VOTE || WORKER_BLOCKED_VOTE)); then
+      STALL_COUNT=0
+    else
+      ((COACH_ENABLED)) && ((++STALL_COUNT))
+      note "stalled chains: $STALL_COUNT"
+    fi
   fi
   # A failure on the last permitted iteration has no next iteration to delay,
   # so skip the wait: CV-FAIL-7 grows it "before it starts the next
