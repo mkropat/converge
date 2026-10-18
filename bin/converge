@@ -2743,7 +2743,9 @@ run_review_pass() {
         break
       }
       new_revision=$(jq -r --argjson before_ids "$before_revision_ids" \
-        '[.revisions[]?.id | select(($before_ids | index(.)) == null)] | max // empty' \
+        '[.revisions[]?.id as $revision_id
+          | select(($before_ids | index($revision_id)) == null)
+          | $revision_id] | max // empty' \
         <<<"$revisions_json" 2>/dev/null)
       if [[ -n $new_revision ]]; then
         logged_ids+=("$after_id")
