@@ -1,6 +1,6 @@
 # Requirements: review-panel
 
-`review-panel` checks the current code against requirements documents. It runs a panel of reviewer profiles once. Reviewers file code bugs and spec bugs through `cbugs`. A separate agent then combines duplicate findings. The command reports the result and exits. It does not run a converge loop.
+`review-panel` checks the current code against requirements documents. It runs a panel of reviewer profiles once. Reviewers file code bugs and spec bugs through `cbugs`. A separate agent then combines duplicate new bugs. The command reports the result and exits. It does not run a converge loop.
 
 This document defines behavior, not an implementation plan.
 
@@ -75,11 +75,11 @@ An identifier must not change its meaning. Removed requirements leave their iden
 
 - **RP-REV-1**: The command must start one review invocation for each configured reviewer profile. It must run the reviewers concurrently, without waiting for one reviewer to finish before starting another. An operator stop can prevent invocations that have not started.
 - **RP-REV-2**: Each reviewer must independently check the code against the selected requirements. Review must not stop because another reviewer found no bugs or filed bugs.
-- **RP-REV-3**: Reviewer prompts must apply the converge reviewer rules. Reviewers must search existing bugs before filing findings. They must file code defects as code bugs and unclear, missing, or contradictory requirements as spec bugs. They must cite the relevant requirements for code bugs.
-- **RP-REV-4**: Reviewers must file findings directly through `cbugs`. They must not fix code, edit requirements or guidance, close bugs, create tasks, or create commits. Finding no defect is a valid result.
+- **RP-REV-3**: Reviewer prompts must apply the converge reviewer rules. Reviewers must search existing bugs before they file a bug. They must file code defects as code bugs and unclear, missing, or contradictory requirements as spec bugs. They must cite the relevant requirements for code bugs.
+- **RP-REV-4**: Reviewers must file bugs directly through `cbugs`. They must not fix code, edit requirements or guidance, close bugs, create tasks, or create commits. Finding no defect is a valid result.
 - **RP-REV-5**: Reviewers must read the live working tree. The command must not require a clean tree or create a fixed review snapshot. Changes to code, requirements, or HEAD during the run must not by themselves fail the run. The result must not claim that every reviewer examined identical content.
 - **RP-REV-6**: A failed or timed-out reviewer must not cause a retry or fallback invocation. Other reviewers must be allowed to finish. The run must remain incomplete even if later steps succeed.
-- **RP-REV-7**: The command must not repeat review to seek agreement, fix findings, or reach convergence. The merge pass is a separate role, not another code review.
+- **RP-REV-7**: The command must not repeat review to seek agreement, fix new bugs, or reach convergence. The merge pass is a separate role, not another code review.
 - **RP-REV-8**: Reviewer searches must use normal cbugs visibility at repository
   `HEAD`. A hidden historical bug must not suppress a finding in the live
   working tree.
@@ -91,7 +91,7 @@ An identifier must not change its meaning. Removed requirements leave their iden
 
 - **RP-RUN-1**: A panel run must be allowed to overlap with converge and other panel runs in the same run directory. It must not attach to, stop, or take ownership of another run.
 - **RP-RUN-2**: Each panel run must have a distinct identity. Each bug created by its reviewers must be attributable to that run and to the reviewer invocation and profile that created it. Attribution must remain correct when processes write to the database concurrently.
-- **RP-RUN-3**: The command must use run attribution to select findings for its merge pass and summary. A database-wide count difference or time interval alone must not define the run's findings.
+- **RP-RUN-3**: The command must use run attribution to select new bugs for its merge pass and summary. A database-wide count difference or time interval alone must not define the new bugs of the run.
 - **RP-RUN-4**: Concurrent runs must not overwrite each other's logs, output, or result records. Stopping a panel must not stop agents from another run.
 - **RP-RUN-5**: Reviewers must retain the normal cbugs agent authorship rules. Panel identity and profile attribution must supplement those rules, not impersonate a human caller. The required attribution is a shared cbugs integration contract; this document does not prescribe its storage format.
 - **RP-RUN-6**: Run attribution and new-bug selection must include every bug that
@@ -101,17 +101,17 @@ An identifier must not change its meaning. Removed requirements leave their iden
 ## Duplicate merge pass
 
 - **RP-MERGE-1**: After all started reviewers finish or fail, the command must run one merge-agent invocation when this panel created bugs. If the panel created no bugs, it must skip the merge invocation.
-- **RP-MERGE-2**: The merge pass must still run on available findings after a reviewer failure. It must not clear the failed run status.
-- **RP-MERGE-3**: The merge agent must compare this run's new bugs with each other and with existing bugs, including bugs from overlapping runs. It must combine bugs only when they describe the same defect. It must preserve distinct findings.
+- **RP-MERGE-2**: The merge pass must still run on the available new bugs after a reviewer failure. It must not clear the failed run status.
+- **RP-MERGE-3**: The merge agent must compare this run's new bugs with each other and with existing bugs, including bugs from overlapping runs. It must combine bugs only when they describe the same defect. It must preserve distinct new bugs.
 - **RP-MERGE-4**: The merge agent may update a retained bug, including an existing bug, to preserve unique evidence and requirement citations from a duplicate. It may close only bugs created by this panel run. A duplicate closure must identify the retained bug and explain the duplicate relationship.
-- **RP-MERGE-5**: Combining duplicates must preserve useful details and revision history. The merge agent must not delete bugs, fix code or requirements, create tasks, file unrelated findings, or close a bug as fixed. Combining spec duplicates does not resolve the underlying spec issue.
+- **RP-MERGE-5**: Combining duplicates must preserve useful details and revision history. The merge agent must not delete bugs, fix code or requirements, create tasks, file unrelated bugs, or close a bug as fixed. Combining spec duplicates does not resolve the underlying spec issue.
 - **RP-MERGE-6**: The merge agent must account for current bug state before changing it. Concurrent merging must not leave a duplicate set with no retained bug or with circular duplicate references. It must not discard changes made by other writers.
 - **RP-MERGE-7**: Retired. Forbade an automatic retry of the merge pass. **RP-MERGE-10** replaces this behavior.
 - **RP-MERGE-8**: The merge agent must use cbugs visibility and current state at
   repository `HEAD` when it selects an existing bug as a current duplicate. It
   may inspect hidden bugs as audit history. It must not leave a current finding
   represented only by a bug that remains hidden.
-- **RP-MERGE-10**: A merge chain with no successful attempt, or a timed-out merge attempt, must make the run incomplete. The command must perform no attempt beyond the chain. It must preserve findings and completed revisions and identify the summary as incomplete. A later attempt must account for changes that an earlier attempt made, under **RP-MERGE-6**. Each attempt is one invocation under the log, cost, and output rules.
+- **RP-MERGE-10**: A merge chain with no successful attempt, or a timed-out merge attempt, must make the run incomplete. The command must perform no attempt beyond the chain. It must preserve new bugs and completed revisions and identify the summary as incomplete. A later attempt must account for changes that an earlier attempt made, under **RP-MERGE-6**. Each attempt is one invocation under the log, cost, and output rules.
 - **RP-MERGE-9**: When the merge agent writes a revision, cbugs must copy status
   and title from the newest revision visible at the resolved write commit.
 
@@ -122,7 +122,7 @@ An identifier must not change its meaning. Removed requirements leave their iden
 - **RP-COV-3**: Coverage records must identify the successful reviewer profiles under the cbugs profile-record rules. The merge profile must not count as a reviewer. Coverage must not imply that defects were absent.
 - **RP-COV-4**: The controller must record only commits captured at startup. It must record them even if HEAD changed during the run. Commits added after startup must not receive coverage from this run.
 - **RP-COV-5**: A reviewer failure, merge failure, or interrupted run must prevent coverage recording. Failure to record required coverage must make the run incomplete.
-- **RP-COV-6**: Coverage must not supply a done vote or claim convergence. It records completion of this live-tree review, not approval of a HEAD or fixed snapshot. Panel findings, invocation failures, and coverage failures must not reset parent votes or block parent convergence.
+- **RP-COV-6**: Coverage must not supply a done vote or claim convergence. It records completion of this live-tree review, not approval of a HEAD or fixed snapshot. New bugs of the panel, invocation failures, and coverage failures must not reset parent votes or block parent convergence.
 
 ## Output and result
 
@@ -130,9 +130,9 @@ An identifier must not change its meaning. Removed requirements leave their iden
 - **RP-OUT-2**: Progress and agent output must follow converge's applicable display conventions. Each invocation and its output must identify its role and full canonical profile. Concurrent output must remain attributable to its source.
 - **RP-OUT-3**: The closing report must show separate counts for retained new spec bugs and retained new code bugs. It must list their IDs and titles. It must exclude new bugs closed as duplicates and bugs created by other runs.
 - **RP-OUT-4**: If a complete run retains no new bugs, the command must print a brief success message, such as `Review complete. No new bugs found.` This message must not claim that no existing bugs remain.
-- **RP-OUT-5**: A run that retains only spec bugs must show the spec findings, not the no-new-bugs message.
-- **RP-OUT-6**: An incomplete run must identify failed profiles and failed phases. It must show the available findings and state that the summary is incomplete. It must not print an unqualified success message.
-- **RP-OUT-7**: Exit status must be `0` for a complete run with no retained new code bugs, `1` for a complete run with retained new code bugs, and `2` for an invalid or incomplete run. Errors take priority over finding counts. Existing bugs and new spec bugs alone must not cause status `1`.
+- **RP-OUT-5**: A run that retains only spec bugs must show the new spec bugs, not the no-new-bugs message.
+- **RP-OUT-6**: An incomplete run must identify failed profiles and failed phases. It must show the available new bugs and state that the summary is incomplete. It must not print an unqualified success message.
+- **RP-OUT-7**: Exit status must be `0` for a complete run with no retained new code bugs, `1` for a complete run with retained new code bugs, and `2` for an invalid or incomplete run. Errors take priority over counts of new bugs. Existing bugs and new spec bugs alone must not cause status `1`.
 - **RP-OUT-8**: Signal handling must follow the applicable converge stop conventions, including status `130` for an operator Ctrl-C stop. An interrupted panel must not claim completion. Any cleanup must be limited to this panel's processes.
 - **RP-OUT-9**: The closing report must include total run duration. Logs must identify the panel run, each agent profile, and each invocation result under the applicable converge log conventions.
 - **RP-OUT-10**: The closing report must include every retained new bug of the
@@ -153,9 +153,9 @@ An identifier must not change its meaning. Removed requirements leave their iden
 
 ## Stops
 
-- **RP-STOP-1**: The first Ctrl-C or a parent `SIGUSR1` request must stop new invocations. Active reviewers or an active merge must be allowed to finish. A merge that has not started must not start, even if findings exist. This stop rule takes priority over **RP-MERGE-1** and **RP-MERGE-2**.
+- **RP-STOP-1**: The first Ctrl-C or a parent `SIGUSR1` request must stop new invocations. Active reviewers or an active merge must be allowed to finish. A merge that has not started must not start, even if new bugs exist. This stop rule takes priority over **RP-MERGE-1** and **RP-MERGE-2**.
 - **RP-STOP-2**: A second Ctrl-C must interrupt all owned descendants. SIGTERM must stop them immediately. Cleanup must include owned agents in separate process groups and exclude other runs.
-- **RP-STOP-3**: A stopped run must remain distinct from a failed run. A graceful parent stop or Ctrl-C stop must return status `130`, not error status `2`. The command must report available findings without claiming completion.
+- **RP-STOP-3**: A stopped run must remain distinct from a failed run. A graceful parent stop or Ctrl-C stop must return status `130`, not error status `2`. The command must report the available new bugs without claiming completion.
 
 ## Cost tracking
 
@@ -168,6 +168,6 @@ An identifier must not change its meaning. Removed requirements leave their iden
 ## Out of scope
 
 - **RP-OOS-1**: The command must not run workers, a coach, repair iterations, or a reviewer consensus loop.
-- **RP-OOS-2**: The command must not require a vote from reviewers or require them to agree on findings.
-- **RP-OOS-3**: The command must not replace cbugs with a separate report store or hide findings until all reviewers finish.
+- **RP-OOS-2**: The command must not require a vote from reviewers or require them to agree on new bugs.
+- **RP-OOS-3**: The command must not replace cbugs with a separate report store or hide new bugs until all reviewers finish.
 - **RP-OOS-4**: The command must not retry or replace a failed reviewer. **RP-REV-6** holds. The merge chain under **RP-PROF-13** is the only fallback in a panel run. `docs/converge-requirements.md:CV-OOS-35` gives the reason.
