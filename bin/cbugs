@@ -233,7 +233,7 @@ skip_next=0
 for arg in "$@"; do
   if ((skip_next)); then skip_next=0; continue; fi
   case $arg in
-    -h|--help) EARLY_HELP=1 ;;
+    --help) EARLY_HELP=1 ;;
     --title|--kind|--note|--cite|--commit|--status|--iteration|--profile|--completed-at|--panel-run) skip_next=1 ;;
   esac
 done
@@ -384,7 +384,7 @@ for arg in "$@"; do
     continue
   fi
   case $arg in
-    -h|--help) HELP_REQUESTED=1 ;;
+    --help) HELP_REQUESTED=1 ;;
     --title|--kind|--note|--cite|--commit|--status|--iteration|--profile|--completed-at|--panel-run) skip_next=1 ;;
   esac
 done
@@ -1723,7 +1723,7 @@ FROM (
 verb_search() {
   local text="" json=0 panel_run=""
   local -a kinds=() statuses=()
-  [[ ${1:-} == -h || ${1:-} == --help ]] && { usage_search; exit 0; }
+  [[ ${1:-} == --help ]] && { usage_search; exit 0; }
   need_tool python3 python
   [[ $# -ge 1 ]] || { usage_search; exit 2; }
   [[ ${1:-} == -- ]] && shift
