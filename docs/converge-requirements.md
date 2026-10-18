@@ -53,6 +53,7 @@ These are the section codes.
 - **Operator**: the person who runs the project and its commands. An agent is not an operator.
 - **Loop**: the `converge` script that runs the iterations, in the background.
 - **Client**: the `converge` command that the operator runs. The client starts a loop, or attaches to the loop that runs.
+- **Controller**: the process that starts agents and records their results: the loop, or the `review-panel` command. An agent is not a controller.
 - **Session**: one run of the loop, with its output file, its process id, and its result.
 - **Harness**: the agent command that the controller starts for an agent.
 - **Attempt**: one invocation of a harness, with one profile, inside a fallback chain.

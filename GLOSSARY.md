@@ -31,6 +31,10 @@ _Avoid_: controller, daemon, runner
 The `converge` command that the operator runs to start a loop or attach to the running one.
 _Avoid_: frontend, terminal
 
+**Controller**:
+The process that starts agents and records their results: the loop, or the `review-panel` command. An agent is not a controller.
+_Avoid_: orchestrator, driver, parent (when the controller is meant)
+
 **Session**:
 One run of the loop, from start to its result.
 _Avoid_: run, execution
