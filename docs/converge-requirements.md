@@ -96,7 +96,7 @@ These principles explain the intent behind the requirements. Apply them when a r
 - **CV-PRIN-1**: The goal is autonomous convergence on the documented requirements. Speed and token cost are secondary.
 - **CV-PRIN-2**: Retired. Defined worker context without lookup instructions. **CV-PRIN-7** replaces this behavior.
 - **CV-PRIN-3**: No component writes or follows an implementation plan. Requirements documents describe behavior. They do not describe implementation steps.
-- **CV-PRIN-4**: A defect that one iteration finds must reach a later iteration. A worker has no memory, so a defect that nobody records is a defect that nobody fixes. The bug tracker is that channel, and the guidance file is not: the coach rewrites the guidance on each run, and keeps it short.
+- **CV-PRIN-4**: A defect that one iteration finds must reach a later iteration. A worker has no memory, so a defect that nobody records is a defect that nobody fixes. The bug tracker is that channel, and the guidance file is not: the coach rewrites the guidance on each coach run, and keeps it short.
 - **CV-PRIN-5**: Prefer too little process over too much. Add structure only where it changes outcomes.
 - **CV-PRIN-6**: It is acceptable for the loop to stop before the requirements are fully met. It is not acceptable for the loop to add large amounts of code that the requirements do not need. The operator can clarify requirements and restart the loop.
 - **CV-PRIN-7**: Each worker must start with no memory of earlier iterations. It must read the current repository state and requirements. It may use the session's lookup instructions and coach guidance. It must not continue a stored implementation plan.
@@ -149,7 +149,7 @@ These principles explain the intent behind the requirements. Apply them when a r
   - **CV-INV-10.4**: The script must stop with an error when the call gives
     `--init-state` a positional argument or another option of CV-INV-3. Such a
     call carries settings that the init operation cannot use.
-  - **CV-INV-10.5**: A run tests no harness commands; a missing harness fails on its first invocation. The init operation must test none, because it makes directories and runs no agent.
+  - **CV-INV-10.5**: A session tests no harness commands; a missing harness fails on its first invocation. The init operation must test none, because it makes directories and runs no agent.
 - **CV-INV-11**: The script must reject `--harness`, `--model`, `--review-model`, and `--coach-model`. It must reject all arguments after `--`. It must name each rejected argument. It must accept no profile option and read no profile configuration file.
 - **CV-INV-12**: The script must accept `--state-dir`. A call that holds it
   must start no loop and must attach to none. It must instead perform the
@@ -175,10 +175,10 @@ These principles explain the intent behind the requirements. Apply them when a r
 
 ## Requirements scope
 
-The operator can point a run at part of the project. The scope says which
+The operator can point a session at part of the project. The scope says which
 requirements documents the agents work on.
 
-- **CV-SCOPE-1**: The scope of a run is the list of positional arguments, in the order that the operator gave them. A run with no positional argument has an empty scope.
+- **CV-SCOPE-1**: The scope of a session is the list of positional arguments, in the order that the operator gave them. A session with no positional argument has an empty scope.
 - **CV-SCOPE-2**: The script must resolve each path of the scope against the run directory, and must stop with an error when the path does not exist. The error must name the path. A typo must not become a run that ignores the scope.
 - **CV-SCOPE-3**: The loop must give each path to an agent as the operator wrote it. An agent runs in the run directory, so a relative path names the same document for the agent as it named for the operator.
 - **CV-SCOPE-4**: Retired. Each unscoped agent found requirements itself. **CV-SCOPE-10** replaces this behavior.
@@ -202,14 +202,14 @@ Discovery selects sources once. Later agents read their current content.
 - **CV-DISC-2**: Retired. Used the first worker profile with no fallback. **CV-DISC-13** replaces this behavior.
 - **CV-DISC-3**: The discovery prompt must instruct the agent to follow applicable project instructions to locate requirements. If those instructions give no discovery rule, it must find requirements documents under the run directory. Sources may be local documents or external sources accessible through the harness. The controller must contain no discovery rule for a specific service.
 - **CV-DISC-4**: The discovery prompt must require specific lookup instructions. They must name selected sources and explain how to read their requirements. They must resolve choices such as issue identities from branch names. They may select a directory or file pattern. Paths must resolve against the run directory. Linked-source selection must be explicit. The output must contain no requirements summary, implementation plan, or instruction to repeat general discovery.
-- **CV-DISC-5**: The controller must supply a path specific to the session for one plain text output file in the run's state directory. The discovery prompt must instruct the agent to write lookup instructions there only when it can identify usable sources. Otherwise, it must leave no output file and explain the failure in its final message.
+- **CV-DISC-5**: The controller must supply a path specific to the session for one plain text output file in the state directory of the run directory. The discovery prompt must instruct the agent to write lookup instructions there only when it can identify usable sources. Otherwise, it must leave no output file and explain the failure in its final message.
 - **CV-DISC-6**: The discovery prompt must permit no changes except writing the supplied output file. It must forbid repository edits, requirements edits, commits, guidance changes, and bug writes.
 - **CV-DISC-7**: Retired. Stopped startup on the first failed discovery invocation. **CV-DISC-14** replaces this behavior.
 - **CV-DISC-8**: Discovery must not count as a worker iteration, a done vote, or a coach cadence step. It must not advance worker or reviewer profile rotation.
 - **CV-DISC-9**: The controller must preserve the accepted lookup text for the session. Changes to branches or general discovery rules must not trigger new discovery or change that text. A new session is required to select different sources.
 - **CV-DISC-10**: A vote panel must receive the parent's accepted lookup text when the parent has no explicit scope paths. Its reviewers must use that same text. The panel must not perform new discovery. Coach and merge prompts must not include the lookup block.
 - **CV-DISC-11**: Discovery must have its own invocation prompt, stream log, profile, and result record under the normal logging rules. The accepted lookup file must remain available for diagnosis after the session ends. Files from different sessions must not overwrite one another.
-- **CV-DISC-12**: The controller must retain the existing done vote rules. It must not monitor source content or change the done count or the blocked count because requirements changed. Workers must read current requirements before voting. The run must not claim that different invocations read identical content.
+- **CV-DISC-12**: The controller must retain the existing done vote rules. It must not monitor source content or change the done count or the blocked count because requirements changed. Workers must read current requirements before voting. The controller must not claim that different invocations read identical content.
 - **CV-DISC-13**: Discovery must run as a fallback chain under **CV-HARN-24** over the `CONVERGE_WORKER_PROFILE` list, from its first entry, with the normal worker default when unset. The chain must not advance the worker rotation, as **CV-DISC-8** gives. Each attempt must use the run directory and the normal harness, effort, access, timeout, and output rules. The harness must retain its normal project instructions and tool configuration. The controller must not parse project instruction files to find discovery rules.
 - **CV-DISC-14**: The controller must accept discovery only when an attempt succeeds and its output is a readable regular file with text other than whitespace. A nonzero exit must start the next attempt of the chain. The controller must remove an output file that a failed attempt left before it starts the next attempt. A timeout, an invalid output after a successful exit, or a chain with no successful attempt must stop startup with status `2`. It must start no normal agent and perform no attempt beyond the chain. Operator-stop statuses must take priority.
 
@@ -282,7 +282,7 @@ export CONVERGE_COACH_PROFILE='claude:opus, codex:gpt-5-codex'
 
 ## Background operation
 
-The operator starts a run over a connection that can break, and the run survives the loss of the terminal.
+The operator starts a session over a connection that can break, and the session survives the loss of the terminal.
 
 - **CV-BG-1**: The client must run the loop in a process that has no controlling terminal and its own process group. A closed terminal or a lost connection must not stop the loop.
 - **CV-BG-2**: The client must start a loop only when no loop runs for the run directory. In all other cases it must attach to the loop that runs. A call with `--foreground` is the exception: it must report the error and exit, as **CV-BG-10** gives.
@@ -292,9 +292,9 @@ The operator starts a run over a connection that can break, and the run survives
   - **CV-BG-5.1**: When the client starts the loop, it must show the output from the first line.
   - **CV-BG-5.2**: When the client attaches to a loop that runs, it must first show the last screen of earlier output, then a rule that gives the start time of the loop and the current iteration, then the new output.
 - **CV-BG-6**: When the operator gives options to a client that attaches, the client must keep the options of the running loop and must print a warning that it ignored the options.
-- **CV-BG-7**: Before the client starts a new loop, it must give one line about the result of the last run, when a last run exists.
-- **CV-BG-8**: Ctrl-C must stop the run in two steps, so that one keypress does not throw away the work of an iteration:
-  - **CV-BG-8.1**: The first Ctrl-C must stop new agent launches and let active invocations finish. The client must print one prominent message in bold white text. The message must say that active invocations can finish and that a second Ctrl-C stops the run at once.
+- **CV-BG-7**: Before the client starts a new loop, it must give one line about the result of the last session, when a last session exists.
+- **CV-BG-8**: Ctrl-C must stop the session in two steps, so that one keypress does not throw away the work of an iteration:
+  - **CV-BG-8.1**: The first Ctrl-C must stop new agent launches and let active invocations finish. The client must print one prominent message in bold white text. The message must say that active invocations can finish and that a second Ctrl-C stops the session at once.
   - **CV-BG-8.2**: The second Ctrl-C must stop the loop and every agent below it at once.
   - **CV-BG-8.3**: In both cases the client must show the closing report of the loop and exit with status 130.
 - **CV-BG-9**: The client must exit with the status of the loop.
@@ -349,7 +349,7 @@ The operator starts a run over a connection that can break, and the run survives
   - **CV-OUT-1.2**: A heading for each iteration, for each review pass, and for each coach run.
   - **CV-OUT-1.3**: One line for each invocation that starts, with the role and the model. For a worker, this line also gives the log file.
   - **CV-OUT-1.4**: One line for each result: the duration, a done vote with its count, a timeout, an error, or a wait.
-  - **CV-OUT-1.5**: A closing report with the result and the total duration of the run.
+  - **CV-OUT-1.5**: A closing report with the result and the total duration of the session.
   - **CV-OUT-1.6**: The count of the unreviewed commits at startup. The operator must see whether a review pass runs before the first worker.
 - **CV-OUT-2**: The loop must show a transcript of each invocation while the invocation runs. The operator must not wait for the end of an iteration to see what the agent does.
 - **CV-OUT-3**: The transcript must show, in the order that they happen:
@@ -435,7 +435,7 @@ The operator starts a run over a connection that can break, and the run survives
   - **CV-CONV-29.1**: A blocked vote adds one to the blocked count and resets the done count to zero.
   - **CV-CONV-29.2**: A done vote, a non-vote, a chain with no successful attempt, and a timed-out worker reset the blocked count to zero.
   - **CV-CONV-29.3**: A coach run, a cadence pass, and a vote panel must not change the blocked count. The count must survive the coach run that a blocked vote starts, or the stop of **CV-CONV-29.4** never fires.
-  - **CV-CONV-29.4**: When the blocked count reaches `N` of `--blocked`, the loop must stop and exit with status `3`. This is a stop without convergence. Status `3` tells a script that the run waits on a decision of the operator, and not on more iterations.
+  - **CV-CONV-29.4**: When the blocked count reaches `N` of `--blocked`, the loop must stop and exit with status `3`. This is a stop without convergence. Status `3` tells a script that the work waits on a decision of the operator, and not on more iterations.
   - **CV-CONV-29.5**: With `--no-coach`, blocked votes still count, and the stop still applies. No coach runs between them.
 - **CV-CONV-30**: The loop must use this order:
   1. Before the first worker, stop on a signal, convergence, or a zero worker limit. Otherwise perform discovery when required. Stop if discovery fails. Then run any due startup cadence pass, followed by any due coach.
@@ -552,7 +552,7 @@ The loop keeps its files in two directories. The state directory is durable. The
 - **CV-STATE-11**: The logs must be sufficient for another agent to diagnose problems with the loop after the fact.
 - **CV-STATE-12**: Retired. Included stored harness selection in durable state. **CV-STATE-13** replaces this list.
 - **CV-STATE-13**: The state directory must hold the guidance file, the journal, the bug database, the logs, and each session's output and status. The bug database holds coverage records. Logs and coverage records may identify profiles, but must not select profiles for a later session. Profile sequence positions must not survive a session. The loop must store no final approval.
-- **CV-STATE-14**: Bugs carry over between runs. At the new run's repository
+- **CV-STATE-14**: Bugs carry over between sessions. At the new session's repository
   `HEAD`, a carried bug is current work only when it is visible and its current
   revision is open. A hidden bug remains in the database but does not enter the
   normal work list.
@@ -562,14 +562,14 @@ The loop keeps its files in two directories. The state directory is durable. The
 - **CV-RUN-1**: The runtime directory holds only the files that show that a process is alive now: the lock of the loop, the lock that gates the start of a loop, the process id of each session, and the pipes that the loop uses to read the output of a harness.
 - **CV-RUN-2**: The path must be `$TMPDIR/converge/<name>`, with the same `<name>` as the state directory. When `TMPDIR` is empty, the loop must use `/tmp` in its place.
 - **CV-RUN-3**: A pipe must stay in this directory. A home directory can be on a network file system, which does not support a pipe.
-- **CV-RUN-4**: The system removes these files with the rest of the temporary directory. A lock or a process id that a dead loop leaves behind must not block a new run. The lock, and not a file, tells a client whether a loop runs.
+- **CV-RUN-4**: The system removes these files with the rest of the temporary directory. A lock or a process id that a dead loop leaves behind must not block a new session. The lock, and not a file, tells a client whether a loop runs.
 
 ### Identity of a run
 
 - **CV-ID-1**: The loop must derive `<name>` from the absolute path of the run directory. A run directory that the operator moves or renames therefore gets a new state directory, and loses the guidance and the journal of the prior runs. The root of a repository and a subdirectory of it derive two names, and two run directories of one repository share no state.
-- **CV-ID-2**: The loop must show at startup which state the run uses. The path of the run log is inside the state directory, and the panel gives that path, so the panel does not have to give the path of the state directory itself. The loop must not print the path of the runtime directory, which holds no file that a person reads.
+- **CV-ID-2**: The loop must show at startup which state the session uses. The path of the run log is inside the state directory, and the panel gives that path, so the panel does not have to give the path of the state directory itself. The loop must not print the path of the runtime directory, which holds no file that a person reads.
 - **CV-ID-3**: Each git worktree has its own path, and therefore its own state. This is correct: two worktrees hold different work, and need different guidance.
-- **CV-ID-4**: If the guidance file exists and is not empty at startup, the loop must print its path. Guidance from an earlier run shapes every worker in this run, so the operator must see that it is there.
+- **CV-ID-4**: If the guidance file exists and is not empty at startup, the loop must print its path. Guidance from an earlier session shapes every worker in this session, so the operator must see that it is there.
 - **CV-ID-5**: The loop must create both directories when they do not exist.
 - **CV-ID-6**: The startup panel must show the run directory. When the run directory is a subdirectory of the repository, the panel must show the subdirectory, and must not show the root of the repository in its place. The operator must see which directory the run works from.
 
@@ -587,7 +587,7 @@ The loop keeps its files in two directories. The state directory is durable. The
 - **CV-FAIL-10**: Retired. Applied continuation rules to every invocation failure. **CV-FAIL-15** replaces this behavior.
 - **CV-FAIL-11**: Retired. Reset votes after failed review. **CV-FAIL-12** replaces this behavior.
 - **CV-FAIL-12**: Retired. Defined failed review handling without a fallback chain. **CV-FAIL-17** replaces this behavior.
-- **CV-FAIL-13**: On the first Ctrl-C, the loop must forward graceful `SIGUSR1` to an active panel controller. The controller must stop new launches and let all active invocations finish. It must not start a merge after this request. A second Ctrl-C must interrupt all owned descendants, including panel agents in separate process groups. SIGTERM must stop them immediately. Cleanup must follow process ownership and must not stop another run. An operator stop must remain distinct from an invocation error.
+- **CV-FAIL-13**: On the first Ctrl-C, the loop must forward graceful `SIGUSR1` to an active panel controller. The controller must stop new launches and let all active invocations finish. It must not start a merge after this request. A second Ctrl-C must interrupt all owned descendants, including panel agents in separate process groups. SIGTERM must stop them immediately. Cleanup must follow process ownership and must not stop another session. An operator stop must remain distinct from an invocation error.
 - **CV-FAIL-14**: Worker, reviewer, and coach failures must not stop the loop by themselves. Discovery failures must stop startup under **CV-DISC-14**.
 - **CV-FAIL-15**: Retired. Forbade profile fallback after a failure. **CV-FAIL-18** replaces this behavior.
 - **CV-FAIL-16**: If every attempt of a chain fails before it produces output, the loop must wait before it starts the next scheduled run. The wait must double with each consecutive chain of this kind, from 10 seconds up to a maximum of 15 minutes. The loop must not wait between the attempts of one chain. An attempt that produces output resets the wait to zero, whether it succeeds or fails. This keeps the loop alive when every configured subscription has exhausted its quota, and lets it resume when a quota period resets.
@@ -608,9 +608,9 @@ These are recorded decisions, not oversights.
 - **CV-OOS-8**: Retired. Rejected bug queries for decisions. **CV-CONV-22** now forbids convergence checks of code-bug and task counts.
 - **CV-OOS-9** — **A record of a review pass that found no defect**: rejected. The reviewed commits name the coverage of the passes, and the bug database holds defects. A pass that logs no bug needs no record of its own, and the logs of the loop show that it ran.
 - **CV-OOS-10** — **Coach authority to halt the loop or edit the repository**: rejected for v1. A bad coach judgment must cost at most a few misguided iterations.
-- **CV-OOS-11** — **Cost or token budgets**: rejected for v1. `--max-iterations` and the operator bound the run.
+- **CV-OOS-11** — **Cost or token budgets**: rejected for v1. `--max-iterations` and the operator bound the session.
 - **CV-OOS-12** — **Coach-selected cadence**: rejected for v1. A fixed first threshold and a fixed period are simpler and easier to reason about. The same holds for the review threshold of **CV-INV-3.14**. A cadence whose gaps grow, as a backoff factor, is rejected for the same reason.
-- **CV-OOS-13** — **A key that detaches the client but keeps the loop**: rejected for v1. Ctrl-C stops the run. The state directory makes a restart cheap.
+- **CV-OOS-13** — **A key that detaches the client but keeps the loop**: rejected for v1. Ctrl-C stops the session. The state directory makes a restart cheap.
 - **CV-OOS-14** — **`--status` and `--stop` commands**: rejected for v1. To see a loop, attach to it.
 - **CV-OOS-15** — **Two clients on one loop**: not a supported case. It does no harm, and either client can stop the loop.
 - **CV-OOS-16** — **Plain text output**: rejected. Every client is a terminal that accepts color.
@@ -621,19 +621,19 @@ These are recorded decisions, not oversights.
 - **CV-OOS-21** — **Migration of the state of an earlier version from the temporary directory**: rejected. The system removes that state on its own.
 - **CV-OOS-22** — **Identity of a repository from the git remote**: rejected. A repository can have no remote, and two clones of one remote hold different work.
 - **CV-OOS-23**: Retired. Rejected stored scope records. **CV-SCOPE-12** now permits session records and forbids their reuse to select requirements for later sessions.
-- **CV-OOS-24** — **A scope that names a requirement identifier, as `docs/x.md:CV-INV-3`**: rejected for v1. A file or a directory is enough to point a run at part of the project. A citation names one requirement; a scope names a body of work.
+- **CV-OOS-24** — **A scope that names a requirement identifier, as `docs/x.md:CV-INV-3`**: rejected for v1. A file or a directory is enough to point a session at part of the project. A citation names one requirement; a scope names a body of work.
 - **CV-OOS-25** — **A state directory shared by the run directories of one repository**: rejected. The guidance, the journal, and the bugs describe the work of one run directory. A run in a second directory that shared them would act on guidance for work that it cannot see, and the two runs would write one bug list that neither one owns.
 - **CV-OOS-26** — **An option or an environment variable of the client that points the run at another run directory**: rejected. The current directory names the run directory, and an operator who wants another one changes directory. A pointer that can disagree with the current directory is a second anchor, and a silent wrong anchor is the failure that the run-directory design removes. This rejects a pointer for the operator, not the variable that the loop exports for the bug tracker (**CV-ENV-6**): the loop sets that variable, and no option of the client sets it.
-- **CV-OOS-27** — **A cadence of review passes by a count of iterations**: rejected. The count lived in the memory of the loop, and a Ctrl-C that stopped the run threw it away. A resume then reviewed work that a pass had already covered, or skipped work that no pass had covered. The count of the unreviewed commits is durable, in the bug database, and it survives the death of the loop.
+- **CV-OOS-27** — **A cadence of review passes by a count of iterations**: rejected. The count lived in the memory of the loop, and a Ctrl-C that stopped the session threw it away. A resume then reviewed work that a pass had already covered, or skipped work that no pass had covered. The count of the unreviewed commits is durable, in the bug database, and it survives the death of the loop.
 - **CV-OOS-28** — **A reviewer that records the commits that it read**: rejected. The loop records the commits that it gave to the pass, after the pass ends with success (**CV-REV-15**). An agent that forgets to record leaves the work for the next pass to repeat, and an agent that records without reading hides code from every later pass. The bug tracker refuses the record from an agent of the loop, as it refuses a task.
 - **CV-OOS-29**: Retired. Accepted convergence without whole-code approval. **CV-CONV-21** and **CV-CONV-22** now require vote-only convergence with no approval.
 - **CV-OOS-30**: Retired. Rejected failure fallback. **CV-HARN-24** now requires a fallback chain, and **CV-OOS-33** through **CV-OOS-35** give its limits.
 - **CV-OOS-31** — **Durable final approval**: rejected. Reviewed-commit records survive a restart. Neither session approval nor durable approval is required or granted under **CV-CONV-22**.
-- **CV-OOS-32** — **Up-front harness availability checking**: rejected. The loop starts the harness command directly, so a missing harness fails on its first invocation. A pre-flight check must gather the harness names from the profile lists, and the PATH can still change between the check and the first invocation. The check also gives a disabled role power over a run: a missing coach harness would stop a run whose coach never runs.
+- **CV-OOS-32** — **Up-front harness availability checking**: rejected. The loop starts the harness command directly, so a missing harness fails on its first invocation. A pre-flight check must gather the harness names from the profile lists, and the PATH can still change between the check and the first invocation. The check also gives a disabled role power over a session: a missing coach harness would stop a session whose coach never runs.
 - **CV-OOS-33** — **Profile health memory**: rejected. A record that a profile failed recently could skip that profile at the start of a later chain. The saving is one fast attempt per chain, and that attempt costs seconds and no tokens. The record is selection state that **CV-STATE-13** forbids, and a stale record skips a profile that has recovered.
-- **CV-OOS-34** — **Fallback after a timeout**: rejected. A timeout means that the attempt worked for the full limit. A second attempt doubles the time of the run, and the next profile faces the same work. The fallback chain targets a fast nonzero exit, which is the signature of an exhausted quota.
+- **CV-OOS-34** — **Fallback after a timeout**: rejected. A timeout means that the attempt worked for the full limit. A second attempt doubles the time of the chain, and the next profile faces the same work. The fallback chain targets a fast nonzero exit, which is the signature of an exhausted quota.
 - **CV-OOS-35** — **Fallback inside a vote panel**: rejected for now. Panel reviewers run concurrently, and a failed reviewer makes the panel incomplete under `docs/review-panel-requirements.md:RP-REV-6`. The loop still converges, because **CV-CONV-22** lets no panel failure block it. The merge agent gets its own chain under `RP-PROF-13`, and an operator who wants a merge fallback sets a list in `CONVERGE_REVIEW_PANEL_MERGE_PROFILE`.
-- **CV-OOS-36** — **A coach that stops the loop on a blocked vote**: rejected. **CV-OOS-10** holds: a bad coach judgment must cost at most a few iterations, and a wrong stop costs the run. The second blocked vote arrives one iteration later, and the counter of **CV-CONV-29** stops the loop then. The coach decides the response; the counter decides the exit.
+- **CV-OOS-36** — **A coach that stops the loop on a blocked vote**: rejected. **CV-OOS-10** holds: a bad coach judgment must cost at most a few iterations, and a wrong stop costs the session. The second blocked vote arrives one iteration later, and the counter of **CV-CONV-29** stops the loop then. The coach decides the response; the counter decides the exit.
 - **CV-OOS-37** — **A fixer that the loop schedules on a stall without the coach**: rejected. It spends an expensive iteration on work that a spec bug blocks, with no diagnosis, and nobody writes the guidance that tells the fixer what to try. The coach invocation costs about the same and produces both.
 - **CV-OOS-38** — **A coach that selects an entry of the worker list**: rejected. It mixes the fallback for an exhausted quota with the escalation for a hard task, and the worker rotation would then use the expensive profile on ordinary iterations. The fixer list of **CV-HARN-26** is separate.
 - **CV-OOS-39** — **A blocked vote that the loop verifies against the bug database**: rejected, for the reason of **CV-CONV-22**. The loop counts votes; it does not judge them. The coach reads the record and judges, as **CV-COACH-14.3** gives.
