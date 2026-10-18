@@ -3255,6 +3255,8 @@ elif ((EXIT_STATUS == 3)); then
   CLOSING_TEXT="stopped blocked after $BLOCKED_VOTES consecutive blocked votes in $TOTAL"
   banner "$YELLOW" "$E_STOP" "$CLOSING_TEXT"
   printf '\nLast blocked worker message:\n\n%s\n' "$LAST_BLOCKED_MESSAGE"
+  note "Last blocked worker message:"
+  note "$LAST_BLOCKED_MESSAGE"
 else
   CLOSING_TEXT="stopped after $(plural "$ITERATION" iteration) in $TOTAL, without convergence"
   banner "$YELLOW" "$E_STOP" "$CLOSING_TEXT"
