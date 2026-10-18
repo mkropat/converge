@@ -1895,7 +1895,7 @@ new_relevant_commit() {
     if [[ -z $RUN_SUBPATH ]]; then
       git rev-list --count "$after" -- 2>/dev/null | grep -q '[1-9]'
     else
-      git rev-list --count "$after" -- ":(top,literal)$RUN_SUBPATH" 2>/dev/null | grep -q '[1-9]'
+      git rev-list --full-history --count "$after" -- ":(top,literal)$RUN_SUBPATH" 2>/dev/null | grep -q '[1-9]'
     fi
     return
   fi
@@ -1903,7 +1903,7 @@ new_relevant_commit() {
   if [[ -z $RUN_SUBPATH ]]; then
     git rev-list --count "$before..$after" 2>/dev/null | grep -q '[1-9]'
   else
-    git rev-list --count "$before..$after" -- ":(top,literal)$RUN_SUBPATH" 2>/dev/null | grep -q '[1-9]'
+    git rev-list --full-history --count "$before..$after" -- ":(top,literal)$RUN_SUBPATH" 2>/dev/null | grep -q '[1-9]'
   fi
 }
 
@@ -3240,6 +3240,9 @@ while true; do
     # number after result reporting and leave coach cadence and backlog
     # unchanged.
     ((--ITERATION))
+    if ((FIXER_ITERATION && !STOP_REQUESTED)); then
+      FIXER_PENDING=1
+    fi
   fi
   if ((STOP_REQUESTED)) || { [[ -n $MAX_ITERATIONS ]] && ((ITERATION >= MAX_ITERATIONS)); }; then
     :
