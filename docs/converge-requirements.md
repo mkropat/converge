@@ -50,6 +50,7 @@ These are the section codes.
 ## Terms
 
 - **Run directory**: the current working directory when the operator starts the run. The root of the repository and any subdirectory of it can be the run directory.
+- **Operator**: the person who runs the project and its commands. An agent is not an operator.
 - **Loop**: the `converge` script that runs the iterations, in the background.
 - **Client**: the `converge` command that the operator runs. The client starts a loop, or attaches to the loop that runs.
 - **Session**: one run of the loop, with its output file, its process id, and its result.
@@ -77,8 +78,8 @@ These are the section codes.
 - **Fixer**: a worker iteration that runs on the fixer profile list because the coach escalated.
 - **Bug tracker**: `bin/cbugs`, which keeps the bugs and the reviewed commits of the run directory in its state directory. See `docs/cbugs-requirements.md`.
 - **Code bug**: a defect in the code. A worker fixes it.
-- **Spec bug**: an ambiguity, a gap, or a contradiction in the requirements documents. The human user resolves it. No agent works on a spec bug, and no agent waits for one.
-- **Task**: a punchlist item that a human user asked for. A worker does it. Only a human user directs the record of one.
+- **Spec bug**: an ambiguity, a gap, or a contradiction in the requirements documents. The operator resolves it. No agent works on a spec bug, and no agent waits for one.
+- **Task**: a punchlist item that an operator asked for. A worker does it. Only an operator directs the record of one.
 - **Scope**: the requirements paths that the operator names on the command line. An empty scope requires discovery before the normal invocations.
 - **Citation**: a reference from a bug revision to a documented requirement. `cbugs` writes it from a `--cite` option.
 - **Guidance file**: the file that the coach writes and that the loop injects into each worker prompt.
@@ -306,7 +307,7 @@ The operator starts a run over a connection that can break, and the run survives
   - **CV-ITER-3.1**: Survey the current repository state with fresh eyes.
   - **CV-ITER-3.2**: Retired. Required each unscoped worker to find requirements. **CV-ITER-3.14** replaces this behavior.
   - **CV-ITER-3.3**: Run `cbugs list --kind code --kind task --status open` and read the open code bugs and the open tasks.
-  - **CV-ITER-3.4**: Fix these bugs before it starts work that the requirements name but no bug names. A defect in the code that exists is worth more than a feature that does not, and a task is work that a human user asked for.
+  - **CV-ITER-3.4**: Fix these bugs before it starts work that the requirements name but no bug names. A defect in the code that exists is worth more than a feature that does not, and a task is work that an operator asked for.
   - **CV-ITER-3.5**: Read the citations of a bug with `cbugs show`, and read the requirement that a citation names. The citation says which requirement the fix must meet.
   - **CV-ITER-3.6**: Close each bug that it fixes, with `cbugs close`, and say in the note what it changed.
   - **CV-ITER-3.7**: Do a task in a way that no requirements document contradicts. A change that contradicts a document is a spec bug: log it, and do not make the change.
@@ -314,7 +315,7 @@ The operator starts a run over a connection that can break, and the run survives
   - **CV-ITER-3.9**: Implement the chunk.
   - **CV-ITER-3.10**: Commit logical changes with clear messages.
   - **CV-ITER-3.11**: Not create plan documents, roadmap documents, or task lists that persist between iterations.
-  - **CV-ITER-3.12**: Not work on a spec bug, and not wait for one. The human user resolves a spec bug.
+  - **CV-ITER-3.12**: Not work on a spec bug, and not wait for one. The operator resolves a spec bug.
   - **CV-ITER-3.13**: When a commit fails because another process holds a lock of git, wait and try the commit again. A second loop can run in a second run directory of the same repository, as **CV-BG-11** gives.
   - **CV-ITER-3.14**: Read the current requirements selected by explicit scope paths or the session's lookup instructions. Apply **CV-SCOPE-10** through **CV-SCOPE-15**.
 - **CV-ITER-4**: The worker prompt must tell the worker that it may log a bug with `cbugs add`, and must not urge it to. A worker that finds a defect it will not fix in this iteration has somewhere to put it. A worker that hunts for defects is not doing the work of a worker.
@@ -423,7 +424,7 @@ The operator starts a run over a connection that can break, and the run survives
 - **CV-CONV-26**: Convergence requires only `N` consecutive done votes from successful worker chains. The vote of a chain comes from its successful attempt. A failed attempt in a chain that later succeeds must not reset the count. A chain with no successful attempt, or a timed-out worker, cannot vote and must reset the count to zero. A worker non-vote must reset the count to zero. The default `N` is `2`. With `N` equal to `0`, the loop must converge without starting any agent.
 - **CV-CONV-27**: The worker prompt must instruct the worker on the blocked vote. A worker that cannot vote done and cannot work has no honest answer without it, and it spins.
   - **CV-CONV-27.1**: Write the exact token `BLOCKED` on a line of its own in the final message only when no open code bug and no open task that the worker can do remain, and every remaining piece of work is stopped by a blocker.
-  - **CV-CONV-27.2**: Before it reports a spec blocker, log the spec bug with `cbugs add --kind spec` when no open spec bug names it. A blocker that no record holds is a blocker that the human user cannot see.
+  - **CV-CONV-27.2**: Before it reports a spec blocker, log the spec bug with `cbugs add --kind spec` when no open spec bug names it. A blocker that no record holds is a blocker that the operator cannot see.
   - **CV-CONV-27.3**: Name each blocker in the final message: the id of the spec bug, or the tool or resource that the worker cannot reach, and the work that it stops.
   - **CV-CONV-27.4**: Do no work in an iteration that votes blocked. A worker that did work reports the work; the next iteration finds what remains.
   - **CV-CONV-27.5**: Not vote blocked because the work is hard. A blocker is outside the worker; a hard task is not. The coach judges the difference, as **CV-COACH-14** gives.
@@ -432,7 +433,7 @@ The operator starts a run over a connection that can break, and the run survives
   - **CV-CONV-29.1**: A blocked vote adds one to the blocked count and resets the done count to zero.
   - **CV-CONV-29.2**: A done vote, a non-vote, a chain with no successful attempt, and a timed-out worker reset the blocked count to zero.
   - **CV-CONV-29.3**: A coach run, a cadence pass, and a vote panel must not change the blocked count. The count must survive the coach run that a blocked vote starts, or the stop of **CV-CONV-29.4** never fires.
-  - **CV-CONV-29.4**: When the blocked count reaches `N` of `--blocked`, the loop must stop and exit with status `3`. This is a stop without convergence. Status `3` tells a script that the run waits on a human decision, and not on more iterations.
+  - **CV-CONV-29.4**: When the blocked count reaches `N` of `--blocked`, the loop must stop and exit with status `3`. This is a stop without convergence. Status `3` tells a script that the run waits on a decision of the operator, and not on more iterations.
   - **CV-CONV-29.5**: With `--no-coach`, blocked votes still count, and the stop still applies. No coach runs between them.
 - **CV-CONV-30**: The loop must use this order:
   1. Before the first worker, stop on a signal, convergence, or a zero worker limit. Otherwise perform discovery when required. Stop if discovery fails. Then run any due startup cadence pass, followed by any due coach.
@@ -465,7 +466,7 @@ The worker builds. The reviewer reads what the worker built. One agent cannot do
 - **CV-REV-9**: The reviewer must log a defect that it finds, and must not fix it. A reviewer that edits code becomes a worker with no memory of the requirements it was reading.
 - **CV-REV-10**: The reviewer must not edit code, must not edit requirements documents, must not write the guidance file, and must not stop the loop. It writes bugs, and nothing else.
 - **CV-REV-11**: The reviewer must not close a bug. It did not do the work that a close records.
-- **CV-REV-12**: The reviewer must not log a task. Only a human user directs that record. The command refuses one from an agent of the loop, and the prompt must say so.
+- **CV-REV-12**: The reviewer must not log a task. Only an operator directs that record. The command refuses one from an agent of the loop, and the prompt must say so.
 - **CV-REV-13**: The loop must log reviewer output the same way it logs worker output.
 - **CV-REV-14**: Retired. Defined cadence scheduling with a strict greater-than threshold. **CV-REV-19** and **CV-CONV-25** replace this behavior.
   - **CV-REV-14.1**: Retired. See **CV-REV-19** for count timing.
@@ -521,7 +522,7 @@ The worker builds. The reviewer reads what the worker built. One agent cannot do
 - **CV-COACH-12**: After a blocked vote, the coach is due before the next worker, whatever the cadence. With `--no-coach`, no coach runs.
 - **CV-COACH-13**: A coach run that a blocked vote or a stall starts is a coach run under **CV-COACH-10**: it resets the cadence, and the next cadence run is due `K` iterations after it. A coach that is due by more than one trigger runs once. The coach prompt must name every trigger that made the run due. For a blocked vote, it must quote the final message of the blocked worker. For a stall, it must give the stall count.
 - **CV-COACH-14**: When a blocked vote or a stall made the coach due, the coach prompt must instruct the coach to decide which case holds, and to answer it:
-  - **CV-COACH-14.1**: No worker can resolve the block: an open spec bug waits on the human user, or a tool or resource is missing. Then write guidance that tells workers not to retry that work, and to report a blocked vote when no other work remains. Do not escalate.
+  - **CV-COACH-14.1**: No worker can resolve the block: an open spec bug waits on the operator, or a tool or resource is missing. Then write guidance that tells workers not to retry that work, and to report a blocked vote when no other work remains. Do not escalate.
   - **CV-COACH-14.2**: The work is doable, and the worker model cannot do it: workers gave up, circled, or claimed a blocker that no record holds. Then write guidance that names the task and what the workers got wrong, and escalate.
   - **CV-COACH-14.3**: Check with `cbugs show` that each spec bug a worker cited exists and is open. A claimed blocker with no open record is evidence for **CV-COACH-14.2**.
   - **CV-COACH-14.4**: The coach may also escalate on a cadence run when it finds the same evidence there.
@@ -595,7 +596,7 @@ The loop keeps its files in two directories. The state directory is durable. The
 
 These are recorded decisions, not oversights.
 
-- **CV-OOS-1** — **A task that an agent logs**: rejected. A task is a request from a human user. An agent that logs one invents work, and the next worker does it before the work that the requirements name. `cbugs` refuses `--kind task` when `CONVERGE_ROLE` is in the environment, so every agent of the loop is refused.
+- **CV-OOS-1** — **A task that an agent logs**: rejected. A task is a request from an operator. An agent that logs one invents work, and the next worker does it before the work that the requirements name. `cbugs` refuses `--kind task` when `CONVERGE_ROLE` is in the environment, so every agent of the loop is refused.
 - **CV-OOS-2** — **A loop that reports the citations of a bug**: rejected for v1. The report of a review pass gives the id, the kind, and the title. A reader who wants the citation runs `cbugs show`.
 - **CV-OOS-3** — **Loop-managed commits**: rejected. Workers commit as well as loop-enforced commits do, and the loop stays simpler.
 - **CV-OOS-4** — **Worker notes between iterations**: rejected for v1. The guidance file and the bug database are the channels between iterations. A note that is not a defect and not process guidance has no channel, and needs none yet.

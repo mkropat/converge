@@ -93,7 +93,7 @@ An identifier must not change its meaning. Removed requirements leave their iden
 - **RP-RUN-2**: Each panel run must have a distinct identity. Each bug created by its reviewers must be attributable to that run and to the reviewer invocation and profile that created it. Attribution must remain correct when processes write to the database concurrently.
 - **RP-RUN-3**: The command must use run attribution to select new bugs for its merge pass and summary. A database-wide count difference or time interval alone must not define the new bugs of the run.
 - **RP-RUN-4**: Concurrent runs must not overwrite each other's logs, output, or result records. Stopping a panel must not stop agents from another run.
-- **RP-RUN-5**: Reviewers must retain the normal cbugs agent authorship rules. Panel identity and profile attribution must supplement those rules, not impersonate a human caller. The required attribution is a shared cbugs integration contract; this document does not prescribe its storage format.
+- **RP-RUN-5**: Reviewers must retain the normal cbugs agent authorship rules. Panel identity and profile attribution must supplement those rules, not impersonate the operator. The required attribution is a shared cbugs integration contract; this document does not prescribe its storage format.
 - **RP-RUN-6**: Run attribution and new-bug selection must include every bug that
   this panel created, even when that bug is hidden at a later query `HEAD`. The
   controller must use attribution or direct ids, not a normal visible-only list.

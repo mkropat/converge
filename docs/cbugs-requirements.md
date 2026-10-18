@@ -94,8 +94,8 @@ through `CB-MIG-6` replace it.
   history, or all relevant commits when fewer than 1,000 exist.
 - **Unreviewed commit**: a commit in the considered history that the table
   of reviewed commits does not name.
-- **Human user**: the person who runs the project. An agent is not a human
-  user.
+- **Operator**: the person who runs the project and its commands. An agent is
+  not an operator.
 - **Caller**: the loop, an agent, or the operator that runs the command.
 - **State directory**: the durable directory of one run directory, as
   `docs/converge-requirements.md` defines it.
@@ -147,9 +147,9 @@ There are three kinds, and the difference decides who acts.
 - **CB-KIND-1**: A **code bug** is a defect in the project code. A worker fixes
   it.
 - **CB-KIND-2**: A **spec bug** is an ambiguity, a gap, or a contradiction in
-  the requirements documents. The human user resolves it. No agent works on a
+  the requirements documents. The operator resolves it. No agent works on a
   spec bug, and no agent waits for one.
-- **CB-KIND-3**: A **task** is a punchlist item that a human user asked for.
+- **CB-KIND-3**: A **task** is a punchlist item that an operator asked for.
   A worker does it. It is usually not a violation of a requirement, but a tweak
   that the requirements permit. A task must not contradict a requirements
   document: a later worker that reads the document would undo the change.
@@ -163,18 +163,18 @@ There are three kinds, and the difference decides who acts.
 
 ### Who logs a task
 
-A task records what a human user asked for. An agent that logs one invents
+A task records what an operator asked for. An agent that logs one invents
 work that no person requested, and a worker then does it.
 
 - **CB-TASK-1**: `add --kind task` must stop with an error when the environment
   holds `CONVERGE_ROLE`. An agent that the loop starts therefore cannot log a
   task, whatever a prompt tells it. The error must say that a task records a
-  request from a human user, and must name the role that it read.
+  request from an operator, and must name the role that it read.
 - **CB-TASK-2**: The command must apply this test to `add` only. A worker must
   be able to note, close, dismiss, and reopen a task, because a worker does
   the work that the task names.
 - **CB-TASK-3**: The help text of `add` must say that an agent must never log a
-  task unless a human user directed it. The prompts must say the same. See
+  task unless an operator directed it. The prompts must say the same. See
   `docs/converge-requirements.md`.
 
 ## Invocation
@@ -668,7 +668,7 @@ next, and the help text does not tell it which bugs are open.
 - **CB-CLOSE-1**: `cbugs close <id>` must write a revision with the status
   `closed`.
 - **CB-CLOSE-2**: `closed` means that the defect is gone. A worker closes a code
-  bug when it fixes the bug. The human user closes a spec bug when the
+  bug when it fixes the bug. The operator closes a spec bug when the
   requirements no longer hold the ambiguity.
 
 ### dismiss

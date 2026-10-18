@@ -10,12 +10,8 @@ concept and names the words to avoid.
 ### People and places
 
 **Operator**:
-The person who starts a command and reads its terminal output.
-_Avoid_: user, caller (when the caller is a person)
-
-**Human user**:
-The person who directs the project: resolves spec bugs and asks for tasks. An agent is never a human user.
-_Avoid_: human, person, owner
+The person who runs the project and its commands: starts the loop, resolves spec bugs, and asks for tasks. An agent is never an operator.
+_Avoid_: human user, human, user, person, owner, caller (when the caller is a person)
 
 **Project**:
 The repository that the operator works on with `converge`. A project holds one or more run directories.
@@ -218,11 +214,11 @@ A defect in the project code. A worker fixes it.
 _Avoid_: defect, bug (when the kind matters), error
 
 **Spec bug**:
-An ambiguity, a gap, or a contradiction in the requirements documents. The human user resolves it, and no agent works on it or waits for it.
+An ambiguity, a gap, or a contradiction in the requirements documents. The operator resolves it, and no agent works on it or waits for it.
 _Avoid_: question, open point, requirements issue
 
 **Task**:
-A punchlist item that a human user asked for. A worker does it. Only a human user directs the record of one.
+A punchlist item that an operator asked for. A worker does it. Only an operator directs the record of one.
 _Avoid_: todo, feature request, chore, ticket
 
 **Revision**:
