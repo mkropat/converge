@@ -1,14 +1,15 @@
 # converge
 
-converge runs autonomous coding agents to bring a repository into agreement with
-its requirements. Each worker iteration starts with a fresh context, reads the
-requirements and current code, handles open code bugs and human-requested tasks,
-and chooses one useful change. Workers commit logical changes; they do not keep
-a stored implementation plan or edit the requirements.
+converge runs autonomous coding agents to bring a repository into agreement
+with its requirements. Each worker iteration starts with a fresh context, reads
+the requirements and current code, handles open code bugs and
+operator-requested tasks, and chooses one useful change. Workers commit logical
+changes; they do not keep a stored implementation plan or edit the
+requirements.
 
-A separate reviewer checks the code and files findings in `cbugs`. A coach reads
-run history and writes guidance for later workers. Bugs, review coverage, coach
-guidance, and logs persist between runs.
+A separate reviewer checks the code and files bugs in `cbugs`. A coach reads
+session history and writes guidance for later workers. Bugs, coverage, coach
+guidance, and logs persist between sessions.
 
 ## Setup
 
@@ -63,20 +64,21 @@ The default loop runs in the background and survives a lost terminal. Run
 running loop keeps its original settings. `--foreground` runs it directly in
 the terminal.
 
-The first Ctrl-C requests a graceful stop: active agent calls finish, and no
-new calls start. A second Ctrl-C, or SIGTERM, terminates active calls and their
-children immediately. Ctrl-C returns status `130`. SIGTERM returns `143`.
+The first Ctrl-C requests a graceful stop: active invocations finish, and no
+new invocations start. A second Ctrl-C, or SIGTERM, terminates active
+invocations and their children immediately. Ctrl-C returns status `130`.
+SIGTERM returns `143`.
 
 ### Review, coaching, and completion
 
-By default, cadence reviews run when at least five unreviewed commits affect
+By default, cadence passes run when at least five unreviewed commits affect
 the run directory. The requirements define the following commit selection.
 This selection is not yet implemented.
 
-On a feature branch, review history contains commits
-reachable from `HEAD` that neither local `main` nor locally stored
-`origin/main` reaches. This includes commits introduced through merges.
-Pending queries use current local references and perform no fetch.
+On a feature branch, review history contains commits reachable from `HEAD` that
+neither local `main` nor locally stored `origin/main` reaches. This includes
+commits introduced through merges. Queries for unreviewed commits use current
+local references and perform no fetch.
 
 On local `main`, review history contains all commits reachable from `HEAD`.
 The same fallback applies when neither base reference has a common ancestor
@@ -84,48 +86,49 @@ with `HEAD`. Missing base references cause no error. An empty feature-branch
 selection does not trigger the fallback.
 
 Both selections consider only the 1,000 newest commits that affect the run
-directory. The limit applies before commits with review records are removed.
-Commits from before the session can qualify. A review can run before the first
-worker. Successful reviews record coverage in `cbugs`, so restarting does not
-discard it. A new commit hash after a rebase or amendment needs new coverage.
-The first cadence review uses the same commit boundary as later reviews.
+directory. The limit applies before commits with coverage records are removed.
+Commits from before the session can qualify. A cadence pass can run before the
+first worker. Successful passes record coverage in `cbugs`, so restarting does
+not discard it. A new commit hash after a rebase or amendment needs new
+coverage. The first cadence pass uses the same commit boundary as later passes.
 Vote panels continue to review the whole live working tree.
 
 The coach runs after five worker iterations, then every ten iterations. Failed
-and timed-out workers count toward this schedule. A failed coach call also
+and timed-out workers count toward this schedule. A failed coach invocation also
 resets its schedule. Stop conditions take priority over due reviews and coaching.
 
 By default, the loop stops successfully after two consecutive successful
 workers emit `CONVERGED` alone on a line in their final message. Workers are
-instructed to vote only when no work, open code bugs, or open human tasks remain.
+instructed to vote done only when no work, open code bugs, or open tasks remain.
 The controller counts the votes; it does not check bug counts or require
 approval of a Git `HEAD`. A worker non-vote, failure, or timeout resets the count.
 
-When the vote count first rises from zero to one, the loop runs a review panel
+When the done count first rises from zero to one, the loop runs a vote panel
 on the live working tree and waits for it, including any duplicate merge,
-before proceeding. The panel is advisory: findings and review failures do not
-reset votes or prevent convergence. It also runs with `--consensus 1`.
+before proceeding. The panel is advisory: new bugs and review failures do not
+change the done count or prevent convergence. It also runs with `--consensus 1`.
 
 | Option | Default | Effect |
 | --- | --- | --- |
-| `--consensus N` | `2` | Consecutive worker votes required. `0` exits successfully without starting agents. |
-| `--review-after N` | `5` | Positive number of unreviewed commits needed for a cadence review. |
-| `--no-review` | Review enabled | Disable both cadence reviews and vote panels. |
-| `--coach-first F` | `5` | Worker iterations before the first coach call; `0` runs it before the first worker. |
-| `--coach-every K` | `10` | Positive number of worker iterations between coach calls. |
+| `--consensus N` | `2` | Consecutive worker done votes required. `0` exits successfully without starting agents. |
+| `--review-after N` | `5` | Positive number of unreviewed commits needed for a cadence pass. |
+| `--no-review` | Review enabled | Disable both cadence passes and vote panels. |
+| `--coach-first F` | `5` | Worker iterations before the first coach invocation; `0` runs it before the first worker. |
+| `--coach-every K` | `10` | Positive number of worker iterations between coach invocations. |
 | `--no-coach` | Coach enabled | Disable coaching. |
 | `--timeout seconds` | `3600` | Duration limit for each agent invocation. `0` disables the time limit. |
-| `--max-iterations N` | Unbounded | Limit worker iterations, including failed or timed-out calls. `0` starts no agents. |
+| `--max-iterations N` | Unbounded | Limit worker iterations, including failed or timed-out invocations. `0` starts no agents. |
 | `--foreground` | Background | Run in the current terminal. |
 | `--init-state` | — | Create state and runtime directories, print the state path, and exit without agents. Combine only with `--help`; that prints help without creating state. |
 | `--state-dir` | — | Print the state path for the current directory and exit. Create nothing. Combine only with `--help`. |
 
 Convergence returns status `0`; reaching the worker limit without convergence
 returns `1`. Invalid setup or arguments return `2`. Agent failures are logged;
-the loop continues with the next scheduled call. Calls with no agent output
-cause a delay that doubles from 10 seconds to a maximum of 15 minutes. A call
-with agent output resets the delay. A missing harness fails when its first call
-starts; there is no advance harness availability check.
+the loop continues with the next scheduled invocation. Invocations with no
+agent output cause a delay that doubles from 10 seconds to a maximum of 15
+minutes. An invocation with agent output resets the delay. A missing harness
+fails when its first invocation starts; there is no advance harness
+availability check.
 
 There is no mandatory test command. Verification follows the project
 requirements and agent instructions.
@@ -138,9 +141,9 @@ form `harness:model[:effort]`. Supported harnesses are `claude`, `opencode`, and
 
 | Variable | Default | Use |
 | --- | --- | --- |
-| `CONVERGE_WORKER_PROFILE` | `claude:sonnet` | Worker profiles, rotated per run, with fallback. |
-| `CONVERGE_REVIEWER_PROFILE` | `claude:opus` | Cadence reviewer profiles, rotated per run, with fallback; default for panels. |
-| `CONVERGE_COACH_PROFILE` | `claude:opus` | Coach profiles, rotated per run, with fallback. |
+| `CONVERGE_WORKER_PROFILE` | `claude:sonnet` | Worker profiles, rotated per chain, with fallback. |
+| `CONVERGE_REVIEWER_PROFILE` | `claude:opus` | Cadence reviewer profiles, rotated per chain, with fallback; default for panels. |
+| `CONVERGE_COACH_PROFILE` | `claude:opus` | Coach profiles, rotated per chain, with fallback. |
 | `CONVERGE_REVIEW_PANEL_PROFILE` | Reviewer profile list | Panel reviewers, all run concurrently once per panel. |
 | `CONVERGE_REVIEW_PANEL_MERGE_PROFILE` | First panel profile | Merge profiles, tried in order until one succeeds. |
 
@@ -151,13 +154,13 @@ export CONVERGE_REVIEW_PANEL_PROFILE='claude:opus,claude:sonnet'
 converge docs/requirements.md
 ```
 
-Each worker, reviewer, and coach run starts with the next profile in its
-rotation. Discovery starts with the first worker profile. If an attempt exits
-with a nonzero status, the run tries the next profile at once. It stops at the
-first success, or after it has tried every profile once. A timeout does not
-trigger a fallback. The next run of a role starts after the last profile that
-the role tried. Put profiles from more than one subscription in a list to keep
-the loop running when one subscription hits its quota:
+Each worker chain, cadence pass, and coach run starts with the next profile in
+its rotation. Discovery starts with the first worker profile. If an attempt
+exits with a nonzero status, the chain tries the next profile at once. It stops
+at the first success, or after it has tried every profile once. A timeout does
+not trigger a fallback. The next chain of a role starts after the last profile
+that the role tried. Put profiles from more than one subscription in a list to
+keep the loop running when one subscription hits its quota:
 
 ```sh
 export CONVERGE_WORKER_PROFILE='claude:sonnet,codex:gpt-5-codex'
@@ -165,11 +168,12 @@ export CONVERGE_REVIEWER_PROFILE='claude:opus,codex:gpt-5-codex:high'
 export CONVERGE_COACH_PROFILE='claude:opus,codex:gpt-5-codex'
 ```
 
-Role rotations restart with each loop session. Panel calls do not advance them.
-Each list rejects duplicate profiles after trimming spaces around its entries.
-Model and effort fields must be nonempty when supplied. They cannot contain
-spaces, commas, or colons. Explicitly empty profile variables are errors.
-`converge` validates all five variables at startup, even for disabled roles.
+Role rotations restart with each loop session. Panel invocations do not advance
+them. Each list rejects duplicate profiles after trimming spaces around its
+entries. Model and effort fields must be nonempty when supplied. They cannot
+contain spaces, commas, or colons. Explicitly empty profile variables are
+errors. `converge` validates all five variables at startup, even for disabled
+roles.
 
 Model names are passed unchanged. Codex needs the full model ID accepted by
 `codex exec`; short aliases are not expanded. Optional effort maps to Claude's
@@ -187,20 +191,20 @@ options are retired. New loops also reject `CONVERGE_HARNESS`,
 `CONVERGE_OPENCODE_REVIEW_MODEL`, and `CONVERGE_OPENCODE_COACH_MODEL`, even when
 empty. `review-panel` rejects the old `REVIEW_PANEL_PROFILES` and
 `REVIEW_PANEL_MERGE_PROFILE` variables. Unset these retired variables before
-starting a new run. Run `converge --help` for command help.
+starting a new session. Run `converge --help` for command help.
 
 ## Run a standalone review
 
 `review-panel` reviews the live working tree, including uncommitted changes and
 relevant untracked files. It uses the panel profile variables above, runs each
 reviewer concurrently, then uses a separate merge agent to combine duplicate
-findings when there are new findings. It files code and spec bugs in the same
-tracker as `converge`, reports findings, and exits. A complete panel records
-coverage for the commits pending at startup under each reviewer profile. A
-failed reviewer, failed merge, or stopped run prevents this coverage step.
+new bugs when there are new bugs. It files code and spec bugs in the same
+tracker as `converge`, reports the new bugs, and exits. A complete panel records
+coverage for the commits unreviewed at startup under each reviewer profile. A
+failed reviewer, failed merge, or stopped panel run prevents this coverage step.
 Panel reviewers get no retry or fallback profile. The merge agent tries each
 profile in its list in order until one succeeds. The merge still runs after a
-reviewer failure if findings exist or the controller cannot read the findings.
+reviewer failure if new bugs exist or the controller cannot read them.
 An operator stop prevents a merge that has not started.
 
 The panel does not run workers or repair iterations.
@@ -216,10 +220,11 @@ run. Existing bugs and new spec bugs alone do not cause status `1`. An operator
 Ctrl-C stop returns `130`; SIGTERM returns `143`. Review coverage records what
 was read. It does not approve a fixed snapshot or claim convergence.
 
-## Track bugs and human tasks
+## Track bugs and tasks
 
-`cbugs` stores three kinds of records: `code` defects, `spec` ambiguities or
-contradictions for a human to resolve, and human-requested `task` records.
+`cbugs` stores three kinds of bug: `code` defects, `spec` ambiguities or
+contradictions for the operator to resolve, and `task` requests from the
+operator.
 
 ```sh
 cbugs                                            # Open-bug summary
@@ -232,17 +237,17 @@ cbugs close "$task_id" --note 'Implemented and verified CSV export.'
 cbugs reviewed pending
 ```
 
-Use `search` to find existing findings, `note` to append context, `dismiss` to
-mark a record `wontfix`, and `reopen` to reopen it. Every verb supports `--json`;
+Use `search` to find existing bugs, `note` to append context, `dismiss` to
+mark a bug `wontfix`, and `reopen` to reopen it. Every verb supports `--json`;
 run `cbugs <verb> --help` for its options.
 
 Bug changes append immutable revisions. Each revision uses the current commit
 unless you supply `--commit`. The current state uses the newest revision whose
 commit is reachable from Git `HEAD`. Revisions with no commit are always
 visible. A bug with no visible revision is hidden; its history remains stored.
-Use `cbugs list --visibility all` to inspect hidden records.
+Use `cbugs list --visibility all` to inspect hidden bugs.
 
-The controllers set these variables for agent calls:
+The controllers set these variables for agent invocations:
 
 | Variable | Value or purpose |
 | --- | --- |
@@ -251,9 +256,9 @@ The controllers set these variables for agent calls:
 | `CONVERGE_RUN_DIR` | Absolute run path. `cbugs` uses it even after an agent changes directories. |
 | `REVIEW_PANEL_RUN` | Panel run ID, set for panel agents. |
 | `REVIEW_PANEL_PROFILE` | Full profile of the panel agent. |
-| `REVIEW_PANEL_INVOCATION` | ID of that panel agent call. |
+| `REVIEW_PANEL_INVOCATION` | ID of that panel agent invocation. |
 
-`cbugs` records this provenance. It rejects task creation and review-coverage
+`cbugs` records this provenance. It rejects task creation and coverage
 writes whenever `CONVERGE_ROLE` is set, including an empty value.
 
 ## State and logs
