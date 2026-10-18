@@ -85,6 +85,9 @@ through `CB-MIG-6` replace it.
 - **Reviewed commit**: a commit of the repository that the table of reviewed
   commits names. The loop records one after a review pass, as
   `docs/converge-requirements.md` gives.
+- **Coverage**: the records of the bug tracker that name the commits that a
+  review read. A review pass or a panel run records coverage only when it
+  succeeds. Coverage says what was read; it approves nothing.
 - **Relevant commit**: a commit that git reaches from the repository HEAD and
   that changes one or more paths in the run directory. Every reachable commit
   is relevant when the run directory is the repository root.
@@ -309,7 +312,7 @@ migrates it, and the history carries over.
   before it answers any verb. The supported paths from versions 2 and 3 must
   remain available, as CB-MIG-2 and CB-MIG-7 require.
 - **CB-MIG-11**: The migration from version 4 to version 5 must allow multiple
-  review records per commit and add the optional profile. It must preserve
+  coverage records per commit and add the optional profile. It must preserve
   every existing review id, full commit hash, iteration, and timestamp without
   change. Each existing record must have a NULL profile, which means unknown.
   Every bug, revision, and citation must remain unchanged. The transaction and
@@ -510,7 +513,7 @@ sections of `docs/converge-requirements.md` for the loop behavior.
   reads the repository for these verbs as it reads HEAD for the provenance of
   a revision, as CB-PROV-4 gives.
 
-- **CB-RVW-11**: Each review record must hold a full commit hash, the worker
+- **CB-RVW-11**: Each coverage record must hold a full commit hash, the worker
   iteration that the pass followed, a completion timestamp in `created_at`,
   and an optional profile string. The iteration comes from `--iteration`, not
   the environment. An omitted iteration records NULL. The record has an id
@@ -547,7 +550,7 @@ sections of `docs/converge-requirements.md` for the loop behavior.
   writes. An unknown profile must be JSON null. `created_at` must be the stored
   timestamp. `reviewed pending` keeps the output of CB-RVW-9; pending commits
   have no review metadata.
-- **CB-RVW-18**: For CB-RVW-24, any review record is sufficient coverage.
+- **CB-RVW-18**: For CB-RVW-24, any coverage record is sufficient.
   Existing migrated records and manual records with an unknown profile count.
   The command must not require a number of reviews or a particular profile
   before it removes a commit from the pending result.
@@ -575,7 +578,7 @@ sections of `docs/converge-requirements.md` for the loop behavior.
   history is relevant when the run directory is the repository root. The
   considered history must contain only the 1,000 newest relevant commits.
   This limit must apply to branch selection and fallback selection. It must
-  apply before the command removes commits with review records. Older commits
+  apply before the command removes commits with coverage records. Older commits
   must remain outside the considered history, even when they have no review
   record.
 - **CB-RVW-23**: Each pending query must use the repository state and local
@@ -585,8 +588,8 @@ sections of `docs/converge-requirements.md` for the loop behavior.
   or session. A failure to read existing repository history must remain an
   error; it must not produce a successful empty result.
 - **CB-RVW-24**: `cbugs reviewed pending` must print the commits in the
-  considered history that have no review record, newest first. Any review
-  record must count as coverage under CB-RVW-18. When no considered commit is
+  considered history that have no coverage record, newest first. Any coverage
+  record must count under CB-RVW-18. When no considered commit is
   unreviewed, the command must print nothing and exit with status `0`. This
   includes an empty branch selection and a repository with no commit.
 

@@ -157,6 +157,10 @@ _Avoid_: window, lookback
 A commit that a review pass or a panel run has recorded in the bug tracker.
 _Avoid_: covered commit, seen commit
 
+**Coverage**:
+The records of the bug tracker that name the commits a review read. A review pass or a panel run records coverage only when it succeeds, and coverage approves nothing.
+_Avoid_: review record, reviewed-commit record (say "coverage record"), approval
+
 **Unreviewed commit**:
 A commit in the considered history that no review has recorded.
 _Avoid_: pending commit (except in the `reviewed pending` verb), new commit
