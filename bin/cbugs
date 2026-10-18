@@ -729,6 +729,23 @@ init_db() {
   fi
   ver=$(sqlite3_run raw "PRAGMA user_version;") || exit 1
   [[ $ver == "$DB_VERSION" ]] && return
+  if [[ $ver == 0 ]]; then
+    exec 9>"$STATE_DIR/cbugs.db.migrate.lock" || exit 1
+    if ! flock -w 10 9; then
+      echo "cbugs: timed out waiting for the database creation lock on $DB" >&2
+      exit 1
+    fi
+    ver=$(sqlite3_run raw "PRAGMA user_version;") || exit 1
+    if [[ $ver == 0 ]]; then
+      sqlite3_run raw "$SCHEMA_SQL" >/dev/null || exit 1
+    elif [[ $ver != "$DB_VERSION" ]]; then
+      echo "cbugs: $DB is database version $ver, but this command knows version $DB_VERSION and migrates only versions 2, 3, 4, 5, 6, and 7" >&2
+      exit 1
+    fi
+    flock -u 9
+    exec 9>&-
+    return
+  fi
   case $ver in
     2|3|4|5|6|7) ;;
     *)
@@ -1445,9 +1462,10 @@ verb_note() {
   local id_arg="" note="" note_set=0 pos_note_set=0 commit="" commit_set=0 json=0 title_set=0
   TITLE_OVERRIDE=""
   [[ ${1:-} == -h || ${1:-} == --help ]] && { usage_note; exit 0; }
-  [[ $# -ge 1 && $1 != -* ]] || { usage_note; exit 2; }
+  [[ $# -ge 1 ]] || { usage_note; exit 2; }
   id_arg=$1; shift
-  if [[ $# -ge 1 && $1 != -* ]]; then
+  if [[ ${1:-} == -- ]]; then shift; fi
+  if (($#)); then
     note=$1; note_set=1; pos_note_set=1; shift
   fi
   while (($#)); do
@@ -1707,7 +1725,9 @@ verb_search() {
   local -a kinds=() statuses=()
   [[ ${1:-} == -h || ${1:-} == --help ]] && { usage_search; exit 0; }
   need_tool python3 python
-  [[ $# -ge 1 && $1 != -* ]] || { usage_search; exit 2; }
+  [[ $# -ge 1 ]] || { usage_search; exit 2; }
+  [[ ${1:-} == -- ]] && shift
+  (($#)) || { usage_search; exit 2; }
   text=$1; shift
   while (($#)); do
     case $1 in
@@ -1777,7 +1797,9 @@ for record in json.load(sys.stdin):
     for revision in bug.pop("revisions"):
         texts.extend((revision.get("title") or "", revision.get("note") or ""))
         for citation in revision.get("citations") or []:
-            texts.extend((citation.get("path") or "", citation.get("req") or ""))
+            path = citation.get("path") or ""
+            req = citation.get("req") or ""
+            texts.extend((path, req, path + (":" + req if req else "")))
     if any(needle in t.casefold() for t in texts):
         result.append(bug)
 print(json.dumps(result, ensure_ascii=False))
@@ -1960,12 +1982,12 @@ verb_reviewed_pending() {
 }
 
 verb_reviewed_add() {
-  local iter="" json=0 value profile="" profile_set=0 completed_at="" completed_at_set=0
+  local iter="" iter_set=0 json=0 value profile="" profile_set=0 completed_at="" completed_at_set=0
   local -a commits=() named=() resolved=() absent=()
   while (($#)); do
     case $1 in
-      --iteration) need_value "$1" $#; iter=$2; shift 2 ;;
-      --iteration=*) iter=${1#*=}; shift ;;
+      --iteration) need_value "$1" $#; iter=$2; iter_set=1; shift 2 ;;
+      --iteration=*) iter=${1#*=}; iter_set=1; shift ;;
       --profile)
         ((! profile_set)) || { echo "cbugs reviewed add: --profile given more than once" >&2; exit 2; }
         need_value "$1" $#; profile=$2; profile_set=1; shift 2
@@ -1988,7 +2010,7 @@ verb_reviewed_add() {
       *) commits+=("$1"); shift ;;
     esac
   done
-  [[ -z $iter ]] || is_number "$iter" || {
+  ((!iter_set)) || is_number "$iter" || {
     echo "cbugs reviewed add: --iteration needs a whole number, got '$iter'" >&2
     exit 2
   }
