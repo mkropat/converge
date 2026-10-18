@@ -117,7 +117,7 @@ An identifier must not change its meaning. Removed requirements leave their iden
 
 ## Review coverage
 
-- **RP-COV-1**: At startup, the controller must capture the commits pending review for the run directory under `docs/cbugs-requirements.md:CB-RVW-20` through `CB-RVW-24`.
+- **RP-COV-1**: At startup, the controller must capture the unreviewed commits of the run directory under `docs/cbugs-requirements.md:CB-RVW-20` through `CB-RVW-24`.
 - **RP-COV-2**: After a complete review and merge phase, the controller must record coverage for the captured commits through the existing cbugs review-record mechanism. Agents must not record coverage themselves.
 - **RP-COV-3**: Coverage records must identify the successful reviewer profiles under the cbugs profile-record rules. The merge profile must not count as a reviewer. Coverage must not imply that defects were absent.
 - **RP-COV-4**: The controller must record only commits captured at startup. It must record them even if HEAD changed during the run. Commits added after startup must not receive coverage from this run.
@@ -161,9 +161,9 @@ An identifier must not change its meaning. Removed requirements leave their iden
 
 - **RP-COST-1**: When converge starts a panel, it must pass its existing `CONVERGE_SESSION` and an explicit absolute `CONVERGE_COST_LEDGER` path. The panel must use both values without creating a new cost session or deriving another ledger path. Panel attribution must remain distinct from cost-session identity.
 - **RP-COST-2**: The panel must record each reviewer and merge invocation once in the shared ledger. All writers must use the same lock. Each TSV record must use the existing session, role, canonical profile, and cost fields. Reviewers must use the reviewer cost role. The merge agent must use a distinct merge cost role. The parent must include these records in its totals and must not add a panel total as another cost.
-- **RP-COST-3**: Cost handling must follow `docs/converge-requirements.md:CV-COST-1` through `CV-COST-8`. Unknown cost must not become zero. Failed or timed-out calls must retain available costs. A graceful stop must record available costs from completed calls. A hard stop may omit unfinished calls.
+- **RP-COST-3**: Cost handling must follow `docs/converge-requirements.md:CV-COST-1` through `CV-COST-8`. Unknown cost must not become zero. Failed or timed-out invocations must retain available costs. A graceful stop must record available costs from completed invocations. A hard stop may omit unfinished invocations.
 - **RP-COST-4**: A standalone panel must create its own cost session and absolute ledger path when no parent cost context is supplied. It must reject a partial context or a relative ledger path before it starts agents.
-- **RP-COST-5**: Each started discovery call must record available cost once under the distinct `discovery` role. It must use the panel's cost session and ledger. Cost handling must follow `docs/converge-requirements.md:CV-COST-11`.
+- **RP-COST-5**: Each started discovery invocation must record available cost once under the distinct `discovery` role. It must use the panel's cost session and ledger. Cost handling must follow `docs/converge-requirements.md:CV-COST-11`.
 
 ## Out of scope
 
