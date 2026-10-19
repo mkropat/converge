@@ -30,6 +30,7 @@ INIT_STATE=0
 STATE_QUERY=0
 HELP_REQUESTED=0
 ORIGINAL_ARGS="$*"
+NOTIFY_COMMAND=${CONVERGE_NOTIFY:-}
 # The client starts the loop again, in the background, with the same options.
 ORIGINAL_ARGV=("$@")
 SELF="$(cd "$(dirname "$0")" && pwd)/${0##*/}"
@@ -1043,6 +1044,67 @@ bad() {
   note "$1"
 }
 
+# send_notification <event> <summary> [details]
+# Run the session's snapshotted command once. The command owns delivery, so a
+# failure is reported and never retried.
+send_notification() {
+  local event=$1 summary=$2 details=${3:-} project message msgfile errfile status result
+  [[ -n $NOTIFY_COMMAND ]] || return 0
+  project=${REPO##*/}
+  [[ -n $RUN_SUBPATH ]] && project+="/$RUN_SUBPATH"
+  message="converge $project: $summary"
+  if [[ -n $details ]]; then
+    local available=$((3500 - ${#message} - 2))
+    if ((available < 0)); then available=0; fi
+    if ((${#details} > available)); then
+      local suffix=$'\n[message details cut]'
+      available=$((available - ${#suffix}))
+      ((available < 0)) && available=0
+      details="${details:0:available}$suffix"
+    fi
+    message+=$'\n\n'$details
+  fi
+  msgfile="$RUNTIME_DIR/$RUN_ID-notify-$event.message"
+  errfile="$RUNTIME_DIR/$RUN_ID-notify-$event.stderr"
+  printf '%s\n' "$message" >"$msgfile"
+  : >"$errfile"
+  setsid bash -c '
+    unset CONVERGE_EXIT
+    export CONVERGE_EVENT="$2" CONVERGE_RUN_DIR="$4" \
+      CONVERGE_STATE_DIR="$5" CONVERGE_SESSION="$6" CONVERGE_ITERATION="$7"
+    [[ $2 == stalled ]] || export CONVERGE_EXIT="$3"
+    trap "" INT
+    exec timeout -k 5 300 sh -c "$1" converge-notify "$2"
+  ' converge-notify-wrapper "$NOTIFY_COMMAND" "$event" "$EXIT_STATUS" \
+      "$RUN_DIR" "$STATE_DIR" "$RUN_ID" "$ITERATION" \
+      <"$msgfile" >/dev/null 2>"$errfile" &
+  CHILD=$!
+  CHILD_GROUP=1
+  IN_INVOCATION=1
+  wait "$CHILD"; status=$?
+  IN_INVOCATION=0
+  CHILD=""
+  CHILD_GROUP=0
+  if ((status == 0)); then
+    result="sent (exit 0)"
+  elif ((status == 124 || status == 137)); then
+    result="failed (timed out; exit $status)"
+  else
+    result="failed (exit $status)"
+  fi
+  printf '  %s%s%s notification %s: %s\n' "$DIM" "$G_DOT" "$OFF" "$event" "$result"
+  note "notification $event: exit $status"
+  note "notification $event message: $message"
+  if ((status != 0)); then
+    warn "notification $event $result"
+    if [[ -s $errfile ]]; then
+      tail -n 10 "$errfile" >&2
+      while IFS= read -r line; do note "notification $event stderr: $line"; done < <(tail -n 10 "$errfile")
+    fi
+  fi
+  rm -f "$msgfile" "$errfile"
+}
+
 # ------------------------------------------------------------ background loop
 #
 # The loop runs in the background, in a session of its own. A closed terminal,
@@ -1453,7 +1515,7 @@ PANEL_ROWS+=(
   "review|$REVIEW_SUMMARY"
   "pending review|$UNREVIEWED_SUMMARY"
   "coach|$COACH_SUMMARY; stall after $(plural "$STALL_AFTER" "stalled chain")"
-  "notification|$(if [[ -n ${CONVERGE_NOTIFY:-} ]]; then echo "command set; stalled after $(plural "$STALL_NOTIFY" "stalled chain")"; else echo "off"; fi)"
+  "notification|$(if [[ -n $NOTIFY_COMMAND ]]; then echo "command set; stalled after $(plural "$STALL_NOTIFY" "stalled chain")"; else echo "off"; fi)"
   "fixer|$(if ((FIXER_PROFILE_SET)); then join_list "${FIXER_PROFILES[@]}"; else echo "worker profile list"; fi)"
   "stop|$(plural "$CONSENSUS" "converged vote") in a row; blocked after $(plural "$BLOCKED_LIMIT" "blocked vote")"
   "timeout|${TIMEOUT}s for one invocation"
@@ -1479,6 +1541,7 @@ done
 # short right away.
 STOP_REQUESTED=0
 IN_INVOCATION=0
+CHILD_GROUP=0
 
 on_signal() {
   local sig=$1 text
@@ -1508,7 +1571,11 @@ on_signal() {
     PANEL_PID=""
   fi
   if [[ -n $CHILD ]]; then
-    kill -TERM "$CHILD" 2>/dev/null
+    if ((CHILD_GROUP)); then
+      kill -TERM -"$CHILD" 2>/dev/null || kill -TERM "$CHILD" 2>/dev/null || true
+    else
+      kill -TERM "$CHILD" 2>/dev/null
+    fi
     wait "$CHILD" 2>/dev/null
   fi
   if [[ -n $FORMATTER ]]; then
@@ -3029,6 +3096,10 @@ STALL_COUNT=0
 # CV-NOTIFY-10: this streak tracks stalled worker chains across coach runs,
 # and also runs when coaching is disabled.
 STALL_STREAK=0
+STALL_NOTIFICATION_SENT=0
+STALL_COACH_RUNS=0
+STALL_LAST_ESCALATED=0
+STALL_FIXER_RAN=0
 LAST_BLOCKED_MESSAGE=""
 FIXER_PENDING=0
 FIXER_ITERATION=0
@@ -3120,6 +3191,7 @@ while true; do
     note "coach run at $(date '+%Y-%m-%d %H:%M:%S'); trigger=$COACH_TRIGGER"
     note "coach reviews: ${PENDING_LOGS[*]:-none}"
     info "reviews $(plural "${#PENDING_LOGS[@]}" "worker log")"
+    if ((STALL_STREAK > 0)); then STALL_LAST_ESCALATED=0; fi
     GUIDANCE_BEFORE=$(guidance_state)
     # The guarded form, on its own line: inside a double-nested command
     # substitution, the single-quoted printf format derails the parser.
@@ -3134,6 +3206,7 @@ while true; do
     # yet reviewed -- so it clears only on success, letting a retry still see
     # the unprocessed logs.
     if ((CHAIN_STARTED)); then
+      ((STALL_STREAK > 0)) && ((++STALL_COACH_RUNS))
       SINCE_COACH=0
       COACH_DUE_AT=$COACH_EVERY
       STALL_COUNT=0
@@ -3144,6 +3217,7 @@ while true; do
     fi
     if ((CHAIN_STARTED && RUN_STATUS == 0)) && voted_escalate "$RESULT_TEXT"; then
       FIXER_PENDING=1
+      ((STALL_STREAK > 0)) && STALL_LAST_ESCALATED=1
       good "coach escalated; the next worker iteration will be a fixer"
       note "coach escalation: fixer pending"
     elif ((CHAIN_STARTED)); then
@@ -3152,6 +3226,13 @@ while true; do
     fi
   fi
   ((STOP_REQUESTED)) && break
+  # A stop at this point takes priority over a stalled notification.
+  stop_due && break
+  if ((STALL_STREAK >= STALL_NOTIFY && !STALL_NOTIFICATION_SENT)); then
+    stalled_details="coach runs since streak began: $STALL_COACH_RUNS; last coach run escalated: $( ((STALL_LAST_ESCALATED)) && echo yes || echo no ); fixer iteration ran: $( ((STALL_FIXER_RAN)) && echo yes || echo no )"
+    send_notification stalled "stall streak reached $STALL_STREAK stalled chains" "$stalled_details"
+    STALL_NOTIFICATION_SENT=1
+  fi
   if [[ -n $MAX_ITERATIONS ]] && ((ITERATION >= MAX_ITERATIONS)); then
     warn "reached the limit of $(plural "$MAX_ITERATIONS" iteration) without convergence"
     EXIT_STATUS=1
@@ -3161,6 +3242,7 @@ while true; do
   ((++ITERATION))
   FIXER_ITERATION=$FIXER_PENDING
   FIXER_PENDING=0
+  if ((FIXER_ITERATION && STALL_STREAK > 0)); then STALL_FIXER_RAN=1; fi
   WORKER_ROLE=worker
   if ((FIXER_ITERATION)); then WORKER_ROLE=fixer; fi
   heading "$CYAN" "${WORKER_ROLE} iteration $ITERATION${MAX_ITERATIONS:+ of $MAX_ITERATIONS}" "$(date '+%H:%M:%S')"
@@ -3241,9 +3323,14 @@ while true; do
     if ((MADE_RELEVANT_COMMIT || WORKER_DONE_VOTE || WORKER_BLOCKED_VOTE)); then
       STALL_COUNT=0
       STALL_STREAK=0
+      STALL_NOTIFICATION_SENT=0
+      STALL_COACH_RUNS=0
+      STALL_LAST_ESCALATED=0
+      STALL_FIXER_RAN=0
     else
       ((COACH_ENABLED)) && ((++STALL_COUNT))
       ((++STALL_STREAK))
+      if ((FIXER_ITERATION)); then STALL_FIXER_RAN=1; fi
       note "stalled chains: $STALL_COUNT"
       note "stall streak: $STALL_STREAK"
     fi
@@ -3297,6 +3384,13 @@ fi
 # first Ctrl-C. A second Ctrl-C and SIGTERM leave through the signal traps
 # and print a banner there without this summary, as CV-COST-6 allows.
 print_cost_summary
+
+case $EXIT_STATUS in
+  0) send_notification converged "$CLOSING_TEXT" ;;
+  1) send_notification limit "$CLOSING_TEXT" ;;
+  2) send_notification discovery-failed "$CLOSING_TEXT" ;;
+  3) send_notification blocked "$CLOSING_TEXT" "$LAST_BLOCKED_MESSAGE" ;;
+esac
 
 note "$CLOSING_TEXT"
 note "=== run end: exit $EXIT_STATUS ==="
