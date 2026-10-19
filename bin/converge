@@ -1064,8 +1064,17 @@ send_notification() {
     fi
     message+=$'\n\n'$details
   fi
-  msgfile="$RUNTIME_DIR/$RUN_ID-notify-$event.message"
-  errfile="$RUNTIME_DIR/$RUN_ID-notify-$event.stderr"
+  msgfile=$(mktemp "$LOG_DIR/$RUN_ID-notify-$event.XXXXXX.message") || {
+    warn "notification $event failed (cannot create message file)"
+    note "notification $event: could not start"
+    return 0
+  }
+  errfile=$(mktemp "$LOG_DIR/$RUN_ID-notify-$event.XXXXXX.stderr") || {
+    rm -f "$msgfile"
+    warn "notification $event failed (cannot create stderr file)"
+    note "notification $event: could not start"
+    return 0
+  }
   printf '%s\n' "$message" >"$msgfile"
   : >"$errfile"
   setsid bash -c '
@@ -1081,7 +1090,7 @@ send_notification() {
   CHILD=$!
   CHILD_GROUP=1
   IN_INVOCATION=1
-  wait "$CHILD"; status=$?
+  wait_child "$CHILD"; status=$?
   IN_INVOCATION=0
   CHILD=""
   CHILD_GROUP=0
@@ -1886,11 +1895,11 @@ produced_output() {
   esac
 }
 
-# handle_chain_wait <produced-output 0|1>
+# handle_chain_wait <produced-output 0|1> <status>
 # Wait once after a scheduled chain whose every attempt failed before output.
 # Any output from any attempt resets the wait, even when the attempt failed.
 handle_chain_wait() {
-  if (( $1 )); then
+  if (( $1 )) || (( $2 == 0 )); then
     FAIL_WAIT=0
     return 0
   fi
@@ -2294,7 +2303,7 @@ format_stream() {
           if [[ $INVOCATION_HARNESS == codex ]]; then
             local held_text
             held_text=$(jq -nr --arg encoded "${rest#*$'\t'}" '$encoded | fromjson')
-            hold+=("text\t$held_text")
+            hold+=("text"$'\t'"$held_text")
           else
             hold+=("$rest")
           fi
@@ -2789,7 +2798,7 @@ run_review_pass() {
   [[ -n $before_revision_ids ]] || before_revision_ids='[]'
 
   run_agent_chain reviewer "$prompt"
-  ((STOP_REQUESTED)) || handle_chain_wait "$CHAIN_PRODUCED_OUTPUT"
+  ((STOP_REQUESTED)) || handle_chain_wait "$CHAIN_PRODUCED_OUTPUT" "$RUN_STATUS"
 
   if ((RUN_STATUS == 0)); then
     # CV-REV-20: one completion timestamp for the whole pass, from the
@@ -3197,7 +3206,7 @@ while true; do
     # substitution, the single-quoted printf format derails the parser.
     PENDING_LOGS_TEXT=$(printf '%s\n' ${PENDING_LOGS[@]+"${PENDING_LOGS[@]}"})
     run_agent_chain coach "$(coach_prompt "$PENDING_LOGS_TEXT" "$COACH_TRIGGER" "$LAST_BLOCKED_MESSAGE" "$STALL_COUNT")"
-    ((STOP_REQUESTED)) || handle_chain_wait "$CHAIN_PRODUCED_OUTPUT"
+    ((STOP_REQUESTED)) || handle_chain_wait "$CHAIN_PRODUCED_OUTPUT" "$RUN_STATUS"
     show_guidance "$GUIDANCE_BEFORE"
     # CV-COACH-10's cadence counts worker iterations, not a backlog: a coach
     # chain with any started attempt resets the cadence, even if a later
@@ -3352,7 +3361,7 @@ while true; do
   if ((STOP_REQUESTED)) || { [[ -n $MAX_ITERATIONS ]] && ((ITERATION >= MAX_ITERATIONS)); }; then
     :
   else
-    handle_chain_wait "$CHAIN_PRODUCED_OUTPUT"
+    handle_chain_wait "$CHAIN_PRODUCED_OUTPUT" "$RUN_STATUS"
   fi
 done
 fi
