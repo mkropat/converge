@@ -25,6 +25,7 @@ REVIEW_AFTER=5
 REVIEW_ENABLED=1
 TIMEOUT=3600
 MAX_ITERATIONS=""
+MAX_ITERATIONS_SET=0
 FOREGROUND=0
 INIT_STATE=0
 STATE_QUERY=0
@@ -140,8 +141,8 @@ while (($#)); do
     --no-review) REVIEW_ENABLED=0; shift ;;
     --timeout) need_value "$1" $# "${2:-}" || { shift; continue; }; TIMEOUT=$2; shift 2 ;;
     --timeout=*) TIMEOUT=${1#*=}; shift ;;
-    --max-iterations) need_value "$1" $# "${2:-}" || { shift; continue; }; MAX_ITERATIONS=$2; shift 2 ;;
-    --max-iterations=*) MAX_ITERATIONS=${1#*=}; shift ;;
+    --max-iterations) need_value "$1" $# "${2:-}" || { shift; continue; }; MAX_ITERATIONS=$2; MAX_ITERATIONS_SET=1; shift 2 ;;
+    --max-iterations=*) MAX_ITERATIONS=${1#*=}; MAX_ITERATIONS_SET=1; shift ;;
     --foreground) FOREGROUND=1; shift ;;
     --init-state) INIT_STATE=1; shift ;;
     --state-dir) STATE_QUERY=1; shift ;;
@@ -305,7 +306,7 @@ validate_start_options() {
     echo "converge: --stall-notify needs a positive integer, got '$STALL_NOTIFY'" >&2
     exit 2
   fi
-  if [[ -n $MAX_ITERATIONS ]]; then
+  if ((MAX_ITERATIONS_SET)) || [[ -n $MAX_ITERATIONS ]]; then
     if ! is_number "$MAX_ITERATIONS"; then
       echo "converge: --max-iterations needs a whole number" >&2
       exit 2
@@ -1083,7 +1084,7 @@ send_notification() {
       CONVERGE_STATE_DIR="$5" CONVERGE_SESSION="$6" CONVERGE_ITERATION="$7"
     [[ $2 == stalled ]] || export CONVERGE_EXIT="$3"
     trap "" INT
-    exec timeout -k 5 300 sh -c "$1" converge-notify "$2"
+    exec timeout --verbose -k 5 300 sh -c "$1" converge-notify "$2"
   ' converge-notify-wrapper "$NOTIFY_COMMAND" "$event" "$EXIT_STATUS" \
       "$RUN_DIR" "$STATE_DIR" "$RUN_ID" "$ITERATION" \
       <"$msgfile" >/dev/null 2>"$errfile" &
@@ -1096,7 +1097,7 @@ send_notification() {
   CHILD_GROUP=0
   if ((status == 0)); then
     result="sent (exit 0)"
-  elif ((status == 124 || status == 137)); then
+  elif ((status == 124 || status == 137)) && grep -q 'timeout: sending signal' "$errfile"; then
     result="failed (timed out; exit $status)"
   else
     result="failed (exit $status)"
@@ -2803,7 +2804,7 @@ run_review_pass() {
   run_agent_chain reviewer "$prompt"
   ((STOP_REQUESTED)) || handle_chain_wait "$CHAIN_PRODUCED_OUTPUT" "$RUN_STATUS"
 
-  if ((RUN_STATUS == 0)); then
+  if ((CHAIN_STARTED && RUN_STATUS == 0)); then
     # CV-REV-20: one completion timestamp for the whole pass, from the
     # moment it succeeded, not from a later retry of the record call.
     completed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
