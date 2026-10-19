@@ -17,6 +17,7 @@ fi
 CONSENSUS=2
 BLOCKED_LIMIT=2
 STALL_AFTER=3
+STALL_NOTIFY=6
 COACH_FIRST=5
 COACH_EVERY=10
 COACH_ENABLED=1
@@ -45,6 +46,7 @@ Options:
   --consensus <N>         Consecutive converged votes that stop the loop. Default: 2.
   --blocked <N>           Consecutive blocked votes that stop the loop. Default: 2.
   --stall-after <K>       Stalled worker chains before the coach runs. Default: 3.
+  --stall-notify <N>      Stall streak before a notification is due. Default: 6.
   --coach-first <F>       Worker iterations before the first coach run of a
                           session. F can be 0: the coach runs before the
                           first worker. Default: 5.
@@ -125,6 +127,8 @@ while (($#)); do
     --blocked=*) BLOCKED_LIMIT=${1#*=}; shift ;;
     --stall-after) need_value "$1" $# "${2:-}" || { shift; continue; }; STALL_AFTER=$2; shift 2 ;;
     --stall-after=*) STALL_AFTER=${1#*=}; shift ;;
+    --stall-notify) need_value "$1" $# "${2:-}" || { shift; continue; }; STALL_NOTIFY=$2; shift 2 ;;
+    --stall-notify=*) STALL_NOTIFY=${1#*=}; shift ;;
     --coach-first) need_value "$1" $# "${2:-}" || { shift; continue; }; COACH_FIRST=$2; shift 2 ;;
     --coach-first=*) COACH_FIRST=${1#*=}; shift ;;
     --coach-every) need_value "$1" $# "${2:-}" || { shift; continue; }; COACH_EVERY=$2; shift 2 ;;
@@ -250,7 +254,7 @@ validate_start_options() {
       exit 2
     fi
   done
-  for pair in "consensus:$CONSENSUS" "blocked:$BLOCKED_LIMIT" "stall-after:$STALL_AFTER" "coach-first:$COACH_FIRST" "coach-every:$COACH_EVERY" "review-after:$REVIEW_AFTER" "timeout:$TIMEOUT"; do
+  for pair in "consensus:$CONSENSUS" "blocked:$BLOCKED_LIMIT" "stall-after:$STALL_AFTER" "stall-notify:$STALL_NOTIFY" "coach-first:$COACH_FIRST" "coach-every:$COACH_EVERY" "review-after:$REVIEW_AFTER" "timeout:$TIMEOUT"; do
     if ! is_number "${pair#*:}"; then
       echo "converge: --${pair%%:*} needs a whole number, got '${pair#*:}'" >&2
       exit 2
@@ -258,7 +262,7 @@ validate_start_options() {
   done
   # Bash arithmetic uses a signed integer. Reject values outside that range
   # before normalization, because overflow can invert a setting's meaning.
-  for pair in "consensus:$CONSENSUS" "blocked:$BLOCKED_LIMIT" "stall-after:$STALL_AFTER" "coach-first:$COACH_FIRST" "coach-every:$COACH_EVERY" "review-after:$REVIEW_AFTER" "timeout:$TIMEOUT"; do
+  for pair in "consensus:$CONSENSUS" "blocked:$BLOCKED_LIMIT" "stall-after:$STALL_AFTER" "stall-notify:$STALL_NOTIFY" "coach-first:$COACH_FIRST" "coach-every:$COACH_EVERY" "review-after:$REVIEW_AFTER" "timeout:$TIMEOUT"; do
     if ! fits_bash_integer "${pair#*:}"; then
       echo "converge: --${pair%%:*} exceeds the supported integer range" >&2
       exit 2
@@ -271,6 +275,7 @@ validate_start_options() {
   CONSENSUS=$((10#$CONSENSUS))
   BLOCKED_LIMIT=$((10#$BLOCKED_LIMIT))
   STALL_AFTER=$((10#$STALL_AFTER))
+  STALL_NOTIFY=$((10#$STALL_NOTIFY))
   COACH_FIRST=$((10#$COACH_FIRST))
   COACH_EVERY=$((10#$COACH_EVERY))
   REVIEW_AFTER=$((10#$REVIEW_AFTER))
@@ -293,6 +298,10 @@ validate_start_options() {
   fi
   if ((STALL_AFTER == 0)); then
     echo "converge: --stall-after needs a positive integer, got '$STALL_AFTER'" >&2
+    exit 2
+  fi
+  if ((STALL_NOTIFY == 0)); then
+    echo "converge: --stall-notify needs a positive integer, got '$STALL_NOTIFY'" >&2
     exit 2
   fi
   if [[ -n $MAX_ITERATIONS ]]; then
@@ -1378,7 +1387,7 @@ trap 'printf "%s\n" "$?" >"$SESSION_STATUS"' EXIT
 
 note "=== run start ==="
 note "command: $0 $ORIGINAL_ARGS"
-note "options: worker-profile=${WORKER_PROFILES[*]} reviewer-profile=${REVIEWER_PROFILES[*]} coach-profile=${COACH_PROFILES[*]} consensus=$CONSENSUS blocked=$BLOCKED_LIMIT stall-after=$STALL_AFTER coach-first=$COACH_FIRST coach-every=$COACH_EVERY coach=$COACH_ENABLED review-after=$REVIEW_AFTER review=$REVIEW_ENABLED timeout=$TIMEOUT max-iterations=${MAX_ITERATIONS:-unbounded}"
+note "options: worker-profile=${WORKER_PROFILES[*]} reviewer-profile=${REVIEWER_PROFILES[*]} coach-profile=${COACH_PROFILES[*]} consensus=$CONSENSUS blocked=$BLOCKED_LIMIT stall-after=$STALL_AFTER stall-notify=$STALL_NOTIFY coach-first=$COACH_FIRST coach-every=$COACH_EVERY coach=$COACH_ENABLED review-after=$REVIEW_AFTER review=$REVIEW_ENABLED timeout=$TIMEOUT max-iterations=${MAX_ITERATIONS:-unbounded}"
 if ((${#SCOPE[@]})); then
   SCOPE_SUMMARY=$(scope_list)
 else
@@ -1444,6 +1453,7 @@ PANEL_ROWS+=(
   "review|$REVIEW_SUMMARY"
   "pending review|$UNREVIEWED_SUMMARY"
   "coach|$COACH_SUMMARY; stall after $(plural "$STALL_AFTER" "stalled chain")"
+  "notification|$(if [[ -n ${CONVERGE_NOTIFY:-} ]]; then echo "command set; stalled after $(plural "$STALL_NOTIFY" "stalled chain")"; else echo "off"; fi)"
   "fixer|$(if ((FIXER_PROFILE_SET)); then join_list "${FIXER_PROFILES[@]}"; else echo "worker profile list"; fi)"
   "stop|$(plural "$CONSENSUS" "converged vote") in a row; blocked after $(plural "$BLOCKED_LIMIT" "blocked vote")"
   "timeout|${TIMEOUT}s for one invocation"
@@ -3016,6 +3026,9 @@ ITERATION=0
 CONVERGED_VOTES=0
 BLOCKED_VOTES=0
 STALL_COUNT=0
+# CV-NOTIFY-10: this streak tracks stalled worker chains across coach runs,
+# and also runs when coaching is disabled.
+STALL_STREAK=0
 LAST_BLOCKED_MESSAGE=""
 FIXER_PENDING=0
 FIXER_ITERATION=0
@@ -3227,9 +3240,12 @@ while true; do
   if ((CHAIN_PRODUCED_OUTPUT)); then
     if ((MADE_RELEVANT_COMMIT || WORKER_DONE_VOTE || WORKER_BLOCKED_VOTE)); then
       STALL_COUNT=0
+      STALL_STREAK=0
     else
       ((COACH_ENABLED)) && ((++STALL_COUNT))
+      ((++STALL_STREAK))
       note "stalled chains: $STALL_COUNT"
+      note "stall streak: $STALL_STREAK"
     fi
   fi
   # A failure on the last permitted iteration has no next iteration to delay,
