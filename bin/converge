@@ -331,7 +331,7 @@ fi
 # repository that contains it supplies the git state of the run: the commits,
 # and the history that a review pass reads.
 RUN_DIR="$(pwd -P)"
-if ((!INIT_STATE && !HELP_REQUESTED)) && ! command -v git >/dev/null 2>&1; then
+if ((!HELP_REQUESTED)) && ! command -v git >/dev/null 2>&1; then
   echo "converge: 'git' is not on PATH" >&2
   echo "converge: on macOS, run 'brew install git'" >&2
   exit 2
@@ -2785,7 +2785,7 @@ run_review_pass() {
   # repository HEAD. Compare all stored revision ids to detect writes
   # during the pass without mistaking a visibility-only change for a new
   # finding.
-  bugs_before=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" list --visibility all --json 2>/dev/null) || bugs_before_ok=0
+  bugs_before=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" list --json 2>/dev/null) || bugs_before_ok=0
   [[ -n $bugs_before ]] || bugs_before='[]'
   # The visible revision of an existing bug can change when HEAD changes,
   # even when no revision was written during this pass. Snapshot every
@@ -2813,7 +2813,7 @@ run_review_pass() {
     fi
   fi
 
-  bugs_after=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" list --visibility all --json 2>/dev/null) || bugs_after_ok=0
+  bugs_after=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" list --json 2>/dev/null) || bugs_after_ok=0
   [[ -n $bugs_after ]] || bugs_after='[]'
   if ((bugs_before_ok)) && ((bugs_after_ok)); then
     # Pass-logged: a visible bug with a revision id not stored before the
@@ -3241,6 +3241,9 @@ while true; do
     stalled_details="coach runs since streak began: $STALL_COACH_RUNS; last coach run escalated: $( ((STALL_LAST_ESCALATED)) && echo yes || echo no ); fixer iteration ran: $( ((STALL_FIXER_RAN)) && echo yes || echo no )"
     send_notification stalled "stall streak reached $STALL_STREAK stalled chains" "$stalled_details"
     STALL_NOTIFICATION_SENT=1
+    # The notification waits for a running command after the first SIGINT.
+    # Stop here so the signal cannot schedule a worker that never starts.
+    ((STOP_REQUESTED)) && break
   fi
   if [[ -n $MAX_ITERATIONS ]] && ((ITERATION >= MAX_ITERATIONS)); then
     warn "reached the limit of $(plural "$MAX_ITERATIONS" iteration) without convergence"
