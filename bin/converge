@@ -1690,6 +1690,7 @@ run_agent() {
     reviewer) accent=$BLUE ;;
   esac
   local fifo="$RUNTIME_DIR/stream.$$" fifo_ok=0
+  RUN_TIMED_OUT=0
   # The recorded cost travels through the invocation log: format_stream
   # appends the one converge_event "cost_record" line when the stream ends,
   # and run_agent reads it back below, when that reader has ended. Nothing
@@ -1725,7 +1726,7 @@ run_agent() {
       export CONVERGE_RUN_DIR="$RUN_DIR"
       export PATH="$BIN_DIR:$PATH"
       trap '' INT
-      exec timeout -k 10 "$TIMEOUT" "${ARGV[@]}"
+      exec timeout --verbose -k 10 "$TIMEOUT" "${ARGV[@]}"
     ) >"$fifo" 2>>"$LOG_FILE.err" 9>&- &
     CHILD=$!
     IN_INVOCATION=1
@@ -1796,7 +1797,9 @@ run_agent() {
       fixer) if ((FIXER_PROFILE_SET)); then FIXER_PROFILE_IDX=$(( (FIXER_PROFILE_IDX + ${#FIXER_PROFILES[@]} - 1) % ${#FIXER_PROFILES[@]} )); else WORKER_PROFILE_IDX=$(( (WORKER_PROFILE_IDX + ${#WORKER_PROFILES[@]} - 1) % ${#WORKER_PROFILES[@]} )); fi ;;
       coach) COACH_PROFILE_IDX=$(( (COACH_PROFILE_IDX + ${#COACH_PROFILES[@]} - 1) % ${#COACH_PROFILES[@]} )) ;;
     esac
-  elif ((RUN_STATUS == 124 || RUN_STATUS == 137)); then
+  elif ((RUN_STATUS == 124 || RUN_STATUS == 137)) &&
+    grep -q 'timeout: sending signal' "$LOG_FILE.err"; then
+    RUN_TIMED_OUT=1
     warn "$role exceeded the ${TIMEOUT}s timeout; killed it"
     show_stderr "$LOG_FILE"
     printf '{"type":"converge_event","event":"timeout","seconds":%s}\n' "$TIMEOUT" >>"$LOG_FILE"
@@ -1826,7 +1829,7 @@ run_discovery_chain() {
     ((STOP_REQUESTED)) && return 0
     rm -f "$LOOKUP_FILE"
     run_agent discovery "$prompt" "$profile"
-    if ((RUN_STATUS == 0 || RUN_STATUS == 124 || RUN_STATUS == 137 || STOP_REQUESTED || INVOCATION_SKIPPED)); then
+    if ((RUN_STATUS == 0 || RUN_TIMED_OUT || STOP_REQUESTED || INVOCATION_SKIPPED)); then
       return 0
     fi
   done
@@ -1860,7 +1863,7 @@ run_agent_chain() {
     if ((!INVOCATION_SKIPPED)) && produced_output "$LOG_FILE" "$INVOCATION_HARNESS"; then
       CHAIN_PRODUCED_OUTPUT=1
     fi
-    if ((INVOCATION_SKIPPED || RUN_STATUS == 0 || RUN_STATUS == 124 || RUN_STATUS == 137 || STOP_REQUESTED)); then
+    if ((INVOCATION_SKIPPED || RUN_STATUS == 0 || RUN_TIMED_OUT || STOP_REQUESTED)); then
       return 0
     fi
   done
