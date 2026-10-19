@@ -195,6 +195,10 @@ _Avoid_: dependency, impediment, obstacle
 A worker chain that produced output, left no new relevant commit, and gave no vote.
 _Avoid_: idle iteration, spin, no-op iteration
 
+**Stall streak**:
+The count of consecutive stalled chains that a coach run does not reset. A relevant commit or a worker vote resets it. The `stalled` notification fires when it reaches the `--stall-notify` count.
+_Avoid_: stall count (when the streak is meant), spin count, no-progress count
+
 **Graceful stop**:
 The stop that the first Ctrl-C or a stop request causes. Active invocations finish, and no new one starts.
 _Avoid_: soft stop, pause, drain
@@ -202,6 +206,20 @@ _Avoid_: soft stop, pause, drain
 **Hard stop**:
 The stop that a second Ctrl-C or SIGTERM causes. Active invocations and their children end at once.
 _Avoid_: kill, abort, force stop
+
+### Notification
+
+**Notification**:
+A message that the loop sends to the operator through the notification command when a session stops or when the stall streak reaches its limit.
+_Avoid_: alert, alarm, ping, message (when a notification is meant)
+
+**Notification command**:
+The shell command line in `CONVERGE_NOTIFY`. The loop runs it with the message on standard input and the event name as its first argument.
+_Avoid_: hook, webhook, notifier, handler
+
+**Event**:
+The name that the loop gives a notification: `converged`, `limit`, `discovery-failed`, `blocked`, or `stalled`.
+_Avoid_: trigger (when the event name is meant), reason, kind
 
 ### Bug tracker
 

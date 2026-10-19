@@ -40,6 +40,7 @@ These are the section codes.
 | `CONV` | Convergence and stopping |
 | `REV` | Reviewer |
 | `COACH` | Coach |
+| `NOTIFY` | Notification |
 | `SL` | State and logs |
 | `STATE` | The state directory |
 | `RUN` | The runtime directory |
@@ -76,6 +77,7 @@ These are the section codes.
 - **Blocked vote**: the final message of a successful worker that holds the token `BLOCKED` alone on a line.
 - **Blocker**: an open spec bug, or a tool or resource that no worker can reach, that stops a piece of work.
 - **Stalled chain**: a worker chain that produced output, left no new relevant commit, and gave no vote.
+- **Stall streak**: the count of consecutive stalled chains. A relevant commit or a worker vote resets it. A coach run does not.
 - **Escalation**: the request of the coach, in its final message, that the next worker iteration runs as a fixer.
 - **Fixer**: a worker iteration that runs on the fixer profile list because the coach escalated.
 - **Bug tracker**: `bin/cbugs`, which keeps the bugs and the reviewed commits of the run directory in its state directory. See `docs/cbugs-requirements.md`.
@@ -86,6 +88,8 @@ These are the section codes.
 - **Citation**: a reference from a bug revision to a documented requirement. `cbugs` writes it from a `--cite` option.
 - **Guidance file**: the file that the coach writes and that the loop injects into each worker prompt.
 - **Journal**: the coach's private record of its observations and interventions.
+- **Notification**: a message that the loop sends to the operator when one of the events of **CV-NOTIFY-3** occurs.
+- **Notification command**: the shell command line in `CONVERGE_NOTIFY`. The loop runs it to send a notification.
 - **State directory**: the durable directory that holds the guidance file, the journal, the bug database, and the logs of one run directory. It survives a restart of the machine.
 - **Runtime directory**: the temporary directory that holds the locks and the pipes of one run directory. It holds nothing that must survive a restart of the machine.
 
@@ -125,6 +129,7 @@ These principles explain the intent behind the requirements. Apply them when a r
   - **CV-INV-3.17**: `--coach-every <K>`: the number of worker iterations between one coach run and the next. `K` must be a positive integer. The script must stop with an error when `K` is `0`; `--coach-first 0 --coach-every 1` gives a coach on every check. Default: `10`. **CV-COACH-10** gives the details.
   - **CV-INV-3.18**: `--blocked <N>`: the number of consecutive blocked votes that stop the loop. `N` must be a positive integer. The script must stop with an error when `N` is `0`. Default: `2`. **CV-CONV-29** gives the details.
   - **CV-INV-3.19**: `--stall-after <K>`: the number of consecutive stalled chains that make the coach due. `K` must be a positive integer. The script must stop with an error when `K` is `0`. Default: `3`. **CV-COACH-11** gives the details.
+  - **CV-INV-3.20**: `--stall-notify <N>`: the stall streak that sends the `stalled` notification. `N` must be a positive integer. The script must stop with an error when `N` is `0`. Default: `6`. `N` normally exceeds `--stall-after`, so that the coach runs before the operator hears of a stall. The script must not enforce that relation. **CV-NOTIFY-11** gives the details.
 - **CV-INV-4**: Retired. Passed unknown options to the harness. **CV-INV-11** rejects harness arguments.
 - **CV-INV-5**: Retired. A run took no positional argument. **CV-INV-8** replaces this behavior.
 - **CV-INV-6**: Retired. Passed arguments after `--` to the harness. **CV-INV-11** replaces this behavior.
@@ -442,7 +447,7 @@ The operator starts a session over a connection that can break, and the session 
   2. After each worker chain, count its iteration. Apply **CV-CONV-26** to its done vote, **CV-CONV-29** to its blocked vote, and **CV-COACH-11** to its stall count.
   3. Stop on an operator signal. Otherwise run the vote panel if the done count changed from zero to one.
   4. Check signals again. Then stop with convergence if the done count is sufficient. Otherwise stop blocked if the blocked count is sufficient. Otherwise stop without convergence if the worker limit is reached.
-  5. If not stopped, run a due cadence pass, then a due coach, then the next worker. The coach is due by cadence, by a blocked vote, or by a stall, as **CV-COACH-11** through **CV-COACH-13** give. The next worker runs as a fixer when an escalation is pending, as **CV-COACH-15** gives. Check signals before each new invocation.
+  5. If not stopped, run a due cadence pass, then a due coach, then a due `stalled` notification under **CV-NOTIFY-11**, then the next worker. The coach is due by cadence, by a blocked vote, or by a stall, as **CV-COACH-11** through **CV-COACH-13** give. The next worker runs as a fixer when an escalation is pending, as **CV-COACH-15** gives. Check signals before each new invocation.
   The iteration limit counts workers only. A first done vote on the last permitted worker iteration must still get its panel and any required merge. A blocked vote on the last permitted iteration gets no coach: the limit stops the loop at step 4. A stop request forbids all new invocations, including a merge that has not started. Review errors must not skip a due coach unless a stop condition holds.
 
 ## Reviewer
@@ -529,6 +534,36 @@ The worker builds. The reviewer reads what the worker built. One agent cannot do
   - **CV-COACH-14.3**: Check with `cbugs show` that each spec bug a worker cited exists and is open. For each tool or resource that a worker cited, find the failed attempt to reach it in the worker log. A claimed spec bug with no open record, or a claimed tool or resource with no failed attempt in the log, is evidence for **CV-COACH-14.2**.
   - **CV-COACH-14.4**: The coach may also escalate on a cadence run when it finds the same evidence there.
 - **CV-COACH-15**: The coach escalates with the exact token `ESCALATE` on a line of its own in its final message. The loop must read only the final message of a successful coach chain to detect it, under the same line rule as **CV-CONV-3**. A failed or timed-out coach chain cannot escalate. An escalation makes the next worker iteration a fixer, as **CV-ITER-10** and **CV-HARN-26** give. One escalation gives one fixer iteration, and a second escalation before that iteration runs gives no second fixer. The escalation does not survive the session. A stop condition takes priority over the fixer iteration. The coach prompt must say what the token does: it schedules one more capable worker iteration, and nothing else. The coach still cannot stop the loop, as **CV-COACH-6** gives.
+
+## Notification
+
+The loop runs unattended, and the operator is away. The notification command is the operator's channel: a command that the operator chooses, that the loop runs with a message, and that the loop knows nothing else about. The loop does not know how to reach a chat service. The command does.
+
+- **CV-NOTIFY-1**: The loop must read the notification command from `CONVERGE_NOTIFY`. The value is a shell command line. When the variable is unset or empty, the loop must send no notification and must report no error. An empty value means off.
+- **CV-NOTIFY-2**: The loop must take a session snapshot of the notification command at session start, as **CV-HARN-13** gives for profile lists. An attached client must leave it unchanged, even if its environment differs. The startup panel must say whether a notification command is set. It must not print the value, which can hold a secret.
+- **CV-NOTIFY-3**: The loop must send one notification for each of these events, and for no other event:
+  - **CV-NOTIFY-3.1**: `converged`: the loop stops with convergence, status `0`.
+  - **CV-NOTIFY-3.2**: `limit`: the loop stops at the worker limit without convergence, status `1`.
+  - **CV-NOTIFY-3.3**: `discovery-failed`: the loop stops because requirements discovery failed under **CV-DISC-14**, status `2`.
+  - **CV-NOTIFY-3.4**: `blocked`: the loop stops on blocked votes under **CV-CONV-29.4**, status `3`.
+  - **CV-NOTIFY-3.5**: `stalled`: the stall streak reaches `N` of `--stall-notify`, as **CV-NOTIFY-11** gives.
+  An operator stop under **CV-FAIL-1** or **CV-FAIL-9** sends no notification: the operator caused it.
+- **CV-NOTIFY-4**: The loop must run the notification command as `sh -c "$CONVERGE_NOTIFY" converge-notify <event>`, so that the command line sees the event name as its first positional parameter. The loop must write the message to the standard input of the command and then close it. The working directory must be the run directory. The loop must export `CONVERGE_EVENT` with the event name, `CONVERGE_RUN_DIR`, `CONVERGE_STATE_DIR`, `CONVERGE_SESSION`, and `CONVERGE_ITERATION` with the current iteration number. For a terminal event it must also export `CONVERGE_EXIT` with the exit status of the session. A command that reads only standard input needs none of these.
+- **CV-NOTIFY-5**: The loop must compose the message:
+  - **CV-NOTIFY-5.1**: The first line must be `converge <project>: <summary>`. `<project>` is the repository name, followed by `/` and the path of the run directory within the repository when the run directory is not the repository root. The chat that receives the message names the host, not the project, so the message must name the project itself.
+  - **CV-NOTIFY-5.2**: For a terminal event, `<summary>` is the closing text of the closing report. For `stalled`, `<summary>` gives the stall streak.
+  - **CV-NOTIFY-5.3**: A blank line and details follow when the event has details. For `blocked`, the details are the final message of the last blocked worker, as **CV-OUT-17** shows it. For `stalled`, the details give the number of coach runs since the streak began, whether the last coach run escalated, and whether a fixer iteration ran during the streak. The other events have no details.
+  - **CV-NOTIFY-5.4**: The message must hold at most 3,500 characters. The loop must cut the details, never the first line, and must end a cut message with a line that says it was cut.
+- **CV-NOTIFY-6**: The loop must send a terminal notification after it prints the closing report and the cost summary of **CV-COST-6**, and before it exits. It must send the `stalled` notification at step 5 of **CV-CONV-30**, after any due coach run and before the next worker starts.
+- **CV-NOTIFY-7**: The loop must wait for the notification command, with a time limit of 300 seconds. When the limit expires, the loop must kill the command and its child processes. A first SIGINT must let a running notification command finish, as **CV-FAIL-1** gives for an invocation. A second SIGINT or SIGTERM must terminate it, as **CV-FAIL-9** gives.
+- **CV-NOTIFY-8**: A notification command that exits with a nonzero status, that the loop kills, or that the loop cannot start must not change the exit status of the session, any vote count, the stall streak, or the schedule of any agent. The loop must warn and continue. It must not run the command again for the same event. A command that exits without a delivery confirmation can duplicate a message when it is run again, so delivery belongs to the command.
+- **CV-NOTIFY-9**: The loop must report each notification: one line in the transcript with the event name and the result, and in the run log the event name, the exit status of the command, and the message text. When the status is nonzero, the loop must show the last lines of the command's standard error, as **CV-OUT-8** gives for an invocation. The loop must not print or log the value of `CONVERGE_NOTIFY`.
+- **CV-NOTIFY-10**: The loop must keep a stall streak. It must start at zero each session. The streak exists for the `stalled` notification, and the loop must keep it with or without `--no-coach`.
+  - **CV-NOTIFY-10.1**: A stalled chain, as **CV-COACH-11.1** defines it, adds one. A fixer iteration and a timed-out worker count under the same rule.
+  - **CV-NOTIFY-10.2**: A chain that left a new relevant commit, or that gave a done vote or a blocked vote, resets the streak to zero.
+  - **CV-NOTIFY-10.3**: A chain that produced no output leaves the streak unchanged, as **CV-COACH-11.2** gives for the stall count.
+  - **CV-NOTIFY-10.4**: A coach run, a cadence pass, and a vote panel must not change the streak. This is the difference from the stall count of **CV-COACH-11**, which a coach run resets: the streak records whether the coach's intervention worked.
+- **CV-NOTIFY-11**: The `stalled` notification is due when the stall streak reaches `N` of `--stall-notify` and the loop has not sent `stalled` since the streak last left zero. One streak sends at most one `stalled` notification, whatever its final length. A reset to zero and a new rise to `N` make the notification due again. The loop must send it after any coach run that is due at the same point, so that the message can report the coach's decision. A stop condition takes priority: a session that stops at the same point sends its terminal notification only.
 
 ## State and logs
 
@@ -640,3 +675,10 @@ These are recorded decisions, not oversights.
 - **CV-OOS-40** — **An escalation that lasts more than one iteration**: rejected. One iteration bounds the cost of a wrong escalation under **CV-OOS-10**. When the fixer makes partial progress and the workers stall again, the stall trigger brings the coach back, and the coach can escalate again.
 - **CV-OOS-41** — **A file in the state directory as the channel from the coach to the loop**: rejected. A token in the final message uses the parser that the done vote uses, and leaves nothing to clean up. A file is selection state that **CV-STATE-13** forbids, and a stale file would select a fixer for a later session.
 - **CV-OOS-42** — **A blocked vote after work in the same iteration**: rejected. A worker that did work reports the work. A blocked vote means that the iteration found nothing to do, as the done vote means. Two meanings in one token make the count mean nothing.
+- **CV-OOS-43** — **An agent that sends the notification itself**: rejected. The trigger would be a model, with no limit on how often it fires and no record in the run log. No agent runs at the moments that matter most: the closing report, and a quota that every profile has exhausted, when the coach fails for the same reason as the workers. The loop sees every state change and owns the one trigger. A coach that wants the operator writes a spec bug or lets the counters speak.
+- **CV-OOS-44** — **Notifications for a new spec bug, the quota wait, and its recovery**: rejected for v1. A spec bug that blocks all remaining work reaches the operator through the blocked stop, which names it. The quota wait resolves itself when the quota period resets, and the transcript reports it on attach. Each of these messages would arrive often and ask for nothing, and the operator would learn to ignore the channel.
+- **CV-OOS-45** — **A retry or a queue for a failed notification**: rejected. The command owns delivery. A command that exits without confirmation may have delivered, and a second run duplicates the message. The run log records what the loop tried to send.
+- **CV-OOS-46** — **A configuration file or a fixed hook path for the notification command**: rejected. Every other setting of the loop is an environment variable, and **CV-INV-11** refuses configuration files. A hidden file that changes behavior is a second anchor, and a stale one sends messages to the wrong place.
+- **CV-OOS-47** — **An error for an empty `CONVERGE_NOTIFY`**: rejected. An empty profile list is an error because it hides a default. An empty command hides nothing: it means off, and it lets a shell that exports the variable turn notification off for one session.
+- **CV-OOS-48** — **A stall notification by elapsed time**: rejected. Iterations last from minutes to the full timeout, and the wait of **CV-FAIL-16** pauses the loop for up to 15 minutes at a time. The loop counts chains everywhere else, as **CV-OOS-12** gives for cadences.
+- **CV-OOS-49** — **A repeated `stalled` notification within one streak**: rejected for v1. After the message, the operator stops the loop, fixes something, or lets it run. A second message changes none of these. A fix that produces a commit ends the streak, and a later streak sends again. `--max-iterations` bounds a session that the operator ignores, and the `limit` notification then arrives.

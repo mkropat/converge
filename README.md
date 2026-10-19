@@ -156,6 +156,7 @@ change the done count or prevent convergence. It also runs with `--consensus 1`.
 | `--consensus N` | `2` | Consecutive worker done votes required. `0` exits successfully without starting agents. |
 | `--blocked N` | `2` | Positive number of consecutive blocked votes that stops the loop with status `3`. |
 | `--stall-after K` | `3` | Positive number of consecutive stalled chains that makes the coach due. |
+| `--stall-notify N` | `6` | Positive stall streak that sends the `stalled` notification. See "Notify the operator". |
 | `--review-after N` | `5` | Positive number of unreviewed commits needed for a cadence pass. |
 | `--no-review` | Review enabled | Disable both cadence passes and vote panels. |
 | `--coach-first F` | `5` | Worker iterations before the first coach invocation; `0` runs it before the first worker. |
@@ -253,6 +254,54 @@ options are retired. New loops also reject `CONVERGE_HARNESS`,
 empty. `review-panel` rejects the old `REVIEW_PANEL_PROFILES` and
 `REVIEW_PANEL_MERGE_PROFILE` variables. Unset these retired variables before
 starting a new session. Run `converge --help` for command help.
+
+## Notify the operator
+
+The loop can run a command of your choice when it needs you. Set
+`CONVERGE_NOTIFY` to a shell command line. The loop runs it with the message
+on standard input. It does not know how to reach a chat service. The command
+does.
+
+```sh
+export CONVERGE_NOTIFY='holler'
+converge docs/requirements.md
+```
+
+The loop runs the command as `sh -c "$CONVERGE_NOTIFY" converge-notify <event>`.
+A command that reads standard input, such as `holler`, needs nothing else. A
+script can read the event name from its first argument or from
+`CONVERGE_EVENT`. The loop also exports `CONVERGE_RUN_DIR`,
+`CONVERGE_STATE_DIR`, `CONVERGE_SESSION`, `CONVERGE_ITERATION`, and, for a
+session stop, `CONVERGE_EXIT`. For example, a script that posts to a Slack
+webhook:
+
+```sh
+#!/bin/sh
+# notify-slack: $1 is the event; the message arrives on stdin.
+text=$(cat)
+curl -sS --max-time 30 -X POST -H 'Content-type: application/json' \
+  --data "$(jq -n --arg t "$text" '{text: $t}')" "$SLACK_WEBHOOK_URL"
+```
+
+The loop sends these events, and no others:
+
+| Event | When |
+| --- | --- |
+| `converged` | The session converged. Status `0`. |
+| `limit` | The session reached the worker limit without convergence. Status `1`. |
+| `discovery-failed` | Requirements discovery failed. Status `2`. |
+| `blocked` | The session stopped on blocked votes. Status `3`. The message holds the last blocked worker message. |
+| `stalled` | Six consecutive worker chains made no commit and gave no vote, across coach runs. One message per streak. `--stall-notify` sets the count. |
+
+An operator stop sends nothing. The first line of each message is
+`converge <project>: <summary>`, so one chat can carry messages from several
+projects. Messages hold at most 3,500 characters.
+
+The loop reads the variable once, when the session starts. An attached client
+does not change it. An unset or empty variable turns notification off. The loop
+waits up to 300 seconds for the command. A failed or killed command is logged
+and does not change the session result. The loop does not retry. The run log
+records each event and the message text, never the command itself.
 
 ## Run a standalone review
 
