@@ -357,6 +357,7 @@ Other environment variables control paths and display:
 
 | Variable | Default or purpose |
 | --- | --- |
+| `PATH` | Search path for tools and harness commands. The scripts add their own `bin` directory for agents and available Homebrew tool directories. |
 | `XDG_STATE_HOME` | Durable state root. Defaults to `$HOME/.local/state`. |
 | `TMPDIR` | Temporary file root. Defaults to `/tmp`. Runtime files and locks use `converge/<slug>/` under it. |
 | `HOMEBREW_PREFIX` | Additional location for Homebrew tool discovery. The scripts also check `/opt/homebrew` and `/usr/local`. `cbugs` looks for Homebrew SQLite too. |
@@ -369,6 +370,13 @@ The parent loop passes `CONVERGE_SESSION` and an absolute
 panel creates its own cost session when both variables are unset or both are
 empty. A partial pair, or a nonempty relative ledger path, is an error. Leave
 these controller variables unset for normal command use.
+
+For a session without explicit scope, the loop also sets
+`CONVERGE_REQUIREMENTS_LOOKUP_REQUIRED=1` for vote panels. It passes the path
+of the accepted lookup instructions in `CONVERGE_REQUIREMENTS_LOOKUP_FILE`.
+The panel must read that file instead of repeating discovery. A missing or
+invalid file stops the panel. Leave these internal variables unset for normal
+command use.
 
 Logs are not automatically pruned. Remove a run directory's state when you no
 longer need its history.
