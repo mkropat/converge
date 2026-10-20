@@ -179,8 +179,8 @@ attempt resets the delay. There is no delay between attempts of one chain.
 A missing harness fails when its first invocation starts. The commands do
 not check harness availability in advance.
 
-There is no mandatory test command. Verification follows the project
-requirements and agent instructions.
+There is no mandatory test command for the projects that converge works on.
+Verification follows the project requirements and agent instructions.
 
 ## Configure agents
 
@@ -429,6 +429,43 @@ command use.
 
 Logs are not automatically pruned. Remove a run directory's state when you no
 longer need its history.
+
+## Tests
+
+The tests check `converge`. They do not start a real agent. A fake harness
+in `test/fake-harness` replaces `claude`, `opencode`, and `codex`. Each test
+uses its own temporary home, state, and Git repository. The tests do not
+change your own state.
+
+The tests need the tools from "Setup" and no network.
+
+To run all tests, run this command from the checkout:
+
+```sh
+test/run
+```
+
+To run one test file, give its path:
+
+```sh
+test/run test/test_votes.sh
+```
+
+To run only the tests whose names contain a word, use `-k`:
+
+```sh
+test/run -k timeout
+```
+
+To show the output of each test, use `-v`. To set the number of tests that
+run at the same time, use `-j`.
+
+The runner shows `ok`, `FAIL`, `skip`, or `xfail` for each test. `xfail`
+identifies a known bug. When a fix makes that test pass, the runner shows
+`FAIL`. Then remove the known-failure mark from the test.
+
+To add a test, add a function with a name that starts with `test_` to a
+`test/test_*.sh` file. Use the helpers in `test/lib.sh`.
 
 ## Behavior specifications
 
