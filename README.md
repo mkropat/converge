@@ -77,7 +77,28 @@ new invocations start. A second Ctrl-C, or SIGTERM, terminates active
 invocations and their children immediately. Ctrl-C returns status `130`.
 SIGTERM returns `143`.
 
-### Review, coaching, and stop conditions
+### Review, coaching, refactoring, and stop conditions
+
+The requirements now specify a Refactor agent. The code does not implement
+this role yet. The required default is one pass after five new commits that
+change paths in the run directory. `--refactor-after N` sets the threshold.
+`--no-refactor` disables the role. These options are not implemented yet.
+
+Refactor uses the worker profiles with a separate session rotation. It selects
+work from the net difference between the session start commit and the commit
+captured before the pass. Earlier session changes remain eligible on later
+passes. Each pass must preserve project behavior and leave unrelated code
+unchanged, including unrelated code in the same file.
+
+The loop must skip Refactor when tracked files have staged or unstaged
+changes. Untracked files do not prevent a pass. A skipped or failed pass stays
+due, but a worker runs before the next pass. A successful pass resets the
+commit count even when it makes no changes. Refactor commits do not count
+toward the next pass. A new session starts a new scope and count.
+
+Due review and coach work run before Refactor. Stop conditions take priority.
+Refactor changes clear done and blocked counts. Refactor commits enter normal
+review history. Refactor does not count as a worker iteration or supply votes.
 
 By default, cadence passes run when at least five unreviewed commits affect
 the run directory. `cbugs reviewed pending` selects these commits from the

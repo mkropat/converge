@@ -48,7 +48,7 @@ One harness, one model, and an optional effort, written `harness:model[:effort]`
 _Avoid_: model (when a whole profile is meant), config
 
 **Role**:
-The job of one agent: worker, reviewer, coach, discovery agent, merge agent, or fixer.
+The job of one agent: worker, reviewer, coach, discovery agent, merge agent, fixer, or Refactor agent.
 _Avoid_: agent type, persona
 
 **Invocation**:
@@ -70,6 +70,22 @@ _Avoid_: step, cycle, turn
 **Worker**:
 The agent of one iteration. It reads the requirements and the code, then makes one useful change.
 _Avoid_: implementer, builder, coder
+
+**Refactor agent**:
+The agent that improves the structure of code changed during the session and preserves project behavior.
+_Avoid_: cleanup agent, maintenance worker
+
+**Refactor pass**:
+One scheduled fallback chain of the Refactor agent.
+_Avoid_: cleanup round, refactor iteration
+
+**Session start commit**:
+The repository HEAD captured when a new loop session starts.
+_Avoid_: base commit, starting point
+
+**Pass start commit**:
+The repository HEAD captured before a Refactor pass starts.
+_Avoid_: current commit (when the fixed boundary is meant)
 
 **Fixer**:
 A worker iteration that runs on the fixer profile list because the coach escalated.
