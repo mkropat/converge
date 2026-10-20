@@ -1553,20 +1553,15 @@ if ((REVIEW_ENABLED)); then
 else
   REVIEW_SUMMARY="disabled ($(join_list "${REVIEWER_PROFILES[@]}"))"
 fi
-if ((REVIEW_ENABLED)); then
-  REVIEW_PANEL_SUMMARY="$(join_list "${PANEL_PROFILES[@]}")"
-  if [[ -n $PANEL_MERGE_PROFILE ]]; then
-    REVIEW_PANEL_MERGE_SUMMARY="$PANEL_MERGE_PROFILE"
-  else
-    REVIEW_PANEL_MERGE_SUMMARY="${PANEL_PROFILES[0]} (first vote-panel reviewer)"
-  fi
+REVIEW_PANEL_SUMMARY="$(join_list "${PANEL_PROFILES[@]}")"
+if [[ -n $PANEL_MERGE_PROFILE ]]; then
+  REVIEW_PANEL_MERGE_SUMMARY=$PANEL_MERGE_PROFILE
 else
-  REVIEW_PANEL_SUMMARY="disabled ($(join_list "${PANEL_PROFILES[@]}"))"
-  if [[ -n $PANEL_MERGE_PROFILE ]]; then
-    REVIEW_PANEL_MERGE_SUMMARY="disabled ($PANEL_MERGE_PROFILE)"
-  else
-    REVIEW_PANEL_MERGE_SUMMARY="disabled (${PANEL_PROFILES[0]} fallback)"
-  fi
+  REVIEW_PANEL_MERGE_SUMMARY="${PANEL_PROFILES[0]} (first vote-panel reviewer)"
+fi
+if ((!REVIEW_ENABLED)); then
+  REVIEW_PANEL_SUMMARY="disabled ($REVIEW_PANEL_SUMMARY)"
+  REVIEW_PANEL_MERGE_SUMMARY="disabled ($REVIEW_PANEL_MERGE_SUMMARY)"
 fi
 if ((REFACTOR_ENABLED)); then
   REFACTOR_SUMMARY="enabled after $(plural "$REFACTOR_AFTER" "relevant commit")"
