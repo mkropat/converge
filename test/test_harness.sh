@@ -4,6 +4,19 @@
 
 LOOP_ARGS=(--foreground --no-coach --no-review)
 
+test_inherited_session_does_not_reuse_foreground_ids() {
+  export CONVERGE_SESSION=fixed-session
+  scenario worker MESSAGE=work
+  run_converge "${LOOP_ARGS[@]}" --max-iterations 1 docs/requirements.md
+  assert_status 1
+  scenario worker MESSAGE=work
+  run_converge "${LOOP_ARGS[@]}" --max-iterations 1 docs/requirements.md
+  assert_status 1
+  local ids
+  ids=$(find "$(state_dir)/sessions" -name '*.status' -printf '%f\n' | sed 's/\.status$//' | sort -u)
+  assert_eq "$(wc -l <<<"$ids" | tr -d ' ')" 2 "session ids"
+}
+
 # models   Prints the model of every call, in order, on one line.
 models() {
   calls | sed -E 's/.* model=([^ ]*) .*/\1/' | paste -sd' '

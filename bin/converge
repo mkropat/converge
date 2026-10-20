@@ -824,7 +824,11 @@ chmod 700 "$RUNTIME_DIR" 2>/dev/null || true
 # second run must not truncate the first session's output, and its log files
 # must not collide (CV-STATE-8, CV-STATE-10). A reader of the date still
 # slices the first sixteen characters; the suffix hangs behind the Z.
-RUN_ID="${CONVERGE_SESSION:-$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM}"
+if [[ -n ${CONVERGE_DAEMON:-} && -n ${CONVERGE_SESSION:-} ]]; then
+  RUN_ID=$CONVERGE_SESSION
+else
+  RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
+fi
 SESSION_OUT="$SESSION_DIR/$RUN_ID.out"
 SESSION_STATUS="$SESSION_DIR/$RUN_ID.status"
 LOOKUP_FILE="$SESSION_DIR/$RUN_ID.requirements-lookup.txt"
@@ -1755,6 +1759,9 @@ run_agent() {
         export CONVERGE_ITERATION="$ITERATION"
       fi
       export CONVERGE_RUN_DIR="$RUN_DIR"
+      # A worker can start a separate converge session. Do not let it inherit
+      # this loop's daemon marker or session identity.
+      unset CONVERGE_DAEMON CONVERGE_SESSION
       # CV-ENV-10: only a reviewer of a cadence review pass carries the
       # pass id, so cbugs tags the bugs that the pass creates (CB-PROV-9).
       if [[ $role == reviewer && -n $REVIEW_PASS_ID ]]; then
@@ -2177,7 +2184,7 @@ fromjson? // empty
      else empty end)
   elif .type == "item.completed" and .item.type == "file_change" then
     (.item.changes // [])[]
-    | "tool\t\((.kind // "file_change") | tostring)\t1\t\(.path // "")"
+    | "tool\twrite\t1\t\(.path // "")"
   elif .type == "item.completed" and .item.type == "error" then
     "fail\t" + ((.item.message // "Codex error") | tostring | firstline | clean)
   elif .type == "error" or .type == "turn.failed" then
