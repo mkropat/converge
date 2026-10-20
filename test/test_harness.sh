@@ -202,10 +202,22 @@ test_codex_vote_and_effort() {
 
 test_codex_final_agent_message_is_marked_final_after_tool_call() {
   export CONVERGE_WORKER_PROFILE='codex:gpt-5-codex'
-  scenario worker MESSAGE=CONVERGED FOLLOWUP_TOOL=1
+  scenario worker MESSAGE=$'FIRST commentary\nCONVERGED' FOLLOWUP_TOOL=1
   run_converge "${LOOP_ARGS[@]}" --consensus 1 docs/requirements.md
   assert_status 0
   assert_output_contains '▍ CONVERGED'
+  local before_tool=${OUTPUT%%'❯ true'*} after_tool=${OUTPUT#*'❯ true'}
+  [[ $before_tool == *'FIRST commentary'* ]] || fail "commentary did not precede the tool call"
+  [[ $after_tool == *'▍ FIRST commentary'* ]] || fail "final message was not repeated after the tool call"
+}
+
+test_codex_commentary_precedes_following_tool_call() {
+  export CONVERGE_WORKER_PROFILE='codex:gpt-5-codex'
+  scenario worker MESSAGE=$'FIRST commentary\nCONVERGED' FOLLOWUP_TOOL=1
+  run_converge "${LOOP_ARGS[@]}" --consensus 1 docs/requirements.md
+  assert_status 0
+  local before_tool=${OUTPUT%%'❯ true'*}
+  [[ $before_tool == *'FIRST commentary'* ]] || fail "commentary did not precede the tool call"
 }
 
 test_opencode_tool_event_after_assistant_does_not_hide_final_message() {

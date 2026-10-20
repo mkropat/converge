@@ -32,3 +32,18 @@ test_panel_does_not_pass_environment_review_pass_to_agents() {
     fail "review-panel failed"
   assert_eq "$(call_field 1 review_pass)" unset "review pass environment"
 }
+
+test_codex_final_message_is_marked_after_following_tool() {
+  export CONVERGE_REVIEW_PANEL_PROFILE='codex:gpt-5-codex'
+  scenario reviewer MESSAGE=$'FIRST commentary\nReview complete.' FOLLOWUP_TOOL=1
+  local output before_tool after_tool
+  output=$(cd "$WORK" && CONVERGE_RUN_DIR="$WORK" \
+    "$REPO_ROOT/bin/review-panel" docs/requirements.md 2>&1) ||
+    fail "review-panel failed"
+  OUTPUT=$(sed -E $'s/\\x1b\\[[0-9;]*m//g' <<<"$output")
+  before_tool=${OUTPUT%%'❯ true'*}
+  after_tool=${OUTPUT#*'❯ true'}
+  [[ $before_tool == *'FIRST commentary'* ]] || fail "commentary did not precede the tool call"
+  [[ $after_tool == *'▍ reviewer 1/1 codex:gpt-5-codex Review complete.'* ]] ||
+    fail "final message was not repeated after the tool call"
+}

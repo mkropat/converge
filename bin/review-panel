@@ -1227,7 +1227,7 @@ format_stream() {
   jq --unbuffered -R -r "$(stream_filter)" 2>/dev/null | {
     local record kind rest rest2 name arg lines line turns ms cost
     local as_final started=-1 first=1 counted=0 sum=0 reported=0 stream_cost=0
-    local reported_cost='' cost_out
+    local reported_cost='' cost_out last_codex=''
     local -a hold=()
     while IFS= read -r record; do
       ((started < 0)) && started=$SECONDS
@@ -1249,6 +1249,7 @@ format_stream() {
             if ((${#hold[@]})); then dispatch_held "${hold[${#hold[@]}-1]}" 0; hold=(); fi
             local held_text
             held_text=$(jq -nr --arg encoded "${rest#*$'\t'}" '$encoded | fromjson')
+            last_codex=$held_text
             hold+=("text"$'\t'"$held_text")
           else
             hold+=("$rest")
@@ -1262,6 +1263,8 @@ format_stream() {
               dispatch_held "${hold[i]}" 0
             done
             dispatch_held "${hold[${#hold[@]}-1]}" 1
+          elif ((as_final)) && [[ $INVOCATION_HARNESS == codex && -n $last_codex ]]; then
+            dispatch_held "text"$'\t'"$last_codex" 1
           else
             for line in ${hold[@]+"${hold[@]}"}; do
               dispatch_held "$line" "$as_final"

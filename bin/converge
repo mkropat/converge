@@ -2339,7 +2339,7 @@ format_stream() {
     local started=-1 first=1 counted=0 sum=0 reported=0
     #reported_cost   The last cost total that a "stats" record carried.
     #stream_cost     True when at least one "tally" record carried a cost.
-    local reported_cost='' stream_cost=0 cost_out
+    local reported_cost='' stream_cost=0 cost_out last_codex=''
     local -a hold=()
     while IFS= read -r record; do
       ((started < 0)) && started=$SECONDS
@@ -2364,6 +2364,7 @@ format_stream() {
             fi
             local held_text
             held_text=$(jq -nr --arg encoded "${rest#*$'\t'}" '$encoded | fromjson')
+            last_codex=$held_text
             hold+=("text"$'\t'"$held_text")
           else
             hold+=("$rest")
@@ -2377,6 +2378,8 @@ format_stream() {
               dispatch_held "${hold[i]}" 0
             done
             dispatch_held "${hold[${#hold[@]}-1]}" 1
+          elif ((as_final)) && [[ $INVOCATION_HARNESS == codex && -n $last_codex ]]; then
+            dispatch_held "text"$'\t'"$last_codex" 1
           else
             for held in ${hold[@]+"${hold[@]}"}; do
               dispatch_held "$held" "$as_final"
@@ -2392,6 +2395,10 @@ format_stream() {
           fi
           ;;
         tool)
+          if [[ $INVOCATION_HARNESS == codex ]]; then
+            for held in ${hold[@]+"${hold[@]}"}; do dispatch_held "$held" 0; done
+            hold=()
+          fi
           name=${rest%%$'\t'*}
           rest2=${rest#*$'\t'}
           [[ $rest2 == "$rest" ]] && rest2=""
@@ -2401,6 +2408,10 @@ format_stream() {
           render_tool "$name" "$arg" "$lines"
           ;;
         fail)
+          if [[ $INVOCATION_HARNESS == codex ]]; then
+            for held in ${hold[@]+"${hold[@]}"}; do dispatch_held "$held" 0; done
+            hold=()
+          fi
           render_fail "$rest"
           ;;
         final)
