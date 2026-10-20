@@ -34,6 +34,14 @@ test_cadence_pass_before_and_after_workers() {
     fail "the first reviewer prompt does not list the unreviewed commit"
   call_prompt 3 | grep -qF "Add the export" ||
     fail "the second reviewer prompt does not list the new commit"
+  # CV-REV-17: only a pass with no coverage record in the bug database
+  # judges how far back to read.
+  call_prompt 1 | grep -qF "First pass: judge how far back to read" ||
+    fail "the first reviewer prompt does not grant the first-pass judgment"
+  call_prompt 3 | grep -qF "First pass:" &&
+    fail "the reviewer prompt after a recorded pass grants the first-pass judgment"
+  call_prompt 3 | grep -qF "Every selected unreviewed commit (1, newest first)" ||
+    fail "the reviewer prompt after a recorded pass does not list every commit"
 }
 
 test_no_pass_below_the_threshold() {

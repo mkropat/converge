@@ -647,13 +647,32 @@ plural() {
 
 # The commits that no review pass has recorded. The bug tracker holds them
 # (CV-REV-15), so this list, and not a file of the state directory, decides
-# what every pass must still read. The list comes from cbugs reviewed
-# pending: one line per commit, "<hash> <subject>", newest first. A cbugs
-# database error (CB-ERR-2) fails this call rather than reporting an empty
-# list: a read the loop could not perform does not mean the commits are
-# reviewed.
+# what every pass must still read. unreviewed_json prints the object of
+# cbugs reviewed pending --json: the number of coverage records, and the
+# unreviewed commits, newest first (CB-RVW-26). A cbugs database error
+# (CB-ERR-2), or an answer that is not that object, fails this call rather
+# than reporting an empty list: a read the loop could not perform does not
+# mean the commits are reviewed.
+unreviewed_json() {
+  local out
+  out=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" reviewed pending --json 2>/dev/null) || return 1
+  jq -e '(.recorded | type) == "number" and (.commits | type) == "array"' \
+    <<<"$out" >/dev/null 2>&1 || return 1
+  printf '%s\n' "$out"
+}
+
+# unreviewed_lines <json>   The commits of an unreviewed_json object, one
+# line per commit, "<hash> <subject>", newest first.
+unreviewed_lines() {
+  jq -r '.commits[] | "\(.commit_id) \(.subject)"' <<<"$1"
+}
+
+# unreviewed_list   The lines of unreviewed_lines from a fresh read. Fails
+# when unreviewed_json fails.
 unreviewed_list() {
-  CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" reviewed pending 2>/dev/null
+  local json
+  json=$(unreviewed_json) || return 1
+  unreviewed_lines "$json"
 }
 
 # unreviewed_hashes   The commits of unreviewed_list as full hashes, so the
@@ -2629,25 +2648,20 @@ EOF
   printf 'Cite the original local path or source URI for each code bug.\n'
 }
 
-# cadence_focus <pending lines> <pending count>   Prints the considered
-# history boundary and the exact commits that cbugs reviewed pending selected.
-# When the bug database holds no record of a commit that cbugs reviewed
-# pending considers, the first pass may judge how far back to read from this
-# list (CV-REV-17). Otherwise the range is every listed unreviewed commit
-# (CV-REV-16). Neither pass may read beyond this boundary (CV-REV-22).
-# The count read gives a bounded wait on a busy database, the same bound the
-# calls through cbugs hold for their writes (CB-CONC-5), and fails this call
-# rather than answering nothing: a failed read carries no information about
+# cadence_focus <pending lines> <pending count> <recorded count>   Prints
+# the considered history boundary and the exact commits that cbugs reviewed
+# pending selected. When the bug database holds no record of a commit that
+# cbugs reviewed pending considers, the first pass may judge how far back to
+# read from this list (CV-REV-17). Otherwise the range is every listed
+# unreviewed commit (CV-REV-16). Neither pass may read beyond this boundary
+# (CV-REV-22). The recorded count comes from the same cbugs reviewed pending
+# --json read as the list (CB-RVW-26), so the first-pass decision and the
+# commits of the pass describe one state of the database. The caller skips
+# the pass when that read fails: a failed read carries no information about
 # the records, so CV-REV-17's first-pass license, granted when the bug
-# database records no reviewed commit, must not print from it. The -f guard
-# above covers absence of the file, which reads correctly as no record.
+# database records no reviewed commit, must not print from it.
 cadence_focus() {
-  local reviewed_count=0
-  if [[ -f $STATE_DIR/cbugs.db ]]; then
-    reviewed_count=$(sqlite3 -bail -cmd '.timeout 10000' \
-      "$STATE_DIR/cbugs.db" 'SELECT COUNT(*) FROM reviewed;' 2>/dev/null) || return 1
-  fi
-  if ((reviewed_count == 0)); then
+  if (($3 == 0)); then
     printf 'Review boundary: the considered history selected by cbugs reviewed pending.
 First pass: judge how far back to read from this selected commit list; the most recent commits matter most.
 Selected unreviewed commits (%s, newest first):
@@ -2694,18 +2708,26 @@ record_reviewed() {
 # whole-code final pass is retired (CV-REV-18): the vote panel of
 # CV-CONV-23 replaces it, through run_vote_panel.
 run_review_pass() {
-  local pending_list pending_count bugs_before bugs_after new_bugs count
+  local pending_json pending_list pending_count reviewed_count
+  local bugs_before bugs_after new_bugs count
   local recorded=0 completed_at
   local bugs_before_ok=1 bugs_after_ok=1
-  if ! pending_list=$(unreviewed_list); then
+  # One read gives the list, its count, and the number of coverage records
+  # that decides a first pass (CV-REV-17), all from one state of the
+  # database (CB-RVW-26).
+  if ! pending_json=$(unreviewed_json); then
     # CV-REV-19: a failed read is not an empty backlog. A cadence pass
     # needs the exact list of unreviewed commits (CV-REV-16); without it,
     # running one would give the reviewer a false "nothing is unreviewed"
-    # range, so the pass is skipped rather than run on bad data.
+    # range, so the pass is skipped rather than run on bad data. The same
+    # failed read leaves no record count, and a failed count read is not a
+    # first pass (CV-REV-17) either.
     warn "cbugs reviewed pending failed; no cadence pass to run"
     return 0
   fi
-  pending_count=$(awk 'NF { c++ } END { print c + 0 }' <<<"$pending_list")
+  pending_list=$(unreviewed_lines "$pending_json")
+  pending_count=$(jq '.commits | length' <<<"$pending_json")
+  reviewed_count=$(jq '.recorded' <<<"$pending_json")
   if ((pending_count == 0)); then
     note "review: no commit is unreviewed; no pass to run"
     return 0
@@ -2715,14 +2737,7 @@ run_review_pass() {
   note "review pass at $(date '+%Y-%m-%d %H:%M:%S'): $(plural "$pending_count" "unreviewed commit")"
 
   local focus prompt before_revision_lines before_revision_ids
-  if ! focus=$(cadence_focus "$pending_list" "$pending_count"); then
-    # A failed reviewed-count read is not a first pass (CV-REV-17): the
-    # first-pass range would be a false claim, so the pass is skipped
-    # rather than run on a range that answers nothing, as the failed
-    # pending read above does.
-    warn "cbugs.db read failed; no cadence pass to run"
-    return 0
-  fi
+  focus=$(cadence_focus "$pending_list" "$pending_count" "$reviewed_count")
   prompt=$(reviewer_prompt "$focus")
 
   # CV-OUT-14: the two report lists use cbugs visibility at each read's
