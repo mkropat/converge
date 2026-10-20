@@ -30,7 +30,8 @@
 #
 #   <n> harness=<h> role=<r> iteration=<i> model=<m> effort=<e> scenario=<f>
 #
-# and saves its prompt to calls/<n>.prompt. An empty queue is a test bug: the
+# and saves its prompt to calls/<n>.prompt and its process id to
+# calls/<n>.pid. An empty queue is a test bug: the
 # stub then exits 97 with no output, which converge reads as a failure.
 set -uo pipefail
 
@@ -84,6 +85,9 @@ printf '%s harness=%s role=%s iteration=%s model=%s effort=%s scenario=%s\n' \
 flock -u 8
 exec 8>&-
 printf '%s' "$PROMPT" >"$dir/calls/$n.prompt"
+# A signal test reads the process id to check that the agent was killed.
+# The stub execs sleep for SLEEP, so this id stays the agent's own.
+printf '%s\n' "$$" >"$dir/calls/$n.pid"
 
 if [[ -z $scenario ]]; then
   echo "fake-harness: no scenario queued for role '$role'" >&2

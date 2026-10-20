@@ -70,10 +70,43 @@ setup_test() {
 
 teardown_test() {
   cd / || true
-  # A failed test can leave a loop behind. Its processes hold files in
-  # TEST_TMP, so stop them before the directory goes away.
-  pkill -TERM -f "$TEST_TMP" 2>/dev/null || true
+  # A failed test can leave a loop behind, and a background loop leaves the
+  # test's process group through setsid. Every process of the test runs in
+  # the test repository or below TEST_TMP, so stop each process whose
+  # working directory is there.
+  local proc cwd pids=()
+  for proc in /proc/[0-9]*; do
+    cwd=$(readlink "$proc/cwd" 2>/dev/null) || continue
+    [[ $cwd == "$TEST_TMP" || $cwd == "$TEST_TMP"/* ]] || continue
+    [[ ${proc#/proc/} == "$$" ]] || pids+=("${proc#/proc/}")
+  done
+  ((${#pids[@]})) && kill -TERM "${pids[@]}" 2>/dev/null
   [[ -n ${KEEP_TEST_TMP:-} ]] || rm -rf "$TEST_TMP"
+}
+
+# wait_for <seconds> <command...>   Polls a condition every 0.1 seconds.
+wait_for() {
+  local limit=$(($1 * 10)) i; shift
+  for ((i = 0; i < limit; i++)); do
+    "$@" && return 0
+    sleep 0.1
+  done
+  return 1
+}
+
+# loop_pid   Prints the process id that the running loop recorded.
+loop_pid() {
+  cat "$TMPDIR"/converge/*/*.pid 2>/dev/null | head -n 1
+}
+
+# agent_pid <n>   Prints the process id of fake-harness call n.
+agent_pid() {
+  cat "$FAKE_HARNESS_DIR/calls/$1.pid" 2>/dev/null
+}
+
+# is_dead <pid>   True when no process has that id.
+is_dead() {
+  ! kill -0 "$1" 2>/dev/null
 }
 
 # scenario <role|any> [VAR=value]...   Queues one fake-harness invocation.
