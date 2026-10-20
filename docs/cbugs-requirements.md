@@ -505,9 +505,8 @@ sections of `docs/converge-requirements.md` for the loop behavior.
 - **CB-RVW-8**: Retired. Selected pending commits from all history reachable
   from repository `HEAD`. **CB-RVW-20** through **CB-RVW-24** replace this
   behavior.
-- **CB-RVW-9**: The human form of `reviewed pending` must give one line for
-  each commit, with the hash and the subject of the commit. The `--json` form
-  must give the same information as JSON.
+- **CB-RVW-9**: Retired. Gave the human form and the `--json` form of
+  `reviewed pending` together. **CB-RVW-25** and **CB-RVW-26** replace it.
 - **CB-RVW-10**: The command must stop with an error when a value that
   `reviewed add` names does not name a commit of the repository. The command
   reads the repository for these verbs as it reads HEAD for the provenance of
@@ -548,8 +547,8 @@ sections of `docs/converge-requirements.md` for the loop behavior.
   `created_at` fields. `added` counts all new records, including repeated
   reviews. `already` counts input commits with prior coverage, not skipped
   writes. An unknown profile must be JSON null. `created_at` must be the stored
-  timestamp. `reviewed pending` keeps the output of CB-RVW-9; pending commits
-  have no review metadata.
+  timestamp. `reviewed pending` keeps the output of CB-RVW-25 and CB-RVW-26;
+  pending commits have no review metadata.
 - **CB-RVW-18**: For CB-RVW-24, any coverage record is sufficient.
   Existing migrated records and manual records with an unknown profile count.
   The command must not require a number of reviews or a particular profile
@@ -592,6 +591,26 @@ sections of `docs/converge-requirements.md` for the loop behavior.
   record must count under CB-RVW-18. When no considered commit is
   unreviewed, the command must print nothing and exit with status `0`. This
   includes an empty branch selection and a repository with no commit.
+- **CB-RVW-25**: The human form of `reviewed pending` must give one line for
+  each commit, with the hash and the subject of the commit.
+- **CB-RVW-26**: The `--json` form of `reviewed pending` must print one JSON
+  object. The object must hold the fields `recorded` and `commits`.
+  - **CB-RVW-26.1**: `recorded` must be the number of coverage records in the
+    table of reviewed commits. It counts every record, also a record of a
+    commit outside the considered history. The value is `0` when the table
+    holds no record.
+  - **CB-RVW-26.2**: `commits` must be an array of the commits that
+    CB-RVW-24 selects, in the same order. Each element must be an object
+    with the fields `commit_id` and `subject`. `commit_id` is the full hash.
+  - **CB-RVW-26.3**: The command must print the object also when no
+    considered commit is unreviewed. `commits` is then an empty array. This
+    rule replaces, for the `--json` form only, the empty output of CB-RVW-24
+    and CB-OUT-6.
+  - **CB-RVW-26.4**: The command must read `recorded` and the coverage
+    records that remove commits from `commits` in one read of the database.
+    A write between two reads must not make the two values disagree.
+  - **CB-RVW-26.5**: A failed read must print no object. The command must
+    then fail under CB-ERR-2.
 
 ## The summary
 

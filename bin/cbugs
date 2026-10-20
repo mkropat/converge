@@ -190,6 +190,13 @@ the repository makes every commit in that history relevant.
 
 Prints nothing and exits with the status 0 when no commit is unreviewed, and
 when the repository holds no relevant commit.
+
+--json   Prints one JSON object on one line:
+         {"recorded": <N>, "commits": [{"commit_id": ..., "subject": ...}]}
+         "recorded" is the number of coverage records in the reviewed
+         table. "commits" holds the unreviewed commits, the newest first.
+         The command prints the object also when no commit is unreviewed.
+         Then "commits" is an empty array.
 EOF
 }
 
@@ -1831,10 +1838,13 @@ print(json.dumps(result, ensure_ascii=False))
 # of reviewed add from an agent of the loop stops with an error. reviewed
 # pending changes nothing, and every caller may run it.
 
-# count_pending <json>   One shared reader for both forms: prints one line
-# per unreviewed commit -- "<hash>\t<subject>" -- or nothing, and exits 0,
-# when no commit is unreviewed and the considered history holds no relevant
-# commit (CB-RVW-20 through CB-RVW-24). The selected review history excludes
+# count_pending   One shared reader for both forms. The first line gives
+# the number of rows of the reviewed table (CB-RVW-26). One line per
+# unreviewed commit -- "<hash>\t<subject>" -- follows, or no line when no
+# commit is unreviewed and when the considered history holds no relevant
+# commit (CB-RVW-20 through CB-RVW-24). One query reads the table, so the
+# count and the pending list come from the same state of the database: a
+# write between two reads cannot make them disagree. The selected review history excludes
 # commits reachable from local main and locally stored origin/main, except
 # when HEAD is local main or neither base has a common ancestor with HEAD.
 # A relevant commit changes one or more paths in the run directory. The
@@ -1846,6 +1856,18 @@ count_pending() {
   local -a rev_args=() exclude_args=()
   local reachable="" row hash subject rel current_branch base_ref merge_base
   local has_common=0 ref_status
+  # A row names one commit, and nothing else can name the same one, so the
+  # names land in a set keyed by the full hash. The same rows give the
+  # count of records: commit_id is NOT NULL and never empty.
+  local -A named=()
+  local rows_out recorded=0
+  rows_out=$(sqlite3_run raw "SELECT commit_id FROM reviewed;") || exit 1
+  while IFS= read -r row; do
+    [[ -n $row ]] || continue
+    named[$row]=1
+    ((++recorded))
+  done <<<"$rows_out"
+  printf '%s\n' "$recorded"
   # A newly initialized repository has a symbolic HEAD but no commit to
   # walk. It has no relevant commits yet, which is an empty successful result
   # under CB-RVW-8; a broken or unreadable existing history still errors.
@@ -1918,14 +1940,6 @@ count_pending() {
   while IFS= read -r row; do
     [[ -n $row ]] && pending+=("$row")
   done <<<"$reachable"
-  # A row names one commit, and nothing else can name the same one, so the
-  # names land in a set keyed by the full hash.
-  local -A named=()
-  local rows_out
-  rows_out=$(sqlite3_run raw "SELECT commit_id FROM reviewed;") || exit 1
-  while IFS= read -r row; do
-    [[ -n $row ]] && named[$row]=1
-  done <<<"$rows_out"
   local -a unseen=()
   for row in ${pending[@]+"${pending[@]}"}; do
     [[ -n ${named[$row]:-} ]] || unseen+=("$row")
@@ -1971,19 +1985,23 @@ verb_reviewed_pending() {
   # error stops the verb with a non-zero status (CB-ERR-2), and does not
   # leave an empty listing that holds the status 0 against CB-RVW-8.
   pending_out=$(count_pending) || exit 1
-  if [[ -n $pending_out ]]; then
-    mapfile -t lines <<<"$pending_out"
+  local recorded=${pending_out%%$'\n'*}
+  if [[ $pending_out == *$'\n'* ]]; then
+    mapfile -t lines <<<"${pending_out#*$'\n'}"
   fi
-  ((${#lines[@]} > 0)) || exit 0
+  # The JSON form always prints one object, also when no commit is
+  # unreviewed: the count of records is an answer of its own (CB-RVW-26).
   if ((json)); then
     for line in ${lines[@]+"${lines[@]}"}; do
       hash=${line%%$'\t'*}
       subject=${line#*$'\t'}
       elems+=("$(jq -Mcn --arg c "$hash" --arg s "$subject" '{commit_id: $c, subject: $s}')")
     done
-    printf '%s\n' "${elems[@]}" | jq -M -s .
+    printf '%s\n' ${elems[@]+"${elems[@]}"} |
+      jq -Mc -s --argjson recorded "$recorded" '{recorded: $recorded, commits: .}'
     exit 0
   fi
+  ((${#lines[@]} > 0)) || exit 0
   for line in ${lines[@]+"${lines[@]}"}; do
     printf '%s %s\n' "${line%%$'\t'*}" "${line#*$'\t'}"
   done
