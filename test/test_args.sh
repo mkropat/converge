@@ -52,7 +52,7 @@ test_missing_value_before_an_option() {
 test_every_value_option_needs_a_value() {
   local opt
   for opt in --consensus --blocked --stall-after --stall-notify --coach-first \
-    --coach-every --review-after --timeout --max-iterations; do
+    --coach-every --review-after --refactor-after --timeout --max-iterations; do
     expect_usage_error "'$opt' needs a value" --foreground "$opt"
   done
 }
@@ -95,7 +95,7 @@ test_all_rejections_reported_together() {
 test_non_integer_values() {
   local opt
   for opt in --consensus --blocked --stall-after --stall-notify --coach-first \
-    --coach-every --review-after --timeout; do
+    --coach-every --review-after --refactor-after --timeout; do
     expect_usage_error "$opt needs a whole number, got 'abc'" --foreground "$opt" abc
     expect_usage_error "$opt needs a whole number, got '1.5'" --foreground "$opt=1.5"
   done
@@ -111,7 +111,7 @@ test_client_validates_before_spawning() {
 
 test_zero_rejected_where_positive_needed() {
   local opt
-  for opt in --blocked --stall-after --stall-notify --coach-every --review-after; do
+  for opt in --blocked --stall-after --stall-notify --coach-every --review-after --refactor-after; do
     expect_usage_error "$opt needs a positive integer" --foreground "$opt" 0
   done
 }
@@ -121,6 +121,15 @@ test_zero_consensus_converges_without_agents() {
   assert_status 0
   assert_output_contains "converged after 0 iterations"
   assert_calls 0
+}
+
+test_refactor_options_are_shown_and_can_be_disabled() {
+  run_converge --foreground --consensus 0 --refactor-after 3 docs/requirements.md
+  assert_status 0
+  assert_output_contains 'refactor   enabled after 3 relevant commits; profiles claude:sonnet'
+  run_converge --foreground --consensus 0 --no-refactor docs/requirements.md
+  assert_status 0
+  assert_output_contains 'refactor   disabled; profiles claude:sonnet'
 }
 
 test_zero_max_iterations_stops_without_agents() {
@@ -162,7 +171,7 @@ test_largest_integer_accepted() {
 
 test_equals_form_values() {
   run_converge --foreground --consensus=0 --blocked=3 --stall-after=4 \
-    --stall-notify=5 --coach-first=6 --coach-every=7 --review-after=8 \
+    --stall-notify=5 --coach-first=6 --coach-every=7 --review-after=8 --refactor-after=9 \
     --timeout=9 --max-iterations=10 docs/requirements.md
   assert_status 0
   assert_output_contains "at most 10 iterations"

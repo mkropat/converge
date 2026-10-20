@@ -23,6 +23,8 @@ COACH_EVERY=10
 COACH_ENABLED=1
 REVIEW_AFTER=5
 REVIEW_ENABLED=1
+REFACTOR_AFTER=5
+REFACTOR_ENABLED=1
 TIMEOUT=3600
 MAX_ITERATIONS=""
 MAX_ITERATIONS_SET=0
@@ -60,6 +62,8 @@ Options:
                           unreviewed commits exist. N must be a positive
                           integer. Default: 5.
   --no-review             Disable the reviewer.
+  --refactor-after <N>    Relevant commits before a Refactor pass. Default: 5.
+  --no-refactor           Disable Refactor.
   --timeout <seconds>     Maximum duration of one invocation. Default: 3600.
   --max-iterations <N>    Maximum worker iterations. Default: unbounded.
   --foreground            Run the loop in this terminal, not in the background.
@@ -141,6 +145,9 @@ while (($#)); do
     --review-after) need_value "$1" $# "${2:-}" || { shift; continue; }; REVIEW_AFTER=$2; shift 2 ;;
     --review-after=*) REVIEW_AFTER=${1#*=}; shift ;;
     --no-review) REVIEW_ENABLED=0; shift ;;
+    --refactor-after) need_value "$1" $# "${2:-}" || { shift; continue; }; REFACTOR_AFTER=$2; shift 2 ;;
+    --refactor-after=*) REFACTOR_AFTER=${1#*=}; shift ;;
+    --no-refactor) REFACTOR_ENABLED=0; shift ;;
     --timeout) need_value "$1" $# "${2:-}" || { shift; continue; }; TIMEOUT=$2; shift 2 ;;
     --timeout=*) TIMEOUT=${1#*=}; shift ;;
     --max-iterations) need_value "$1" $# "${2:-}" || { shift; continue; }; MAX_ITERATIONS=$2; MAX_ITERATIONS_SET=1; shift 2 ;;
@@ -367,7 +374,7 @@ validate_start_options() {
       exit 2
     fi
   done
-  for pair in "consensus:$CONSENSUS" "blocked:$BLOCKED_LIMIT" "stall-after:$STALL_AFTER" "stall-notify:$STALL_NOTIFY" "coach-first:$COACH_FIRST" "coach-every:$COACH_EVERY" "review-after:$REVIEW_AFTER" "timeout:$TIMEOUT"; do
+  for pair in "consensus:$CONSENSUS" "blocked:$BLOCKED_LIMIT" "stall-after:$STALL_AFTER" "stall-notify:$STALL_NOTIFY" "coach-first:$COACH_FIRST" "coach-every:$COACH_EVERY" "review-after:$REVIEW_AFTER" "refactor-after:$REFACTOR_AFTER" "timeout:$TIMEOUT"; do
     if ! is_number "${pair#*:}"; then
       echo "converge: --${pair%%:*} needs a whole number, got '${pair#*:}'" >&2
       exit 2
@@ -375,7 +382,7 @@ validate_start_options() {
   done
   # Bash arithmetic uses a signed integer. Reject values outside that range
   # before normalization, because overflow can invert a setting's meaning.
-  for pair in "consensus:$CONSENSUS" "blocked:$BLOCKED_LIMIT" "stall-after:$STALL_AFTER" "stall-notify:$STALL_NOTIFY" "coach-first:$COACH_FIRST" "coach-every:$COACH_EVERY" "review-after:$REVIEW_AFTER" "timeout:$TIMEOUT"; do
+  for pair in "consensus:$CONSENSUS" "blocked:$BLOCKED_LIMIT" "stall-after:$STALL_AFTER" "stall-notify:$STALL_NOTIFY" "coach-first:$COACH_FIRST" "coach-every:$COACH_EVERY" "review-after:$REVIEW_AFTER" "refactor-after:$REFACTOR_AFTER" "timeout:$TIMEOUT"; do
     if ! fits_bash_integer "${pair#*:}"; then
       echo "converge: --${pair%%:*} exceeds the supported integer range" >&2
       exit 2
@@ -392,11 +399,16 @@ validate_start_options() {
   COACH_FIRST=$((10#$COACH_FIRST))
   COACH_EVERY=$((10#$COACH_EVERY))
   REVIEW_AFTER=$((10#$REVIEW_AFTER))
+  REFACTOR_AFTER=$((10#$REFACTOR_AFTER))
   TIMEOUT=$((10#$TIMEOUT))
   # CV-INV-3.14: a cadence pass runs at N or more unreviewed commits, so N
   # must be a positive integer; zero would fire a pass on an empty backlog.
   if ((REVIEW_AFTER == 0)); then
     echo "converge: --review-after needs a positive integer, got '$REVIEW_AFTER'" >&2
+    exit 2
+  fi
+  if ((REFACTOR_AFTER == 0)); then
+    echo "converge: --refactor-after needs a positive integer, got '$REFACTOR_AFTER'" >&2
     exit 2
   fi
   # CV-INV-3.17: K is the period after the first coach run, so it must be a
@@ -685,7 +697,7 @@ panel() {
       # A path row or the scope is operator-read text: it is never
       # shortened, and it sets the width of the box when it fits in the
       # terminal (CV-OUT-1.1, CV-SCOPE-8, CV-ID-2, CV-OUT-11).
-      "run dir"|"run log"|output|guidance|scope|worker|review|coach|fixer)
+      "run dir"|"run log"|output|guidance|scope|worker|review|coach|fixer|refactor)
         if ((11 + ${#value} <= COLS - 17)); then
           printf -v line '%-10s %s' "$label" "$value"
           ((${#line} > inner)) && inner=${#line}
@@ -708,7 +720,7 @@ panel() {
     label=${row%%|*}
     value=${row#*|}
     raw=0
-    case $label in "run dir"|"run log"|output|guidance|scope|worker|review|coach|fixer) raw=1 ;; esac
+    case $label in "run dir"|"run log"|output|guidance|scope|worker|review|coach|fixer|refactor) raw=1 ;; esac
     if ((raw)) && ((11 + ${#value} > inner)); then
       # The value does not fit the box and may not be shortened: leave the
       # right border out, so the text runs on past it, whole.
@@ -1482,6 +1494,10 @@ if ! hold_lock; then
   bad "a converge loop already runs for this run directory"
   exit 2
 fi
+# CV-REF-1: keep one history boundary for this session. Capture it before
+# discovery, review, or any other agent can change HEAD.
+SESSION_START_COMMIT=$(git rev-parse HEAD 2>/dev/null) || SESSION_START_COMMIT=
+REFACTOR_COUNT_BASE=$SESSION_START_COMMIT
 # A --foreground run is a session too, with no separate client process. It
 # must still record its process id, become the current session, and report
 # its exit status, so that the next run's "last run" report is accurate. In
@@ -1496,7 +1512,8 @@ trap 'printf "%s\n" "$?" >"$SESSION_STATUS"' EXIT
 
 note "=== run start ==="
 note "command: $0 $ORIGINAL_ARGS"
-note "options: worker-profile=${WORKER_PROFILES[*]} reviewer-profile=${REVIEWER_PROFILES[*]} coach-profile=${COACH_PROFILES[*]} consensus=$CONSENSUS blocked=$BLOCKED_LIMIT stall-after=$STALL_AFTER stall-notify=$STALL_NOTIFY coach-first=$COACH_FIRST coach-every=$COACH_EVERY coach=$COACH_ENABLED review-after=$REVIEW_AFTER review=$REVIEW_ENABLED timeout=$TIMEOUT max-iterations=${MAX_ITERATIONS:-unbounded}"
+note "options: worker-profile=${WORKER_PROFILES[*]} reviewer-profile=${REVIEWER_PROFILES[*]} coach-profile=${COACH_PROFILES[*]} consensus=$CONSENSUS blocked=$BLOCKED_LIMIT stall-after=$STALL_AFTER stall-notify=$STALL_NOTIFY coach-first=$COACH_FIRST coach-every=$COACH_EVERY coach=$COACH_ENABLED review-after=$REVIEW_AFTER review=$REVIEW_ENABLED refactor-after=$REFACTOR_AFTER refactor=$REFACTOR_ENABLED timeout=$TIMEOUT max-iterations=${MAX_ITERATIONS:-unbounded}"
+note "refactor session start: ${SESSION_START_COMMIT:-unavailable}"
 if ((${#SCOPE[@]})); then
   SCOPE_SUMMARY=$(scope_list)
 else
@@ -1527,6 +1544,13 @@ if ((REVIEW_ENABLED)); then
 else
   REVIEW_SUMMARY="disabled ($(join_list "${REVIEWER_PROFILES[@]}"))"
 fi
+if ((REFACTOR_ENABLED)); then
+  REFACTOR_SUMMARY="enabled after $(plural "$REFACTOR_AFTER" "relevant commit")"
+else
+  REFACTOR_SUMMARY="disabled"
+fi
+REFACTOR_SUMMARY+="; profiles $(join_list "${WORKER_PROFILES[@]}")"
+[[ -n $SESSION_START_COMMIT ]] || REFACTOR_SUMMARY+="; unavailable: no session start commit"
 # CV-OUT-1.6: the count of the unreviewed commits at startup, so the
 # operator sees whether a cadence pass runs before the first worker. The
 # count carries over from earlier runs: the bug database holds it. A failed
@@ -1563,6 +1587,7 @@ PANEL_ROWS+=(
   "pending review|$UNREVIEWED_SUMMARY"
   "coach|$COACH_SUMMARY; stall after $(plural "$STALL_AFTER" "stalled chain")"
   "notification|$(if [[ -n $NOTIFY_COMMAND ]]; then echo "command set; stalled after $(plural "$STALL_NOTIFY" "stalled chain")"; else echo "off"; fi)"
+  "refactor|$REFACTOR_SUMMARY"
   "fixer|$(if ((FIXER_PROFILE_SET)); then join_list "${FIXER_PROFILES[@]}"; else echo "worker profile list"; fi)"
   "stop|$(plural "$CONSENSUS" "converged vote") in a row; blocked after $(plural "$BLOCKED_LIMIT" "blocked vote")"
   "timeout|${TIMEOUT}s for one invocation"
