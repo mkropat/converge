@@ -117,6 +117,10 @@ _Avoid_: review round, audit
 A review pass that the count of unreviewed commits starts. It reads the unreviewed commits in the considered history.
 _Avoid_: cadence review, periodic review, incremental review
 
+**Pass id**:
+The id that the loop gives one cadence pass. The loop exports it to the reviewers of that pass only, and the bug tracker records it on each revision that they write. The bugs of a pass are the bugs whose first revision holds its pass id.
+_Avoid_: review id, pass number
+
 **Vote panel**:
 One panel run that the loop starts when the done count first rises from zero to one. Its reviewers read the whole live working tree.
 _Avoid_: panel (alone), convergence review, final review

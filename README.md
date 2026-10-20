@@ -377,6 +377,7 @@ The controllers set these variables for agent invocations:
 | `CONVERGE_ROLE` | `worker` (also for fixers), `reviewer`, `coach`, `discovery`, or panel `merge`. |
 | `CONVERGE_ITERATION` | Worker iteration number for loop workers, fixers, reviewers, and coaches. Unset for discovery and panel agents. |
 | `CONVERGE_RUN_DIR` | Absolute run path. `cbugs` uses it even after an agent changes directories. |
+| `CONVERGE_REVIEW_PASS` | Cadence pass ID, set only for the reviewers of a cadence pass. `cbugs list --review-pass <id>` shows the bugs that the pass created. |
 | `REVIEW_PANEL_RUN` | Panel run ID, set for panel agents. |
 | `REVIEW_PANEL_PROFILE` | Full profile of the panel agent. |
 | `REVIEW_PANEL_INVOCATION` | ID of that panel agent invocation. |

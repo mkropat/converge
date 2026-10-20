@@ -339,13 +339,14 @@ The operator starts a session over a connection that can break, and the session 
 
 - **CV-ENV-1**: Retired. Listed roles without discovery. **CV-ENV-7** replaces this requirement.
 - **CV-ENV-2**: Retired. Required an iteration number for every loop agent. **CV-ENV-8** replaces this requirement.
-- **CV-ENV-3**: The bug tracker reads both variables and records them on each revision that an agent writes. An agent therefore cannot record the wrong role, and a prompt does not have to carry the values.
+- **CV-ENV-3**: The bug tracker reads both variables and records them on each revision that an agent writes. An agent therefore cannot record the wrong role, and a prompt does not have to carry the values. The bug tracker also reads and records the pass id of **CV-ENV-10**.
 - **CV-ENV-4**: The loop must put `bin/cbugs` on the PATH of every agent that it starts. A worker that cannot run the command cannot fix a bug.
 - **CV-ENV-5**: The loop must start every agent with the run directory as its working directory. A scope path, a requirements document, and the bug database therefore resolve for the agent as they resolved for the operator.
 - **CV-ENV-6**: The loop must export `CONVERGE_RUN_DIR` into the environment of every agent that it starts. The value is the absolute path of the run directory. An agent that changes its own working directory therefore still reads and writes the bugs of its own run, and never the bugs of another run directory that it moved into. The bug tracker reads the variable, as `docs/cbugs-requirements.md` gives.
 - **CV-ENV-7**: The loop must export `CONVERGE_ROLE` for each agent it starts. Its value must be `discovery`, `worker`, `reviewer`, or `coach`, as applicable.
 - **CV-ENV-8**: The loop must export the current worker iteration as `CONVERGE_ITERATION` for workers, cadence reviewers, and coaches. Startup reviewers and coaches must receive `0`. Discovery must run with this variable unset.
 - **CV-ENV-9**: A fixer iteration must export `CONVERGE_ROLE` as `worker` and `CONVERGE_ITERATION` as its iteration number. A fixer does the work of a worker, and the bug tracker must record it as one. The run log, the invocation line, and the prompt file identify the iteration as a fixer, as **CV-OUT-15** gives.
+- **CV-ENV-10**: For each cadence pass, the loop must make one pass id. The id must be unique across sessions. The loop must export it as `CONVERGE_REVIEW_PASS` for each reviewer of that pass, and for each attempt of its fallback chain. The bug tracker records the id on each revision that the reviewer writes, as `docs/cbugs-requirements.md:CB-PROV-9` gives. The loop must not export the variable for any other agent: workers, fixers, coaches, discovery, and the agents of the vote panel run with it unset. A notification command must also run with it unset. A value that the environment of the loop holds at startup must reach no agent.
 
 ## Output
 
@@ -367,7 +368,7 @@ The operator starts a session over a connection that can break, and the session 
   - **CV-OUT-3.7**: The number of turns, the duration, and the cost that the agent reports.
 - **CV-OUT-4**: After each worker, the loop must report what the worker committed: the number of commits, the number of files and lines that changed, and the subject of each commit. The loop must also report files that the worker left uncommitted.
 - **CV-OUT-5**: After each review pass, the loop must report each bug that the pass logged, with its id, its kind, and its title. It must report a pass that logged no bug as such.
-- **CV-OUT-6**: Retired. Limited bug-list reads to reporting. **CV-OUT-13** retains reporting; **CV-CONV-22** forbids convergence decision checks.
+- **CV-OUT-6**: Retired. Limited bug-list reads to reporting. **CV-OUT-18** retains reporting, in place of the retired **CV-OUT-13**; **CV-CONV-22** forbids convergence decision checks.
 - **CV-OUT-7**: After each coach run, the loop must report whether the coach changed the guidance. If the coach changed it, the loop must show the new guidance in full. In both cases the loop must give the path of the guidance file. The loop must not give the path of the coach log, which a person cannot read.
 - **CV-OUT-8**: If an invocation fails, the loop must show the last lines that it wrote to stderr. A failure with no messages puts its cause there.
 - **CV-OUT-9**: The loop must always use color, bold, and box characters. It writes to a file that a client shows in a terminal, so it cannot ask what reads it.
@@ -375,13 +376,17 @@ The operator starts a session over a connection that can break, and the session 
 - **CV-OUT-11**: Style must not remove information. Each message that the loop prints must also go to the run log, as plain text.
 - **CV-OUT-12**: After each review pass, the loop must report the number of commits that the pass recorded. The vote panel report must say that the panel read the live working tree.
 
-- **CV-OUT-13**: The loop must find the bugs of a cadence pass by comparing the bug lists before and after the pass. Vote panel reports must use panel attribution under `docs/review-panel-requirements.md`. Bug queries serve reporting, not convergence decisions.
-- **CV-OUT-14**: Both pass-report lists must use cbugs visibility at the
-  repository `HEAD` of their read. A change of visibility caused only by a change
-  of `HEAD` must not be reported as a bug that the pass logged.
+- **CV-OUT-13**: Retired. Found the bugs of a cadence pass by a comparison of the bug lists before and after the pass. **CV-OUT-18** replaces it.
+- **CV-OUT-14**: Retired. Gave the visibility of the two lists of **CV-OUT-13**. **CV-OUT-18** reads no list before the pass, and a change of `HEAD` cannot change the bugs of a pass id. This requirement therefore has no remaining purpose.
 - **CV-OUT-15**: The heading and the invocation line of a fixer iteration must say that the iteration is a fixer. The run log must record it. The result line of a worker must show a blocked vote with its count, as **CV-OUT-1.4** shows a done vote. The startup panel must show the blocked threshold beside the vote threshold, and the stall threshold beside the coach cadence.
 - **CV-OUT-16**: After each coach run, the loop must report whether the coach escalated. After a coach run that the loop started for a blocked vote or a stall, the heading must name that trigger.
 - **CV-OUT-17**: When the loop stops on blocked votes, the closing report must say that the loop stopped blocked, give the count of consecutive blocked votes, and show the final message of the last blocked worker in full, set apart. That message names the blockers. The operator must read why the loop stopped without a search of the logs.
+- **CV-OUT-18**: The loop must find the bugs of a cadence pass by the pass id of **CV-ENV-10**.
+  - **CV-OUT-18.1**: After the pass, the loop must read the bugs with `cbugs list --review-pass <id> --json`, as `docs/cbugs-requirements.md:CB-LIST-10` gives. The bugs of the pass are the bugs that its reviewers created. A note that a reviewer adds to an existing bug does not make that bug a bug of the pass. A bug that another role or the operator logs during the pass is not a bug of the pass.
+  - **CV-OUT-18.2**: The report must include a bug of the pass that the repository `HEAD` hides, and must mark it as hidden.
+  - **CV-OUT-18.3**: When the read fails, the loop must warn that it cannot report the bugs that the pass logged. It must not report that the pass logged no bug.
+  - **CV-OUT-18.4**: The loop must read the bug database only through `cbugs`.
+  - **CV-OUT-18.5**: Vote panel reports must use panel attribution under `docs/review-panel-requirements.md`. Bug queries serve reporting, not convergence decisions.
 
 ## Cost tracking
 

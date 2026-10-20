@@ -793,6 +793,15 @@ LOOKUP_RESULT="$SESSION_DIR/$RUN_ID.discovery.result"
 LOOKUP_TEXT=""
 SESSION_PID="$RUNTIME_DIR/$RUN_ID.pid"
 SEQ=0
+# CV-ENV-10: the id of the cadence review pass that runs now, and the count
+# of the passes of this session. run_agent exports the id as
+# CONVERGE_REVIEW_PASS to the reviewers of that pass, and to no other agent.
+# The loop's own environment never holds the variable: a value that the
+# operator's shell or a parent agent set must not tag the revisions of
+# workers, coaches, the vote panel, or a notification command.
+REVIEW_PASS_ID=""
+REVIEW_PASS_SEQ=0
+unset CONVERGE_REVIEW_PASS
 CHILD=""
 FORMATTER=""
 RUN_START=$SECONDS
@@ -1714,6 +1723,13 @@ run_agent() {
         export CONVERGE_ITERATION="$ITERATION"
       fi
       export CONVERGE_RUN_DIR="$RUN_DIR"
+      # CV-ENV-10: only a reviewer of a cadence review pass carries the
+      # pass id, so cbugs tags the bugs that the pass creates (CB-PROV-9).
+      if [[ $role == reviewer && -n $REVIEW_PASS_ID ]]; then
+        export CONVERGE_REVIEW_PASS="$REVIEW_PASS_ID"
+      else
+        unset CONVERGE_REVIEW_PASS
+      fi
       export PATH="$BIN_DIR:$PATH"
       trap '' INT
       exec timeout --verbose -k 10 "$TIMEOUT" "${ARGV[@]}"
@@ -2709,9 +2725,8 @@ record_reviewed() {
 # CV-CONV-23 replaces it, through run_vote_panel.
 run_review_pass() {
   local pending_json pending_list pending_count reviewed_count
-  local bugs_before bugs_after new_bugs count
+  local logged count pass_id
   local recorded=0 completed_at
-  local bugs_before_ok=1 bugs_after_ok=1
   # One read gives the list, its count, and the number of coverage records
   # that decides a first pass (CV-REV-17), all from one state of the
   # database (CB-RVW-26).
@@ -2736,27 +2751,19 @@ run_review_pass() {
   heading "$BLUE" "review" "$(date '+%H:%M:%S')"
   note "review pass at $(date '+%Y-%m-%d %H:%M:%S'): $(plural "$pending_count" "unreviewed commit")"
 
-  local focus prompt before_revision_lines before_revision_ids
+  local focus prompt
   focus=$(cadence_focus "$pending_list" "$pending_count" "$reviewed_count")
   prompt=$(reviewer_prompt "$focus")
 
-  # CV-OUT-14: the two report lists use cbugs visibility at each read's
-  # repository HEAD. Compare all stored revision ids to detect writes
-  # during the pass without mistaking a visibility-only change for a new
-  # finding.
-  bugs_before=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" list --json 2>/dev/null) || bugs_before_ok=0
-  [[ -n $bugs_before ]] || bugs_before='[]'
-  # The visible revision of an existing bug can change when HEAD changes,
-  # even when no revision was written during this pass. Snapshot every
-  # stored revision id before starting the reviewer so branch visibility
-  # cannot make an old revision look new (CV-OUT-14).
-  before_revision_lines=$(sqlite3 -bail -cmd '.timeout 10000' \
-    "$STATE_DIR/cbugs.db" 'SELECT id FROM revision ORDER BY id;' 2>/dev/null) || bugs_before_ok=0
-  before_revision_ids=$(jq -Rn '[inputs | select(length > 0) | tonumber]' \
-    <<<"$before_revision_lines" 2>/dev/null) || bugs_before_ok=0
-  [[ -n $before_revision_ids ]] || before_revision_ids='[]'
-
+  # CV-OUT-18, CV-ENV-10: one id for the whole pass. The session id makes it
+  # unique across sessions, and the count makes it unique in this session.
+  # Every attempt of the fallback chain shares it, so the report names the
+  # bugs that each attempt created.
+  pass_id="$RUN_ID-review-$((++REVIEW_PASS_SEQ))"
+  note "review pass id: $pass_id"
+  REVIEW_PASS_ID=$pass_id
   run_agent_chain reviewer "$prompt"
+  REVIEW_PASS_ID=""
   ((STOP_REQUESTED)) || handle_chain_wait "$CHAIN_PRODUCED_OUTPUT" "$RUN_STATUS"
 
   if ((CHAIN_STARTED && RUN_STATUS == 0)); then
@@ -2768,63 +2775,39 @@ run_review_pass() {
     fi
   fi
 
-  bugs_after=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" list --json 2>/dev/null) || bugs_after_ok=0
-  [[ -n $bugs_after ]] || bugs_after='[]'
-  if ((bugs_before_ok)) && ((bugs_after_ok)); then
-    # Pass-logged: a visible bug with a revision id not stored before the
-    # pass. The public list JSON deliberately omits the internal revision
-    # key (CB-LIST-9), so compare the visible revision ids through cbugs
-    # show. Comparing against every pre-pass stored id excludes a
-    # branch-specific revision that becomes visible after HEAD moves.
-    local after_id after_kind after_title_b64 revisions_json new_revision
-    local -a logged_ids=() logged_kinds=() logged_titles=()
-    while IFS=$'\t' read -r after_id after_kind after_title_b64; do
-      revisions_json=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" show "$after_id" --json 2>/dev/null) || {
-        bugs_after_ok=0
-        break
-      }
-      new_revision=$(jq -r --argjson before_ids "$before_revision_ids" \
-        '[.revisions[]?.id as $revision_id
-          | select(($before_ids | index($revision_id)) == null)
-          | $revision_id] | max // empty' \
-        <<<"$revisions_json" 2>/dev/null)
-      if [[ -n $new_revision ]]; then
-        logged_ids+=("$after_id")
-        logged_kinds+=("$after_kind")
-        logged_titles+=("$after_title_b64")
-      fi
-    done < <(jq -r '.[] | [.id, .kind, (.title|@base64)] | @tsv' <<<"$bugs_after")
-    if ((bugs_after_ok)); then
-      new_bugs='[]'
-      for ((i = 0; i < ${#logged_ids[@]}; i++)); do
-        new_bugs=$(jq --argjson id "${logged_ids[$i]}" --arg kind "${logged_kinds[$i]}" \
-          --arg title "$(jq -nr --arg encoded "${logged_titles[$i]}" '$encoded | @base64d')" \
-          '. + [{id: $id, kind: $kind, title: $title}]' \
-          <<<"$new_bugs")
-      done
-    else
-      new_bugs=
-    fi
-    count=$(jq 'length' <<<"$new_bugs" 2>/dev/null)
-  else
-    new_bugs=
-    count=
+  # CV-OUT-18: the bugs of the pass are the bugs whose first revision holds
+  # its id (CB-LIST-10). The selection includes a bug that HEAD hides, with
+  # its mark, so a change of HEAD can neither add a bug to the report nor
+  # remove one from it. An empty answer is an empty list (CB-OUT-6).
+  count=
+  if logged=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" list --review-pass "$pass_id" --json 2>/dev/null); then
+    [[ -n $logged ]] || logged='[]'
+    count=$(jq 'length' <<<"$logged" 2>/dev/null)
   fi
   if ! is_number "$count"; then
-    # CV-OUT-13: a failed 'cbugs list --json' read, before or after the pass,
-    # leaves no honest comparison to report. Say so, rather than naming bugs
-    # the pass did not log (a failed "before" read) or denying the ones it
-    # did (a failed "after" read).
-    warn "cbugs list --json failed; cannot report the bugs this pass logged"
-    note "cbugs list --json failed; cannot report the bugs this pass logged"
+    # CV-OUT-18: a failed read leaves no honest report. Say so, rather than
+    # deny the bugs that the pass logged.
+    warn "cbugs list --review-pass failed; cannot report the bugs this pass logged"
+    note "cbugs list --review-pass failed; cannot report the bugs this pass logged"
   elif ((count > 0)); then
-    local id kind_ title
-    while IFS=$'\t' read -r id kind_ title_b64; do
-      title=$(jq -nr --arg encoded "$title_b64" '$encoded | @base64d')
-      printf '  %s%s%s bug #%s %s%s%s %s\n' \
-        "$YELLOW" "$G_WARN" "$OFF" "$id" "$DIM" "$kind_" "$OFF" "$title"
-      note "review logged bug #$id ($kind_): $title"
-    done < <(jq -r '.[] | [.id, .kind, (.title|@base64)] | @tsv' <<<"$new_bugs")
+    local row id kind_ title hidden mark
+    # One compact JSON object per line: a title keeps every character, with
+    # no field separator to escape.
+    while IFS= read -r row; do
+      id=$(jq -r '.id' <<<"$row")
+      kind_=$(jq -r '.kind' <<<"$row")
+      title=$(jq -r '.title' <<<"$row")
+      hidden=$(jq -r '.hidden == true or .hidden == 1' <<<"$row")
+      mark=""
+      [[ $hidden == true ]] && mark=" ${DIM}(hidden at HEAD)${OFF}"
+      printf '  %s%s%s bug #%s %s%s%s %s%s\n' \
+        "$YELLOW" "$G_WARN" "$OFF" "$id" "$DIM" "$kind_" "$OFF" "$title" "$mark"
+      if [[ $hidden == true ]]; then
+        note "review logged bug #$id ($kind_, hidden at HEAD): $title"
+      else
+        note "review logged bug #$id ($kind_): $title"
+      fi
+    done < <(jq -c 'sort_by(.id) | .[]' <<<"$logged")
   else
     info "the review pass logged no bug"
   fi

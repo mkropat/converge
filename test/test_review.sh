@@ -137,3 +137,96 @@ test_no_review_disables_the_vote_panel() {
   assert_status 0
   assert_calls 0 "role=reviewer"
 }
+
+# env_line   Scenario text that records the role, iteration, and review pass
+# of the agent that runs it.
+env_line() {
+  printf '%s' 'printf "%s %s %s\n" "$CONVERGE_ROLE" "${CONVERGE_ITERATION-unset}" "${CONVERGE_REVIEW_PASS-unset}" >>"$FAKE_HARNESS_DIR/env.log"'
+}
+
+# CV-ENV-10: only the reviewer of a cadence pass carries the pass id. A value
+# in the environment of the loop reaches no agent and no notification.
+test_review_pass_id_reaches_only_the_cadence_reviewer() {
+  export CONVERGE_REVIEW_PASS=outer-value
+  export CONVERGE_NOTIFY='printf "notify %s\n" "${CONVERGE_REVIEW_PASS-unset}" >>"$FAKE_HARNESS_DIR/env.log"; cat >/dev/null'
+  scenario_script reviewer "MESSAGE='nothing found'; $(env_line)"
+  scenario_script coach "MESSAGE=ok; $(env_line)"
+  scenario_script worker "MESSAGE=CONVERGED; $(env_line)"
+  scenario_script reviewer "MESSAGE='nothing found'; $(env_line)"
+  run_converge --foreground --review-after 1 --coach-first 0 --consensus 1 docs/requirements.md
+  assert_status 0
+  local session
+  session=$(cat "$(state_dir)/current")
+  assert_eq "$(sort "$FAKE_HARNESS_DIR/env.log" | paste -sd,)" \
+    "coach 0 unset,notify unset,reviewer 0 $session-review-1,reviewer unset unset,worker 1 unset" \
+    "agent environments"
+  assert_file_contains "$(state_dir)/converge.log" "review pass id: $session-review-1"
+}
+
+# CV-OUT-18: the report names the bugs that the reviewer created. A note on
+# an old bug and a bug that the operator logs during the pass are not in it.
+test_pass_report_names_only_the_bugs_the_reviewer_created() {
+  CONVERGE_RUN_DIR=$WORK "$CBUGS" add --kind code --title "Old defect" --note x >/dev/null </dev/null ||
+    fail "cbugs add failed"
+  scenario_script reviewer 'MESSAGE=found
+cbugs add --kind code --title "Export drops rows" --cite docs/requirements.md:T-1 --note x >/dev/null
+cbugs note 1 "still there" >/dev/null
+env -u CONVERGE_ROLE -u CONVERGE_ITERATION -u CONVERGE_REVIEW_PASS cbugs add --kind code --title "Operator defect" --note x >/dev/null'
+  scenario worker MESSAGE=work
+  run_converge --foreground --no-coach --review-after 1 --max-iterations 1 docs/requirements.md
+  assert_status 1
+  assert_output_contains "bug #2 code Export drops rows"
+  assert_output_lacks "bug #1 "
+  assert_output_lacks "bug #3 "
+  assert_output_lacks "Operator defect"
+  CONVERGE_RUN_DIR=$WORK "$CBUGS" list --json | jq -e 'length == 3' >/dev/null ||
+    fail "the tracker does not hold the three bugs"
+}
+
+# A fallback chain is one pass: the report names the bugs of every attempt,
+# and both carry the same pass id.
+test_pass_report_names_the_bugs_of_every_attempt() {
+  export CONVERGE_REVIEWER_PROFILE='claude:r1,claude:r2'
+  scenario_script reviewer 'EXIT=1; cbugs add --kind code --title "First attempt defect" --note x >/dev/null'
+  scenario_script reviewer 'MESSAGE=found; cbugs add --kind spec --title "Second attempt gap" --note x >/dev/null'
+  scenario worker MESSAGE=work
+  run_converge --foreground --no-coach --review-after 1 --max-iterations 1 docs/requirements.md
+  assert_status 1
+  assert_output_contains "bug #1 code First attempt defect"
+  assert_output_contains "bug #2 spec Second attempt gap"
+  local session one two
+  session=$(cat "$(state_dir)/current")
+  one=$(CONVERGE_RUN_DIR=$WORK "$CBUGS" show 1 --json | jq -r '.revisions[0].review_pass')
+  two=$(CONVERGE_RUN_DIR=$WORK "$CBUGS" show 2 --json | jq -r '.revisions[0].review_pass')
+  assert_eq "$one" "$session-review-1" "pass id of the first attempt"
+  assert_eq "$two" "$session-review-1" "pass id of the second attempt"
+}
+
+# A bug that the pass created at a commit that HEAD does not reach is still
+# in the report, with a mark.
+test_pass_report_marks_a_hidden_bug() {
+  git -C "$WORK" checkout -q -b side
+  git -C "$WORK" commit -q --allow-empty -m "Side commit"
+  git -C "$WORK" checkout -q main
+  scenario_script reviewer 'MESSAGE=found; cbugs add --kind code --title "Side defect" --commit side --note x >/dev/null'
+  scenario worker MESSAGE=work
+  run_converge --foreground --no-coach --review-after 1 --max-iterations 1 docs/requirements.md
+  assert_status 1
+  assert_output_contains "bug #1 code Side defect (hidden at HEAD)"
+}
+
+# A failed read of the pass's bugs is not "no bug" (CV-OUT-18).
+test_failed_bug_read_warns() {
+  local db
+  db="$(state_dir)/cbugs.db"
+  scenario_script reviewer "MESSAGE=found; cbugs add --kind code --title Lost --note x >/dev/null; sqlite3 '$db' 'ALTER TABLE revision RENAME TO revision_away;'"
+  scenario worker MESSAGE=work
+  run_converge --foreground --no-coach --review-after 1 --max-iterations 1 docs/requirements.md
+  assert_output_contains "cannot report the bugs this pass logged"
+  assert_output_lacks "the review pass logged no bug"
+}
+
+# The loop reads the bug database only through cbugs.
+test_converge_reads_no_database_directly() {
+  assert_eq "$(grep -c sqlite3 "$CONVERGE")" 0 "sqlite3 mentions in bin/converge"
+}
