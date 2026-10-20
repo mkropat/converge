@@ -100,7 +100,7 @@ An identifier must not change its meaning. Removed requirements leave their iden
 
 ## Duplicate merge pass
 
-- **RP-MERGE-1**: After all started reviewers finish or fail, the command must run one merge-agent invocation when this panel created bugs. If the panel created no bugs, it must skip the merge invocation.
+- **RP-MERGE-1**: After all started reviewers finish or fail, the command must run one merge pass when this panel created bugs. The pass must use the configured profile chain under **RP-PROF-13**, with one invocation per attempt under **RP-MERGE-10**. If the panel created no bugs, it must skip the merge pass.
 - **RP-MERGE-2**: The merge pass must still run on the available new bugs after a reviewer failure. It must not clear the failed run status.
 - **RP-MERGE-3**: The merge agent must compare this run's new bugs with each other and with existing bugs, including bugs from overlapping runs. It must combine bugs only when they describe the same defect. It must preserve distinct new bugs.
 - **RP-MERGE-4**: The merge agent may update a retained bug, including an existing bug, to preserve unique evidence and requirement citations from a duplicate. It may close only bugs created by this panel run. A duplicate closure must identify the retained bug and explain the duplicate relationship.
