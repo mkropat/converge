@@ -2877,11 +2877,11 @@ When a blocked vote or stall triggered this run, decide whether no worker can
 resolve the block, or whether the work is doable but the worker model cannot
 do it. Check every cited spec bug with cbugs show and confirm it is open. Find
 every claimed tool or resource failure in the worker log. For a real block,
-workers that gave up, circled, or claimed a spec bug with no open record, or a
-tool or resource with no failed attempt in the log, show that the work is
-doable. Treat this evidence as a reason to name the task and escalate.
 tell workers not to retry that work and to report BLOCKED when no other work
-remains. Do not escalate. For doable work, name the task and what workers got
+remains. Do not escalate. For doable work, workers that gave up, circled, or
+claimed a spec bug with no open record, or a tool or resource with no failed
+attempt in the log, show that the work is doable. Treat this evidence as a
+reason to name the task and escalate. Name the task and what workers got
 wrong, then escalate. You may also escalate on a cadence run when the same
 evidence holds.
 
@@ -3555,6 +3555,7 @@ while true; do
   # both Refactor triggers at that scheduling point.
   refactor_pass_ran=0
   if ((REFACTOR_ENABLED && !REFACTOR_DONE_TRIGGER_HANDLED && !REFACTOR_DONE_TRIGGER_RAN)); then
+    CHAIN_STARTED=0
     run_due_refactor
     ((CHAIN_STARTED)) && refactor_pass_ran=1
     stop_due && break

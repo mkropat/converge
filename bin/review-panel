@@ -1664,11 +1664,16 @@ EOF
   STREAM_DISPLAY_LABEL=""
   rm -f "$fifo"
   DISCOVERY_SECONDS=$((SECONDS - started))
+  DISCOVERY_TIMED_OUT=0
+  if [[ ! -s $end_file ]] && ((DISCOVERY_SECONDS >= TIMEOUT)) && ((DISCOVERY_STATUS == 124 || DISCOVERY_STATUS == 137)); then
+    DISCOVERY_TIMED_OUT=1
+    DISCOVERY_STATUS=124
+  fi
   if ((HARD_STOP && DISCOVERY_STATUS != 0)); then
     warn "discovery $profile stopped by the operator (status $SIGNAL_STATUS)"
     show_stderr "$LOG_DIR/$stem" "discovery $profile"
     printf '{"type":"review_panel_event","event":"stopped","run":"%s","status":%s}\n' "$PANEL_ID" "$SIGNAL_STATUS" >>"$DISCOVERY_LOG"
-  elif ((DISCOVERY_STATUS == 124 || DISCOVERY_STATUS == 137)); then
+  elif ((DISCOVERY_TIMED_OUT)); then
     warn "discovery $profile exceeded the ${TIMEOUT}s timeout; killed it"
     show_stderr "$LOG_DIR/$stem" "discovery $profile"
     printf '{"type":"review_panel_event","event":"timeout","run":"%s","seconds":%s}\n' "$PANEL_ID" "$TIMEOUT" >>"$DISCOVERY_LOG"
@@ -1697,7 +1702,7 @@ run_discovery_chain() {
     rm -f "$LOOKUP_FILE"
     DISCOVERY_PROFILE=$profile
     run_discovery "$profile"
-    if ((DISCOVERY_STATUS == 0 || DISCOVERY_STATUS == 124 || DISCOVERY_STATUS == 137 || STOP_REQUESTED || HARD_STOP)); then
+    if ((DISCOVERY_STATUS == 0 || DISCOVERY_TIMED_OUT || STOP_REQUESTED || HARD_STOP)); then
       return 0
     fi
   done
@@ -1958,6 +1963,7 @@ run_merge_agent() {
   # the wrapper terminate that group when timeout sends TERM (RP-INV-4,
   # RP-MERGE-7).
   local end_file="$RUNTIME_DIR/$MERGE_STEM.end"
+  MERGE_TIMED_OUT=0
   rm -f "$end_file"
   ARGV=(bash -c 'end="$1"; shift; setsid "$@" & child=$!; trap "kill -TERM -$child 2>/dev/null; kill -TERM $child 2>/dev/null; (sleep 8; kill -KILL -$child 2>/dev/null) >/dev/null 2>&1 & wait $child; rc=\$?; exit 124" TERM INT; wait "$child"; rc=$?; printf "%s\n" "$SECONDS" >"$end"; exit "$rc"' \
        _ "$end_file" "${ARGV[@]}")
@@ -2078,6 +2084,7 @@ run_merge_agent() {
   if ((HARD_STOP && merge_finished == 0 && MERGE_SECONDS < TIMEOUT)); then merge_timed_out=0; fi
   if ((HARD_STOP && MERGE_STATUS != 0 && merge_finished == 0 && MERGE_SECONDS >= TIMEOUT)); then merge_timed_out=1; fi
   if ((merge_timed_out)); then
+    MERGE_TIMED_OUT=1
     MERGE_STATUS=124
     warn "merge ($profile) exceeded the ${TIMEOUT}s timeout; killed it"
     show_stderr "$LOG_DIR/$MERGE_STEM" "merge ($profile)"
@@ -2128,7 +2135,7 @@ run_merge_chain() {
         MERGE_FAILURE_ROWS+=("merge profile $profile: exit status $MERGE_STATUS")
       fi
     fi
-    if ((MERGE_STATUS == 0 || MERGE_STATUS == 124 || MERGE_STATUS == 137 || STOP_REQUESTED || HARD_STOP)); then
+    if ((MERGE_STATUS == 0 || MERGE_TIMED_OUT || STOP_REQUESTED || HARD_STOP)); then
       return 0
     fi
   done
@@ -2549,8 +2556,8 @@ else
     FINDINGS_JSON=$RETAINED_JSON
   fi
 fi
-RETAINED=$(jq -n --argjson prev "$FINDINGS_JSON" --argjson cur "$RETAINED_JSON" --arg run "$PANEL_ID" \
-  '[$cur[] | select(.status != "wontfix" or .panel_run != $run) | select(.id as $i | ([$prev[].id] | index($i)))]' 2>/dev/null) || RETAINED_FAILED=1
+RETAINED=$(jq -n --argjson prev "$FINDINGS_JSON" --argjson cur "$RETAINED_JSON" \
+  '[$cur[] as $bug | select($bug.status != "wontfix" or ([ $prev[] | select(.id == $bug.id) | .status ][0] != "wontfix")) | select($bug.id as $i | ([$prev[].id] | index($i)))]' 2>/dev/null) || RETAINED_FAILED=1
 RETAINED_CODE_JSON=$(jq -c '[.[] | select(.kind == "code")]' <<<"$RETAINED" 2>/dev/null)
 RETAINED_SPEC_JSON=$(jq -c '[.[] | select(.kind == "spec")]' <<<"$RETAINED" 2>/dev/null)
 [[ $(jq -r 'type' <<<"$RETAINED_CODE_JSON" 2>/dev/null) == array ]] || RETAINED_CODE_JSON='[]'
@@ -2559,10 +2566,6 @@ RETAINED_CODE=$(jq 'length' <<<"$RETAINED_CODE_JSON" 2>/dev/null)
 RETAINED_SPEC=$(jq 'length' <<<"$RETAINED_SPEC_JSON" 2>/dev/null)
 is_number "$RETAINED_CODE" || RETAINED_CODE=0
 is_number "$RETAINED_SPEC" || RETAINED_SPEC=0
-if ((MERGE_RAN)) && ((MERGE_FAILED == 0)) && ((RETAINED_FAILED == 0)); then
-  FINDINGS_JSON=$RETAINED
-fi
-
 # The coverage recording follows a complete review and merge phase
 # (RP-COV-2). A reviewer failure, a merge failure, an operator stop, a
 # failed capture, or a failed read-back prevents it (RP-COV-5).
@@ -2707,7 +2710,7 @@ elif ((COMPLETE == 0)); then
         heading "$YELLOW" "findings of this panel run" "read after the merge"
       fi
       if ((MERGE_RAN)) && ((MERGE_FAILED == 0)) && ((RETAINED_FAILED == 0)); then
-        findings_block "$RETAINED_JSON" "retained new"
+        findings_block "$RETAINED" "retained new"
       else
         findings_block "$FINDINGS_JSON" "known new"
       fi

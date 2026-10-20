@@ -90,3 +90,59 @@ test_panel_excludes_dismissed_duplicates_from_retained_findings() {
   assert_output_lacks 'retained new code bug'
   assert_output_contains 'No new bugs found.'
 }
+
+
+test_merge_status_124_falls_back_but_real_timeout_stops() {
+  export CONVERGE_REVIEW_PANEL_MERGE_PROFILE='claude:first,claude:second'
+  scenario_script reviewer 'MESSAGE=found; cbugs add --kind code --title Finding --note evidence >/dev/null'
+  scenario merge EXIT=124
+  scenario merge MESSAGE='no duplicates'
+  local output
+  output=$(CONVERGE_RUN_DIR="$WORK" "$REPO_ROOT/bin/review-panel" docs/requirements.md 2>&1)
+  STATUS=$?
+  assert_eq "$STATUS" 0 "panel status after fallback success"
+  assert_eq "$(call_count 'role=merge')" 2 "merge attempt count"
+
+  rm -rf "$FAKE_HARNESS_DIR/calls" "$FAKE_HARNESS_DIR/queue"
+  rm -f "$FAKE_HARNESS_DIR/calls.log"
+  mkdir -p "$FAKE_HARNESS_DIR/queue/reviewer"
+  scenario_script reviewer 'MESSAGE=found; cbugs add --kind code --title Finding --note evidence >/dev/null'
+  scenario merge SLEEP=30
+  scenario merge MESSAGE='must not run'
+  output=$(CONVERGE_RUN_DIR="$WORK" "$REPO_ROOT/bin/review-panel" --timeout 1 docs/requirements.md 2>&1)
+  STATUS=$?
+  assert_eq "$STATUS" 2 "panel status after timeout"
+  assert_eq "$(call_count 'role=merge')" 1 "merge attempt count after timeout"
+}
+
+
+test_discovery_status_137_falls_back_but_real_timeout_stops() {
+  export CONVERGE_WORKER_PROFILE='claude:first,claude:second'
+  scenario_script discovery 'exit 137'
+  scenario_script discovery 'target=$(sed -n "s/^Write specific lookup instructions to this file only when you can identify usable sources: //p" "$FAKE_HARNESS_DIR/calls/2.prompt"); printf "Read docs/requirements.md.\n" >"$target"'
+  "$REPO_ROOT/bin/review-panel" >/dev/null 2>&1 || true
+  assert_eq "$(call_count 'role=discovery')" 2 "discovery attempt count"
+
+  rm -rf "$FAKE_HARNESS_DIR/calls" "$FAKE_HARNESS_DIR/queue"
+  rm -f "$FAKE_HARNESS_DIR/calls.log"
+  mkdir -p "$FAKE_HARNESS_DIR/queue/discovery"
+  scenario discovery SLEEP=30
+  scenario discovery MESSAGE='must not run'
+  "$REPO_ROOT/bin/review-panel" --timeout 1 >/dev/null 2>&1 || true
+  assert_eq "$(call_count 'role=discovery')" 1 "discovery attempt count after timeout"
+}
+
+
+test_dismissed_new_bug_stays_excluded_after_later_note() {
+  export CONVERGE_REVIEW_PANEL_MERGE_PROFILE='claude:merge'
+  cbugs add --kind code --title 'Existing finding' --note existing >/dev/null
+  scenario_script reviewer 'cbugs add --kind code --title "Duplicate finding" --note same >/dev/null'
+  scenario_script merge 'new_id=$(cbugs list --panel-run "$REVIEW_PANEL_RUN" --json | jq -r ".[0].id"); cbugs dismiss "$new_id" --note "duplicate of 1" >/dev/null; cbugs note "$new_id" --note "later note" >/dev/null'
+  local output
+  output=$(CONVERGE_RUN_DIR="$WORK" "$REPO_ROOT/bin/review-panel" docs/requirements.md 2>&1)
+  STATUS=$?
+  OUTPUT=$output
+  assert_eq "$STATUS" 0 "panel status"
+  assert_output_lacks 'retained new code bug'
+  assert_output_contains 'No new bugs found.'
+}

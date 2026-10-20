@@ -182,3 +182,19 @@ test_stall_notification_once_per_streak() {
   assert_file_contains "$FAKE_HARNESS_DIR/notified" "stall streak reached 2 stalled chains"
   assert_file_contains "$FAKE_HARNESS_DIR/notified" "event=limit"
 }
+
+
+test_coach_prompt_keeps_real_block_and_doable_cases_separate() {
+  scenario worker MESSAGE=BLOCKED
+  scenario coach MESSAGE='guidance saved'
+  scenario worker MESSAGE=work
+  run_converge --foreground --no-review --no-refactor --blocked 3 --max-iterations 2 docs/requirements.md
+  assert_status 1
+  local prompt
+  prompt=$(call_prompt 2)
+  grep -qF 'For a real block,
+tell workers not to retry that work and to report BLOCKED' <<<"$prompt" ||
+    fail "coach prompt does not state the real-block action as one case"
+  grep -qF 'For doable work, workers that' <<<"$prompt" ||
+    fail "coach prompt does not separate the doable-work evidence"
+}

@@ -260,3 +260,12 @@ test_failed_bug_read_warns() {
 test_converge_reads_no_database_directly() {
   assert_eq "$(grep -c sqlite3 "$CONVERGE")" 0 "sqlite3 mentions in bin/converge"
 }
+
+
+test_failed_cadence_review_does_not_repeat_without_refactor() {
+  scenario reviewer EXIT=1
+  scenario worker MESSAGE=work
+  run_converge --foreground --no-coach --review-after 1 --refactor-after 100 --max-iterations 1 docs/requirements.md
+  assert_status 1
+  assert_eq "$(roles)" "reviewer@0 worker@1" "call order"
+}
