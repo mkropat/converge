@@ -170,12 +170,22 @@ test_opencode_vote_and_effort() {
   run_converge "${LOOP_ARGS[@]}" --consensus 1 docs/requirements.md
   assert_status 0
   assert_eq "$(call_field 1 harness)" opencode "harness"
-  assert_eq "$(call_field 1 model)" provider/model#fast "model with native effort"
+  assert_eq "$(call_field 1 model)" provider/model "model"
+  assert_eq "$(call_field 1 effort)" fast "native effort"
 }
 
 test_opencode_tool_event_does_not_replace_last_assistant_message() {
   export CONVERGE_WORKER_PROFILE='opencode:provider/model'
   scenario worker MESSAGE=CONVERGED OPENCODE_TOOL=1
+  run_converge "${LOOP_ARGS[@]}" --consensus 1 --max-iterations 1 docs/requirements.md
+  assert_status 1
+  assert_output_lacks "converged vote 1 of 1"
+}
+
+test_opencode_joins_text_parts_of_last_assistant_message() {
+  export CONVERGE_WORKER_PROFILE='opencode:provider/model'
+  scenario worker MESSAGE='No work.' OPENCODE_EXTRA_TEXT=$'\nCONVERGED' \
+    OPENCODE_MESSAGE_ID=m3 OPENCODE_TOOL_MESSAGE_ID=m3 OPENCODE_TOOL=1
   run_converge "${LOOP_ARGS[@]}" --consensus 1 docs/requirements.md
   assert_status 0
   assert_output_contains "converged vote 1 of 1"
@@ -201,9 +211,9 @@ test_codex_final_agent_message_is_marked_final_after_tool_call() {
 test_opencode_tool_event_after_assistant_does_not_hide_final_message() {
   export CONVERGE_WORKER_PROFILE='opencode:model'
   scenario worker MESSAGE=CONVERGED OPENCODE_TOOL=1
-  run_converge "${LOOP_ARGS[@]}" --consensus 1 docs/requirements.md
-  assert_status 0
-  assert_output_contains '▍ CONVERGED'
+  run_converge "${LOOP_ARGS[@]}" --consensus 1 --max-iterations 1 docs/requirements.md
+  assert_status 1
+  assert_output_lacks 'converged vote 1 of 1'
 }
 
 test_codex_file_change_operation_is_visible_as_a_write() {

@@ -103,6 +103,7 @@ if [[ -z $scenario ]]; then
 fi
 
 EXIT=0 MESSAGE="" ASSISTANT=1 COST="" SLEEP="" COMMIT="" FOLLOWUP_TOOL=0 FILE_KIND="" OPENCODE_TOOL=0
+OPENCODE_MESSAGE_ID=m2 OPENCODE_TOOL_MESSAGE_ID=m3 OPENCODE_EXTRA_TEXT="" OPENCODE_TOOL_ONLY=0
 # shellcheck source=/dev/null
 source "$scenario"
 
@@ -131,11 +132,16 @@ emit_claude_end() {
 }
 emit_opencode() {
   jq -nc '{type:"step_start",sessionID:"fakefake-0000"}'
-  if [[ $ASSISTANT == 1 ]]; then
-    jq -nc --arg t "$MESSAGE" '{type:"text",part:{messageID:"m2",text:$t}}'
+  if [[ $ASSISTANT == 1 && $OPENCODE_TOOL_ONLY != 1 ]]; then
+    jq -nc --arg t "$MESSAGE" --arg id "$OPENCODE_MESSAGE_ID" \
+      '{type:"text",part:{messageID:$id,text:$t}}'
+    if [[ -n $OPENCODE_EXTRA_TEXT ]]; then
+      jq -nc --arg t "$OPENCODE_EXTRA_TEXT" --arg id "$OPENCODE_MESSAGE_ID" \
+        '{type:"text",part:{messageID:$id,text:$t}}'
+    fi
   fi
   if [[ $OPENCODE_TOOL == 1 ]]; then
-    jq -nc '{type:"tool",part:{messageID:"m3",tool:"bash"}}'
+    jq -nc --arg id "$OPENCODE_TOOL_MESSAGE_ID" '{type:"tool",part:{messageID:$id,tool:"bash"}}'
   fi
   jq -nc --arg c "$COST" '{type:"step_finish",part:{reason:"stop",cost:(if $c == "" then null else ($c|tonumber) end)}}'
 }
