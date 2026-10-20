@@ -2219,7 +2219,7 @@ COMMIT;
   done
   if ((json)); then
     jq -Mcn --argjson added "$n" --argjson already "$already" --arg created_at "$CREATED_AT" \
-      --arg profile "$profile" --argjson has_profile "$profile_set" \
+      --arg profile "$profile" --argjson has_profile "$([[ $profile_set == 1 ]] && printf true || printf false)" \
       '{added: $added, already: $already, profile: (if $has_profile then $profile else null end), created_at: $created_at}'
   else
     printf 'added %s, %s that a row already named, profile %s, completed at %s\n' \

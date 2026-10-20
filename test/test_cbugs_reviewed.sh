@@ -44,6 +44,16 @@ test_reviewed_add_rejects_repeated_profiles() {
     "coverage records after a rejected call"
 }
 
+test_reviewed_add_json_profile_is_null_when_absent() {
+  cbugs_run reviewed add --json HEAD
+  assert_status 0
+  assert_eq "$(jq -c .profile <<<"$OUTPUT")" null "profile without --profile"
+
+  cbugs_run reviewed add --json --profile codex:model:high HEAD
+  assert_status 0
+  assert_eq "$(jq -c .profile <<<"$OUTPUT")" '"codex:model:high"' "supplied profile"
+}
+
 # With no pending commit, the JSON form still prints the object
 # (CB-RVW-26.3), and the human form prints nothing (CB-RVW-24).
 test_nothing_pending() {
