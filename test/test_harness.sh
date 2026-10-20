@@ -236,6 +236,20 @@ test_codex_file_change_operation_is_visible_as_a_write() {
   assert_output_contains 'update changed.txt'
 }
 
+test_codex_mcp_web_search_and_failed_file_change_are_visible() {
+  export CONVERGE_WORKER_PROFILE='codex:gpt-5-codex'
+  scenario worker MESSAGE=done MCP_TOOL=1 MCP_STATUS=failed MCP_ERROR='MCP boom' \
+    WEB_SEARCH=1 FILE_KIND=update FILE_STATUS=failed FILE_ERROR='file boom'
+  run_converge "${LOOP_ARGS[@]}" --max-iterations 1 docs/requirements.md
+  assert_status 1
+  assert_output_contains 'mcp files/read'
+  assert_output_contains '"path":"a.txt"'
+  assert_output_contains 'web_search latest result'
+  assert_output_contains 'MCP boom'
+  assert_output_contains 'update changed.txt'
+  assert_output_contains 'file boom'
+}
+
 # A codex run without an agent message produced no output and gives no vote.
 test_codex_without_output_gives_no_vote() {
   export CONVERGE_WORKER_PROFILE='codex:gpt-5-codex'

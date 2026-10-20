@@ -1201,8 +1201,20 @@ fromjson? // empty
      then "fail\tcommand exited \(.item.exit_code): \((.item.aggregated_output // "") | firstline | clean)"
      else empty end)
   elif .type == "item.completed" and .item.type == "file_change" then
-    (.item.changes // [])[]
-    | "tool\t\((.kind // "file_change") | tostring)\t1\t\(.path // "")"
+    .item as $item | ($item.changes // [])[]
+    | "tool\t\((.kind // "file_change") | tostring)\t1\t\(.path // "")",
+      (select($item.status == "failed" or $item.status == "error")
+       | "fail\t" + (($item.error.message // $item.error // "file change failed") | tostring | firstline | clean))
+  elif .type == "item.completed" and .item.type == "mcp_tool_call" then
+    ((.item.server // "mcp") + "/" + (.item.tool // "tool")) as $tool
+    | ((.item.arguments // .item.input // {}) | tojson) as $args
+    | "tool\tmcp " + $tool + "\t1\t" + $args,
+      (select(.item.status == "failed" or .item.status == "error" or .item.error != null)
+       | "fail\t" + ((.item.error.message // .item.error // "MCP tool failed") | tostring | firstline | clean))
+  elif .type == "item.completed" and .item.type == "web_search" then
+    "tool\tweb_search\t1\t" + ((.item.query // "") | tostring | firstline | clean),
+    (select(.item.status == "failed" or .item.status == "error" or .item.error != null)
+     | "fail\t" + ((.item.error.message // .item.error // "web search failed") | tostring | firstline | clean))
   elif .type == "item.completed" and .item.type == "error" then
     "fail\t" + ((.item.message // "Codex error") | tostring | firstline | clean)
   elif .type == "error" or .type == "turn.failed" then

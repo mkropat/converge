@@ -47,3 +47,20 @@ test_codex_final_message_is_marked_after_following_tool() {
   [[ $after_tool == *'▍ reviewer 1/1 codex:gpt-5-codex Review complete.'* ]] ||
     fail "final message was not repeated after the tool call"
 }
+
+test_codex_mcp_web_search_and_failed_file_change_are_visible_in_panel() {
+  export CONVERGE_REVIEW_PANEL_PROFILE='codex:gpt-5-codex'
+  scenario reviewer MESSAGE='Review complete.' MCP_TOOL=1 MCP_STATUS=failed \
+    MCP_ERROR='MCP boom' WEB_SEARCH=1 FILE_KIND=update FILE_STATUS=failed \
+    FILE_ERROR='file boom'
+  local output
+  output=$(cd "$WORK" && CONVERGE_RUN_DIR="$WORK" \
+    "$REPO_ROOT/bin/review-panel" docs/requirements.md 2>&1) ||
+    fail "review-panel failed"
+  OUTPUT=$(sed -E $'s/\\x1b\\[[0-9;]*m//g' <<<"$output")
+  assert_output_contains 'mcp files/read'
+  assert_output_contains 'web_search latest result'
+  assert_output_contains 'MCP boom'
+  assert_output_contains 'update changed.txt'
+  assert_output_contains 'file boom'
+}

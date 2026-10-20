@@ -104,6 +104,7 @@ fi
 
 EXIT=0 MESSAGE="" ASSISTANT=1 COST="" SLEEP="" COMMIT="" FOLLOWUP_TOOL=0 FILE_KIND="" OPENCODE_TOOL=0
 OPENCODE_MESSAGE_ID=m2 OPENCODE_TOOL_MESSAGE_ID=m3 OPENCODE_EXTRA_TEXT="" OPENCODE_TOOL_ONLY=0
+MCP_TOOL=0 MCP_STATUS=completed MCP_ERROR="" WEB_SEARCH=0 FILE_STATUS=completed FILE_ERROR=""
 # shellcheck source=/dev/null
 source "$scenario"
 
@@ -154,7 +155,15 @@ emit_codex() {
     jq -nc '{type:"item.completed",item:{type:"command_execution",command:"true",exit_code:0}}'
   fi
   if [[ -n $FILE_KIND ]]; then
-    jq -nc --arg k "$FILE_KIND" '{type:"item.completed",item:{type:"file_change",changes:[{kind:$k,path:"changed.txt"}]}}'
+    jq -nc --arg k "$FILE_KIND" --arg s "$FILE_STATUS" --arg e "$FILE_ERROR" \
+      '{type:"item.completed",item:{type:"file_change",status:$s,error:(if $e == "" then null else {message:$e} end),changes:[{kind:$k,path:"changed.txt"}]}}'
+  fi
+  if [[ $MCP_TOOL == 1 ]]; then
+    jq -nc --arg s "$MCP_STATUS" --arg e "$MCP_ERROR" \
+      '{type:"item.completed",item:{type:"mcp_tool_call",server:"files",tool:"read",arguments:{path:"a.txt"},status:$s,error:(if $e == "" then null else {message:$e} end)}}'
+  fi
+  if [[ $WEB_SEARCH == 1 ]]; then
+    jq -nc '{type:"item.completed",item:{type:"web_search",query:"latest result",status:"completed"}}'
   fi
   jq -nc '{type:"turn.completed"}'
 }
