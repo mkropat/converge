@@ -70,8 +70,10 @@ Options:
 
 A positional argument names a requirements document file or a directory of
 them. This is the scope: the agents work on those documents only. With no
-positional argument, the scope is empty and the agents find the requirements
-documents under the run directory themselves.
+positional argument, the scope is empty. The loop discovers requirements
+sources once. Each worker and reviewer uses the accepted lookup instructions
+to read the current requirements. They do not repeat discovery or select
+replacement sources.
 
 Each role -- worker, reviewer, coach -- selects its agents through an
 environment variable: CONVERGE_WORKER_PROFILE, CONVERGE_REVIEWER_PROFILE,

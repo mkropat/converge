@@ -45,8 +45,10 @@ Options:
 
 A positional argument names a requirements document file or a directory of
 them. This is the scope: the reviewers judge the requirements in those
-paths only. With no positional argument, each reviewer finds the
-requirements documents under the run directory itself.
+paths only. With no positional argument, the panel discovers requirements
+sources once. Each reviewer uses the accepted lookup instructions to read the
+current requirements. Reviewers do not repeat discovery or select replacement
+sources.
 
 The panel reviews the live working tree, with every uncommitted change and
 every relevant untracked file in it. Each configured reviewer runs once,
