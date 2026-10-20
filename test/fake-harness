@@ -76,7 +76,8 @@ done
 # Number the call under a lock, so concurrent calls get distinct numbers.
 exec 8>>"$dir/calls.lock"
 flock -x 8
-n=$(($(wc -l <"$dir/calls.log" 2>/dev/null || echo 0) + 1))
+touch "$dir/calls.log"
+n=$(($(wc -l <"$dir/calls.log") + 1))
 printf '%s harness=%s role=%s iteration=%s model=%s effort=%s scenario=%s\n' \
   "$n" "$harness" "$role" "$iteration" "$model" "${effort:--}" \
   "${scenario##*/}" >>"$dir/calls.log"

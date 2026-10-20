@@ -108,7 +108,8 @@ run_converge() {
   raw=$(timeout "${CONVERGE_TEST_TIMEOUT:-60}" "$CONVERGE" "$@" 2>&1 </dev/null)
   STATUS=$?
   OUTPUT=$(sed -E $'s/\x1b\\[[0-9;]*m//g' <<<"$raw")
-  printf '%s\n' "$OUTPUT" >"$TEST_TMP/last-output.txt"
+  # The runner shows this log for a failed test, or for every test with -v.
+  printf '$ converge %s\n%s\n[exit %s]\n' "$*" "$OUTPUT" "$STATUS"
 }
 
 # state_dir   Prints the state directory of $WORK.
