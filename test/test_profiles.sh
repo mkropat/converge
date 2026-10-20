@@ -149,3 +149,13 @@ test_fixer_profile_list_is_not_shortened() {
   assert_status 0
   assert_output_contains "fixer      $profiles"
 }
+
+test_vote_panel_profile_lists_are_not_shortened() {
+  local profiles='claude:opus:max, codex:gpt-5-codex:high, opencode:anthropic/claude-opus-4-1:high, codex:gpt-5:xhigh'
+  export CONVERGE_REVIEW_PANEL_PROFILE=$profiles
+  export CONVERGE_REVIEW_PANEL_MERGE_PROFILE=$profiles
+  start_loop
+  assert_status 0
+  assert_output_contains "vote-panel reviewers $profiles"
+  assert_output_contains "vote-panel merge $profiles"
+}

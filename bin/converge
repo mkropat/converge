@@ -700,7 +700,7 @@ panel() {
       # A path row or the scope is operator-read text: it is never
       # shortened, and it sets the width of the box when it fits in the
       # terminal (CV-OUT-1.1, CV-SCOPE-8, CV-ID-2, CV-OUT-11).
-      "run dir"|"run log"|output|guidance|scope|worker|review|coach|fixer|refactor)
+      "run dir"|"run log"|output|guidance|scope|worker|review|coach|fixer|refactor|"vote-panel reviewers"|"vote-panel merge")
         if ((11 + ${#value} <= COLS - 17)); then
           printf -v line '%-10s %s' "$label" "$value"
           ((${#line} > inner)) && inner=${#line}
@@ -723,7 +723,7 @@ panel() {
     label=${row%%|*}
     value=${row#*|}
     raw=0
-    case $label in "run dir"|"run log"|output|guidance|scope|worker|review|coach|fixer|refactor) raw=1 ;; esac
+    case $label in "run dir"|"run log"|output|guidance|scope|worker|review|coach|fixer|refactor|"vote-panel reviewers"|"vote-panel merge") raw=1 ;; esac
     if ((raw)) && ((11 + ${#value} > inner)); then
       # The value does not fit the box and may not be shortened: leave the
       # right border out, so the text runs on past it, whole.
