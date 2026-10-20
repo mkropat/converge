@@ -131,6 +131,36 @@ test_panel_findings_do_not_block_convergence() {
   assert_output_contains "retained new code bugs"
 }
 
+test_panel_reports_new_bug_closed_outside_duplicate_merge() {
+  export CONVERGE_REVIEW_PANEL_MERGE_PROFILE='claude:merger'
+  scenario worker MESSAGE=CONVERGED
+  scenario_script reviewer 'MESSAGE=found; id=$(cbugs add --kind code --title "Closed during panel" --note x); cbugs close "$id" --note "closed during the run" >/dev/null'
+  scenario merge MESSAGE="no duplicates"
+  run_converge --foreground --no-coach --review-after 100 --consensus 1 docs/requirements.md
+  assert_status 0
+  assert_output_contains "retained new code bugs"
+  assert_output_contains "Closed during panel"
+}
+
+test_panel_merge_prompt_uses_creation_title_for_hidden_bug() {
+  export CONVERGE_REVIEW_PANEL_MERGE_PROFILE='claude:merger'
+  git -C "$WORK" checkout -q -b side
+  git -C "$WORK" commit -q --allow-empty -m "Side commit"
+  git -C "$WORK" checkout -q main
+  scenario worker MESSAGE=CONVERGED
+  scenario_script reviewer 'MESSAGE=found; git checkout -q side; id=$(cbugs add --kind code --title "Original hidden title" --commit side --note x); cbugs note "$id" --title "Unreachable revised title" --note x --commit side; git checkout -q main'
+  scenario merge MESSAGE="no duplicates"
+  run_converge --foreground --no-coach --review-after 100 --consensus 1 docs/requirements.md
+  assert_status 0
+  local prompt
+  prompt=$(find "$(state_dir)/logs" -name '*-merge.prompt.md' -print -quit)
+  [[ -n $prompt ]] || fail "the panel wrote no merge prompt"
+  assert_file_contains "$prompt" "#1 (code, hidden): Original hidden title"
+  if grep -qF "Unreachable revised title" "$prompt"; then
+    fail "the merge prompt used an unreachable revision title"
+  fi
+}
+
 test_no_review_disables_the_vote_panel() {
   scenario worker MESSAGE=CONVERGED
   run_converge --foreground --no-coach --no-review --consensus 1 docs/requirements.md

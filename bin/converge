@@ -252,6 +252,79 @@ resolve_profile_env() {
   fi
 }
 
+# trim <text>   Strips leading and trailing whitespace.
+trim() {
+  local s=$1
+  s=${s#"${s%%[![:space:]]*}"}
+  s=${s%"${s##*[![:space:]]}"}
+  printf '%s' "$s"
+}
+
+# The explicit efforts that the claude harness accepts (its --effort flag).
+# opencode's --variant is provider-specific, so any syntactically valid
+# field is accepted and passed through unvalidated. Codex validates its own
+# reasoning effort value and model compatibility (CV-HARN-18).
+CLAUDE_EFFORTS=(low medium high xhigh max)
+
+# split_profile <canonical profile>   Splits a validated profile into
+# SPLIT_HARNESS, SPLIT_MODEL, and SPLIT_EFFORT (empty when omitted).
+split_profile() {
+  local -a fields=()
+  IFS=':' read -ra fields <<<"$1"
+  SPLIT_HARNESS=${fields[0]}
+  SPLIT_MODEL=${fields[1]}
+  SPLIT_EFFORT=${fields[2]:-}
+}
+
+
+# parse_profile_list <role> <raw list> <array name>
+# Splits a comma-separated profile list, trims each entry, validates its
+# harness:model[:effort] form and its effort against the selected harness,
+# and rejects a duplicate canonical profile within the role (CV-HARN-9,
+# CV-HARN-10). Writes the trimmed, validated entries into the named array.
+parse_profile_list() {
+  local role=$1 raw=$2 arrname=$3
+  local -n out=$arrname
+  out=()
+  local -a parts=()
+  if [[ $raw == *$'\n'* || $raw == *$'\r'* ]]; then
+    echo "converge: $role profile list must use commas between entries" >&2
+    exit 2
+  fi
+  # A plain "IFS=',' read -ra" silently drops a trailing empty field, so
+  # "claude:sonnet," would parse as the single entry "claude:sonnet" instead
+  # of being rejected for its empty trailing entry, unlike a leading or
+  # embedded empty entry, which the regex below already catches (CV-HARN-9).
+  # Splitting on newlines with mapfile keeps that trailing empty entry.
+  mapfile -t parts <<<"${raw//,/$'\n'}"
+  local -A seen=()
+  local entry harness model effort e ok
+  for entry in "${parts[@]}"; do
+    entry=$(trim "$entry")
+    if [[ ! $entry =~ ^(claude|opencode|codex):[^:,[:space:]]+(:[^:,[:space:]]+)?$ ]]; then
+      echo "converge: $role profile '$entry' must be claude:model[:effort], opencode:model[:effort], or codex:model[:effort], with nonempty fields and no colon, comma, or whitespace" >&2
+      exit 2
+    fi
+    split_profile "$entry"
+    harness=$SPLIT_HARNESS model=$SPLIT_MODEL effort=$SPLIT_EFFORT
+    if [[ -n $effort && $harness == claude ]]; then
+      ok=0
+      for e in "${CLAUDE_EFFORTS[@]}"; do [[ $e == "$effort" ]] && { ok=1; break; }; done
+      ((ok)) || {
+        echo "converge: $role profile '$entry' has an effort claude does not support; use one of: ${CLAUDE_EFFORTS[*]}" >&2
+        exit 2
+      }
+    fi
+    if [[ -n ${seen[$entry]:-} ]]; then
+      echo "converge: $role profile list repeats '$entry'" >&2
+      exit 2
+    fi
+    seen[$entry]=1
+    out+=("$entry")
+  done
+}
+
+
 # validate_start_options   Checks the settings that only a run needs to hold:
 # each scope path must exist, resolved against the run directory, and each
 # count must be a whole number. The script never changes its own working
@@ -903,77 +976,6 @@ harness_argv() {
       ARGV+=("$prompt")
       ;;
   esac
-}
-
-# trim <text>   Strips leading and trailing whitespace.
-trim() {
-  local s=$1
-  s=${s#"${s%%[![:space:]]*}"}
-  s=${s%"${s##*[![:space:]]}"}
-  printf '%s' "$s"
-}
-
-# The explicit efforts that the claude harness accepts (its --effort flag).
-# opencode's --variant is provider-specific, so any syntactically valid
-# field is accepted and passed through unvalidated. Codex validates its own
-# reasoning effort value and model compatibility (CV-HARN-18).
-CLAUDE_EFFORTS=(low medium high xhigh max)
-
-# split_profile <canonical profile>   Splits a validated profile into
-# SPLIT_HARNESS, SPLIT_MODEL, and SPLIT_EFFORT (empty when omitted).
-split_profile() {
-  local -a fields=()
-  IFS=':' read -ra fields <<<"$1"
-  SPLIT_HARNESS=${fields[0]}
-  SPLIT_MODEL=${fields[1]}
-  SPLIT_EFFORT=${fields[2]:-}
-}
-
-# parse_profile_list <role> <raw list> <array name>
-# Splits a comma-separated profile list, trims each entry, validates its
-# harness:model[:effort] form and its effort against the selected harness,
-# and rejects a duplicate canonical profile within the role (CV-HARN-9,
-# CV-HARN-10). Writes the trimmed, validated entries into the named array.
-parse_profile_list() {
-  local role=$1 raw=$2 arrname=$3
-  local -n out=$arrname
-  out=()
-  local -a parts=()
-  if [[ $raw == *$'\n'* || $raw == *$'\r'* ]]; then
-    echo "converge: $role profile list must use commas between entries" >&2
-    exit 2
-  fi
-  # A plain "IFS=',' read -ra" silently drops a trailing empty field, so
-  # "claude:sonnet," would parse as the single entry "claude:sonnet" instead
-  # of being rejected for its empty trailing entry, unlike a leading or
-  # embedded empty entry, which the regex below already catches (CV-HARN-9).
-  # Splitting on newlines with mapfile keeps that trailing empty entry.
-  mapfile -t parts <<<"${raw//,/$'\n'}"
-  local -A seen=()
-  local entry harness model effort e ok
-  for entry in "${parts[@]}"; do
-    entry=$(trim "$entry")
-    if [[ ! $entry =~ ^(claude|opencode|codex):[^:,[:space:]]+(:[^:,[:space:]]+)?$ ]]; then
-      echo "converge: $role profile '$entry' must be claude:model[:effort], opencode:model[:effort], or codex:model[:effort], with nonempty fields and no colon, comma, or whitespace" >&2
-      exit 2
-    fi
-    split_profile "$entry"
-    harness=$SPLIT_HARNESS model=$SPLIT_MODEL effort=$SPLIT_EFFORT
-    if [[ -n $effort && $harness == claude ]]; then
-      ok=0
-      for e in "${CLAUDE_EFFORTS[@]}"; do [[ $e == "$effort" ]] && { ok=1; break; }; done
-      ((ok)) || {
-        echo "converge: $role profile '$entry' has an effort claude does not support; use one of: ${CLAUDE_EFFORTS[*]}" >&2
-        exit 2
-      }
-    fi
-    if [[ -n ${seen[$entry]:-} ]]; then
-      echo "converge: $role profile list repeats '$entry'" >&2
-      exit 2
-    fi
-    seen[$entry]=1
-    out+=("$entry")
-  done
 }
 
 # reject_retired_env   CV-HARN-12: a new session must reject the retired
@@ -1993,10 +1995,9 @@ final_message() {
     opencode)
       jq -Rsr '
         [splits("\n") | select(. != "") | fromjson? // empty]
-        | map(select(.type == "text"))
         | if length == 0 then ""
-          else (last.part.messageID) as $id
-            | map(select(.part.messageID == $id) | .part.text // "")
+          else ([.[].part.messageID // empty] | last) as $id
+            | map(select(.type == "text" and .part.messageID == $id) | .part.text // "")
             | join("\n")
           end' "$1" 2>/dev/null || true
       ;;
@@ -2184,7 +2185,7 @@ fromjson? // empty
      else empty end)
   elif .type == "item.completed" and .item.type == "file_change" then
     (.item.changes // [])[]
-    | "tool\twrite\t1\t\(.path // "")"
+    | "tool\t\(.kind // "file_change")\t1\t\(.path // "")"
   elif .type == "item.completed" and .item.type == "error" then
     "fail\t" + ((.item.message // "Codex error") | tostring | firstline | clean)
   elif .type == "error" or .type == "turn.failed" then
@@ -2251,7 +2252,7 @@ render_tool() {
   arg=$(fit "$budget" "$arg")$suffix
   # Each harness names its tools in its own case.
   case ${name,,} in
-    write|edit|multiedit|notebookedit|patch)
+    write|edit|multiedit|notebookedit|patch|update|add|delete)
       gutter "$YELLOW" "$G_EDIT" "$YELLOW$name$OFF $arg" "tool" ;;
     bash)
       gutter "$CYAN" "$G_SHELL" "$arg" "tool" ;;
@@ -2390,10 +2391,6 @@ format_stream() {
           fi
           ;;
         tool)
-          if [[ $INVOCATION_HARNESS == codex ]]; then
-            for held in ${hold[@]+"${hold[@]}"}; do dispatch_held "$held" 0; done
-            hold=()
-          fi
           name=${rest%%$'\t'*}
           rest2=${rest#*$'\t'}
           [[ $rest2 == "$rest" ]] && rest2=""
@@ -2403,10 +2400,6 @@ format_stream() {
           render_tool "$name" "$arg" "$lines"
           ;;
         fail)
-          if [[ $INVOCATION_HARNESS == codex ]]; then
-            for held in ${hold[@]+"${hold[@]}"}; do dispatch_held "$held" 0; done
-            hold=()
-          fi
           render_fail "$rest"
           ;;
         final)

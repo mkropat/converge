@@ -1494,26 +1494,30 @@ finish_launch_critical() {
 # record_reviewed <profile> <completed-at>   Appends one coverage record per
 # captured commit, under the profile of one successful reviewer (RP-COV-3).
 record_reviewed() {
-  local profile=$1 completed_at=$2 status=0 out_file="$RUNTIME_DIR/coverage-$PANEL_ID.out"
+  local completed_at=$1 status=0 out_file="$RUNTIME_DIR/coverage-$PANEL_ID.out"
+  shift
+  local -a profile_args=()
+  local profile
+  for profile in "$@"; do profile_args+=(--profile "$profile"); done
   printf '%s\n' "${PENDING_HASHES[@]:-}" |
     setsid env -u CONVERGE_ROLE -u CONVERGE_ITERATION \
       CONVERGE_RUN_DIR="$RUN_DIR" \
       "$BIN_DIR/cbugs" reviewed add \
-      --profile "$profile" --completed-at "$completed_at" >"$out_file" &
+      "${profile_args[@]}" --completed-at "$completed_at" >"$out_file" &
   REVIEWED_PID=$!
   wait "$REVIEWED_PID" || status=$?
   REVIEWED_PID=0
   out=$(cat "$out_file" 2>/dev/null || true)
   rm -f "$out_file"
   if ((STOP_REQUESTED || HARD_STOP)); then
-    warn "coverage recording stopped for profile $profile after an operator stop"
+    warn "coverage recording stopped after an operator stop"
     return 1
   fi
   if ((status != 0)); then
-    warn "cbugs reviewed add failed for profile $profile; the panel recorded no coverage for it"
+    warn "cbugs reviewed add failed; the panel recorded no coverage"
     return 1
   fi
-  note "coverage recorded: profile=$profile $out"
+  note "coverage recorded: profiles=$* $out"
   return 0
 }
 
@@ -2014,7 +2018,10 @@ run_merge_agent() {
   wait_child "$MERGE_PID"
   MERGE_STATUS=$?
   MERGE_SECONDS=$((SECONDS - started))
+  local merge_finished=0
+  local merge_timed_out=0
   if [[ -s $end_file ]]; then
+    merge_finished=1
     local recorded_seconds
     recorded_seconds=$(<"$end_file")
     is_number "$recorded_seconds" && MERGE_SECONDS=$recorded_seconds
@@ -2034,12 +2041,17 @@ run_merge_agent() {
   STREAM_LABEL=""
   STREAM_DISPLAY_LABEL=""
 
-  if ((MERGE_STATUS == 124 || MERGE_STATUS == 137)); then
+  ((MERGE_STATUS == 124 || MERGE_STATUS == 137)) && merge_timed_out=1
+  if ((HARD_STOP && merge_finished == 0 && MERGE_SECONDS < TIMEOUT)); then merge_timed_out=0; fi
+  if ((HARD_STOP && MERGE_STATUS != 0 && merge_finished == 0 && MERGE_SECONDS >= TIMEOUT)); then merge_timed_out=1; fi
+  if ((merge_timed_out)); then
+    MERGE_STATUS=124
     warn "merge ($profile) exceeded the ${TIMEOUT}s timeout; killed it"
     show_stderr "$LOG_DIR/$MERGE_STEM" "merge ($profile)"
     printf '{"type":"review_panel_event","event":"timeout","run":"%s","seconds":%s}\n' \
       "$PANEL_ID" "$TIMEOUT" >>"$LOG_FILE"
   elif ((HARD_STOP && MERGE_STATUS != 0)); then
+    MERGE_STOPPED=1
     warn "merge ($profile) stopped by the operator (status $SIGNAL_STATUS)"
     show_stderr "$LOG_DIR/$MERGE_STEM" "merge ($profile)"
     printf '{"type":"review_panel_event","event":"stopped","run":"%s","status":%s}\n' \
@@ -2065,6 +2077,7 @@ run_merge_chain() {
   local prompt=$1 profile attempt_seconds total_seconds=0
   MERGE_STATUS=1
   MERGE_SECONDS=0
+  MERGE_STOPPED=0
   MERGE_FAILURE_ROWS=()
   for profile in "${MERGE_PROFILES[@]}"; do
     if ((STOP_REQUESTED || HARD_STOP)); then
@@ -2076,7 +2089,11 @@ run_merge_chain() {
     ((total_seconds += attempt_seconds))
     MERGE_SECONDS=$total_seconds
     if ((MERGE_STATUS != 0)); then
-      MERGE_FAILURE_ROWS+=("merge profile $profile: exit status $MERGE_STATUS")
+      if ((MERGE_STOPPED)); then
+        MERGE_FAILURE_ROWS+=("merge profile $profile stopped by the operator (status $SIGNAL_STATUS)")
+      else
+        MERGE_FAILURE_ROWS+=("merge profile $profile: exit status $MERGE_STATUS")
+      fi
     fi
     if ((MERGE_STATUS == 0 || MERGE_STATUS == 124 || MERGE_STATUS == 137 || STOP_REQUESTED || HARD_STOP)); then
       return 0
@@ -2279,6 +2296,7 @@ PANEL_PROMPT=$(reviewer_prompt)
 RUN_REVIEWS=()
 INV_STARTS=()
 REVIEW_STATUSES=()
+REVIEW_STOPPED=()
 FORMATTERS=()
 FORMATTER_FIFOS=()
 FALLBACK_STREAMS=()
@@ -2320,11 +2338,12 @@ for ((i = 0; i < RUN_STARTED; i++)); do
   else
     status=$?
   fi
-  REVIEW_STATUSES[$i]=$status
+  REVIEW_STOPPED[$i]=0
   profile=${REVIEWER_PROFILES[$i]}
   stem=${RUN_REVIEWS[$i]:-}
   seconds=$((SECONDS - INV_STARTS[$i]))
   invocation_finished=0
+  invocation_timed_out=0
   # The writer (the harness) closed the pipe. Let the reviewer's transcript
   # finish before the result line reports its outcome, so that the lines
   # stay in order and the drain belongs to this invocation's position
@@ -2365,12 +2384,18 @@ for ((i = 0; i < RUN_STARTED; i++)); do
     fi
     rm -f "$end_file"
   fi
-  if ((status == 124 || status == 137)); then
+  ((status == 124 || status == 137)) && invocation_timed_out=1
+  if ((HARD_STOP && invocation_finished == 0 && seconds < TIMEOUT)); then invocation_timed_out=0; fi
+  if ((HARD_STOP && status != 0 && invocation_finished == 0 && seconds >= TIMEOUT)); then invocation_timed_out=1; fi
+  if ((invocation_timed_out)); then
+    status=124
     warn "reviewer $((i + 1))/$REVIEWER_COUNT $profile exceeded the ${TIMEOUT}s timeout; killed it"
     show_stderr "$LOG_DIR/$stem" "reviewer $((i + 1))/$REVIEWER_COUNT $profile"
     [[ -z $stem ]] || printf '{"type":"review_panel_event","event":"timeout","run":"%s","seconds":%s}\n' \
       "$PANEL_ID" "$TIMEOUT" >>"$LOG_DIR/$stem.jsonl"
   elif ((HARD_STOP && status != 0 && invocation_finished == 0)); then
+    status=$SIGNAL_STATUS
+    REVIEW_STOPPED[$i]=1
     warn "reviewer $((i + 1))/$REVIEWER_COUNT $profile stopped by the operator (status $SIGNAL_STATUS)"
     show_stderr "$LOG_DIR/$stem" "reviewer $((i + 1))/$REVIEWER_COUNT $profile"
     [[ -z $stem ]] || printf '{"type":"review_panel_event","event":"stopped","run":"%s","status":%s}\n' \
@@ -2385,6 +2410,7 @@ for ((i = 0; i < RUN_STARTED; i++)); do
     [[ -z $stem ]] || printf '{"type":"review_panel_event","event":"result","run":"%s","status":0}\n' \
       "$PANEL_ID" >>"$LOG_DIR/$stem.jsonl"
   fi
+  REVIEW_STATUSES[$i]=$status
   note "reviewer end: profile=$profile status=$status stem=$stem seconds=$seconds"
   # CV-COST-10: one ledger line per started invocation, as the stylesheet
   # that the converge loop uses appends its own. The read waits for the
@@ -2412,7 +2438,7 @@ else
     NEW_LINES=""
     while IFS=$'\t' read -r id kind status title hidden; do
       decode_tsv_field "$title"; title=$REPLY
-      if [[ $hidden == true ]]; then
+      if [[ $hidden == true || $hidden == 1 ]]; then
         audit=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" show "$id" --json 2>/dev/null || printf '{}')
         title=$(jq -r '.revisions[0].title // "unknown title"' <<<"$audit")
         NEW_LINES+="#$id ($kind, hidden): $title
@@ -2517,17 +2543,15 @@ COVERAGE_FAILED=0
 if ((coverage_enabled)) && ((PENDING_COUNT > 0)); then
   completed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   coverage_status=0
+  successful_profiles=()
   for ((i = 0; i < REVIEWER_COUNT; i++)); do
-    # A stop can arrive while an earlier reviewer record is being written.
-    # Recheck immediately before each write so the interrupted run records
-    # no later coverage (RP-COV-5).
-    if ((STOP_REQUESTED || HARD_STOP)); then
-      coverage_enabled=0
-      break
-    fi
-    [[ ${REVIEW_STATUSES[$i]:-1} == 0 ]] || continue
-    record_reviewed "${REVIEWER_PROFILES[$i]}" "$completed_at" || coverage_status=1
+    [[ ${REVIEW_STATUSES[$i]:-1} == 0 ]] && successful_profiles+=("${REVIEWER_PROFILES[$i]}")
   done
+  if ((STOP_REQUESTED || HARD_STOP)); then
+    coverage_enabled=0
+  elif ((${#successful_profiles[@]})); then
+    record_reviewed "$completed_at" "${successful_profiles[@]}" || coverage_status=1
+  fi
   if ((!coverage_enabled)); then
     info "coverage recording stopped after an operator stop"
   elif ((coverage_status)); then
@@ -2552,8 +2576,11 @@ FAILED_ROWS=()
 for ((i = 0; i < RUN_STARTED; i++)); do
   status=${REVIEW_STATUSES[$i]}
   if [[ $status != 0 ]]; then
-    if ((STOP_REQUESTED || HARD_STOP)) && [[ $status == 124 || $status == 137 ]]; then status=$SIGNAL_STATUS; fi
-    FAILED_ROWS+=("reviewer $((i + 1))/$REVIEWER_COUNT ${REVIEWER_PROFILES[$i]}: exit status $status")
+    if [[ ${REVIEW_STOPPED[$i]:-0} == 1 ]]; then
+      FAILED_ROWS+=("reviewer $((i + 1))/$REVIEWER_COUNT ${REVIEWER_PROFILES[$i]} stopped by the operator (status $status)")
+    else
+      FAILED_ROWS+=("reviewer $((i + 1))/$REVIEWER_COUNT ${REVIEWER_PROFILES[$i]}: exit status $status")
+    fi
   fi
 done
 if ((RUN_STARTED < REVIEWER_COUNT)); then

@@ -94,7 +94,7 @@ if [[ -z $scenario ]]; then
   exit 97
 fi
 
-EXIT=0 MESSAGE="" ASSISTANT=1 COST="" SLEEP="" COMMIT=""
+EXIT=0 MESSAGE="" ASSISTANT=1 COST="" SLEEP="" COMMIT="" FOLLOWUP_TOOL=0 FILE_KIND="" OPENCODE_TOOL=0
 # shellcheck source=/dev/null
 source "$scenario"
 
@@ -126,12 +126,21 @@ emit_opencode() {
   if [[ $ASSISTANT == 1 ]]; then
     jq -nc --arg t "$MESSAGE" '{type:"text",part:{messageID:"m1",text:$t}}'
   fi
+  if [[ $OPENCODE_TOOL == 1 ]]; then
+    jq -nc '{type:"tool",part:{messageID:"m2",tool:"bash"}}'
+  fi
   jq -nc --arg c "$COST" '{type:"step_finish",part:{reason:"stop",cost:(if $c == "" then null else ($c|tonumber) end)}}'
 }
 emit_codex() {
   jq -nc '{type:"thread.started",thread_id:"fakefake-0000"}'
   if [[ $ASSISTANT == 1 ]]; then
     jq -nc --arg t "$MESSAGE" '{type:"item.completed",item:{type:"agent_message",text:$t}}'
+  fi
+  if [[ $FOLLOWUP_TOOL == 1 ]]; then
+    jq -nc '{type:"item.completed",item:{type:"command_execution",command:"true",exit_code:0}}'
+  fi
+  if [[ -n $FILE_KIND ]]; then
+    jq -nc --arg k "$FILE_KIND" '{type:"item.completed",item:{type:"file_change",changes:[{kind:$k,path:"changed.txt"}]}}'
   fi
   jq -nc '{type:"turn.completed"}'
 }

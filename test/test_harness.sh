@@ -173,6 +173,14 @@ test_opencode_vote_and_effort() {
   assert_eq "$(call_field 1 model)" provider/model#fast "model with native effort"
 }
 
+test_opencode_tool_event_does_not_replace_last_assistant_message() {
+  export CONVERGE_WORKER_PROFILE='opencode:provider/model'
+  scenario worker MESSAGE=CONVERGED OPENCODE_TOOL=1
+  run_converge "${LOOP_ARGS[@]}" --max-iterations 1 docs/requirements.md
+  assert_status 1
+  assert_output_contains "no worker vote"
+}
+
 test_codex_vote_and_effort() {
   export CONVERGE_WORKER_PROFILE='codex:gpt-5-codex:high'
   scenario worker MESSAGE=CONVERGED
@@ -180,6 +188,22 @@ test_codex_vote_and_effort() {
   assert_status 0
   assert_eq "$(call_field 1 harness)" codex "harness"
   assert_eq "$(call_field 1 effort)" high "reasoning effort"
+}
+
+test_codex_final_agent_message_is_marked_final_after_tool_call() {
+  export CONVERGE_WORKER_PROFILE='codex:gpt-5-codex'
+  scenario worker MESSAGE=CONVERGED FOLLOWUP_TOOL=1
+  run_converge "${LOOP_ARGS[@]}" --consensus 1 docs/requirements.md
+  assert_status 0
+  assert_output_contains '▍ CONVERGED'
+}
+
+test_codex_file_change_operation_is_visible_as_a_write() {
+  export CONVERGE_WORKER_PROFILE='codex:gpt-5-codex'
+  scenario worker MESSAGE=done FILE_KIND=update
+  run_converge "${LOOP_ARGS[@]}" --max-iterations 1 docs/requirements.md
+  assert_status 1
+  assert_output_contains 'update changed.txt'
 }
 
 # A codex run without an agent message produced no output and gives no vote.

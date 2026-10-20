@@ -36,6 +36,14 @@ test_json_recorded_grows_with_each_record() {
   assert_eq "$(jq -c .recorded <<<"$OUTPUT")" 2 "recorded after two records"
 }
 
+test_reviewed_add_records_all_profiles_in_one_call() {
+  cbugs_run reviewed add --profile claude:a --profile codex:b HEAD
+  assert_status 0
+  local rows
+  rows=$(sqlite3 "$(state_dir)/cbugs.db" 'SELECT profile FROM reviewed ORDER BY id;')
+  assert_eq "$rows" $'claude:a\ncodex:b' "profiles in the atomic coverage write"
+}
+
 # With no pending commit, the JSON form still prints the object
 # (CB-RVW-26.3), and the human form prints nothing (CB-RVW-24).
 test_nothing_pending() {
