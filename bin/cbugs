@@ -249,7 +249,7 @@ for arg in "$@"; do
   if ((skip_next)); then skip_next=0; continue; fi
   case $arg in
     --help) EARLY_HELP=1 ;;
-    -h) [[ ${1:-} == search ]] || EARLY_HELP=1 ;;
+    -h) EARLY_HELP=1 ;;
     --) break ;;
     --title|--kind|--note|--cite|--commit|--status|--iteration|--profile|--completed-at|--panel-run|--review-pass) skip_next=1 ;;
   esac
@@ -402,7 +402,7 @@ for arg in "$@"; do
   fi
   case $arg in
     --help) HELP_REQUESTED=1 ;;
-    -h) [[ ${1:-} == search ]] || HELP_REQUESTED=1 ;;
+    -h) HELP_REQUESTED=1 ;;
     --) break ;;
     --title|--kind|--note|--cite|--commit|--status|--iteration|--profile|--completed-at|--panel-run|--review-pass) skip_next=1 ;;
   esac
