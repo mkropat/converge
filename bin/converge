@@ -671,35 +671,6 @@ unreviewed_count() {
   awk 'NF { c++ } END { print c + 0 }' <<<"$hashes"
 }
 
-# relevant_count   Prints the number of the relevant commits: the commits
-# that the repository HEAD reaches and that change one or more paths in the
-# run directory (CV-REV-19). Every reachable commit is relevant when the run
-# directory is the root of the repository. The ":(top,literal)" magic
-# anchors the path at the root of the repository: the loop does not change
-# its own working directory, and a pathspec resolved from the run directory
-# would name a path under the run directory instead.
-relevant_count() {
-  if [[ -z $RUN_SUBPATH ]]; then
-    git rev-list --count HEAD 2>/dev/null || printf '0'
-  else
-    git rev-list --count HEAD -- ":(top,literal)$RUN_SUBPATH" 2>/dev/null || printf '0'
-  fi
-}
-
-# considered_count   Prints the size of the history that cbugs reviewed
-# pending considers: the 1,000 newest relevant commits (CB-RVW-8). The loop
-# names the range of a cadence pass by this history, so the count that
-# stands in for "no relevant commit is recorded" must be the same bounded
-# count, or a first pass with more than 1,000 relevant commits would name
-# itself wrongly (CV-REV-17). A git failure still reads as 0, exactly as
-# relevant_count reads.
-considered_count() {
-  local n
-  n=$(relevant_count)
-  if ((n > 1000)); then n=1000; fi
-  printf '%s' "$n"
-}
-
 # scope_list   Renders the scope paths as the operator wrote them, for a
 # prompt or the startup panel.
 scope_list() {
@@ -1621,7 +1592,6 @@ run_agent() {
   INVOCATION_SKIPPED=0
   case $role in
     coach) glyph=$G_COACH ;;
-    fixer) glyph=$G_WORKER ;;
     reviewer) glyph=$G_REVIEW ;;
     discovery) glyph=$G_REVIEW ;;
   esac
@@ -2691,30 +2661,6 @@ Every selected unreviewed commit (%s, newest first):
 %s' "$2" "$1"
 }
 
-# decode_tsv_field <value>   Undo jq @tsv escaping without interpreting
-# ordinary backslashes as printf %b escape sequences.
-decode_tsv_field() {
-  local value=$1 output='' char next i=0
-  while ((i < ${#value})); do
-    char=${value:i:1}
-    if [[ $char == \\ && $((i + 1)) -lt ${#value} ]]; then
-      ((i++))
-      next=${value:i:1}
-      case $next in
-        \\) output+='\\' ;;
-        t) output+=$'\t' ;;
-        n) output+=$'\n' ;;
-        r) output+=$'\r' ;;
-        *) output+="\\$next" ;;
-      esac
-    else
-      output+=$char
-    fi
-    ((i++))
-  done
-  REPLY=$output
-}
-
 convergence_holds() {
   ((CONVERGED_VOTES >= CONSENSUS))
 }
@@ -2748,17 +2694,10 @@ record_reviewed() {
 # whole-code final pass is retired (CV-REV-18): the vote panel of
 # CV-CONV-23 replaces it, through run_vote_panel.
 run_review_pass() {
-  local pending_list pending_count pending_failed=0 bugs_before bugs_after new_bugs count
+  local pending_list pending_count bugs_before bugs_after new_bugs count
   local recorded=0 completed_at
   local bugs_before_ok=1 bugs_after_ok=1
-  if pending_list=$(unreviewed_list); then
-    pending_count=$(awk 'NF { c++ } END { print c + 0 }' <<<"$pending_list")
-  else
-    pending_failed=1
-    pending_list=""
-    pending_count=0
-  fi
-  if ((pending_failed)); then
+  if ! pending_list=$(unreviewed_list); then
     # CV-REV-19: a failed read is not an empty backlog. A cadence pass
     # needs the exact list of unreviewed commits (CV-REV-16); without it,
     # running one would give the reviewer a false "nothing is unreviewed"
@@ -2766,6 +2705,7 @@ run_review_pass() {
     warn "cbugs reviewed pending failed; no cadence pass to run"
     return 0
   fi
+  pending_count=$(awk 'NF { c++ } END { print c + 0 }' <<<"$pending_list")
   if ((pending_count == 0)); then
     note "review: no commit is unreviewed; no pass to run"
     return 0
@@ -2808,12 +2748,8 @@ run_review_pass() {
     # CV-REV-20: one completion timestamp for the whole pass, from the
     # moment it succeeded, not from a later retry of the record call.
     completed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    if ((pending_failed)); then
-      warn "cbugs reviewed pending failed; the pass recorded no commit"
-    elif ((pending_count > 0)); then
-      if record_reviewed "$pending_list" "$RUN_PROFILE" "$completed_at"; then
-        recorded=$pending_count
-      fi
+    if record_reviewed "$pending_list" "$RUN_PROFILE" "$completed_at"; then
+      recorded=$pending_count
     fi
   fi
 
@@ -2920,7 +2856,7 @@ run_due_review() {
 # request can reach its controller and the hard stop can reach its group
 # (CV-FAIL-13). The panel logs its own agents, records its own coverage,
 # and writes its cost rows to the shared ledger (CV-COST-10). Sets
-# PANEL_PID while the panel runs, and PANEL_STATUS to its exit status.
+# PANEL_PID while the panel runs.
 run_vote_panel() {
   ((REVIEW_ENABLED)) || return 0
   ((PANEL_DUE)) || return 0
@@ -2986,7 +2922,6 @@ run_vote_panel() {
       bad "the vote panel read the live working tree but exited with status $panel_status"
       ;;
   esac
-  PANEL_STATUS=$panel_status
 }
 
 # print_cost_summary
@@ -3118,7 +3053,6 @@ FIXER_PENDING=0
 FIXER_ITERATION=0
 PANEL_DUE=0
 PANEL_PID=""
-PANEL_STATUS=""
 FAIL_WAIT=0
 PENDING_LOGS=()
 # CV-COACH-10: the cadence starts at zero each session. The first coach run
@@ -3238,7 +3172,6 @@ while true; do
       note "coach escalation: no"
     fi
   fi
-  ((STOP_REQUESTED)) && break
   # A stop at this point takes priority over a stalled notification.
   stop_due && break
   if ((STALL_STREAK >= STALL_NOTIFY && !STALL_NOTIFICATION_SENT)); then
@@ -3248,11 +3181,6 @@ while true; do
     # The notification waits for a running command after the first SIGINT.
     # Stop here so the signal cannot schedule a worker that never starts.
     ((STOP_REQUESTED)) && break
-  fi
-  if [[ -n $MAX_ITERATIONS ]] && ((ITERATION >= MAX_ITERATIONS)); then
-    warn "reached the limit of $(plural "$MAX_ITERATIONS" iteration) without convergence"
-    EXIT_STATUS=1
-    break
   fi
 
   ((++ITERATION))
