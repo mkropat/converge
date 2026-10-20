@@ -1995,11 +1995,8 @@ final_message() {
     opencode)
       jq -Rsr '
         [splits("\n") | select(. != "") | fromjson? // empty]
-        | if length == 0 then ""
-          else ([.[].part.messageID // empty] | last) as $id
-            | map(select(.type == "text" and .part.messageID == $id) | .part.text // "")
-            | join("\n")
-          end' "$1" 2>/dev/null || true
+        | map(select(.type == "text") | .part.text // "")
+        | if length == 0 then "" else last end' "$1" 2>/dev/null || true
       ;;
   esac
 }

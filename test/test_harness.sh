@@ -198,6 +198,14 @@ test_codex_final_agent_message_is_marked_final_after_tool_call() {
   assert_output_contains '▍ CONVERGED'
 }
 
+test_opencode_tool_event_after_assistant_does_not_hide_final_message() {
+  export CONVERGE_WORKER_PROFILE='opencode:model'
+  scenario worker MESSAGE=CONVERGED OPENCODE_TOOL=1
+  run_converge "${LOOP_ARGS[@]}" --consensus 1 docs/requirements.md
+  assert_status 0
+  assert_output_contains '▍ CONVERGED'
+}
+
 test_codex_file_change_operation_is_visible_as_a_write() {
   export CONVERGE_WORKER_PROFILE='codex:gpt-5-codex'
   scenario worker MESSAGE=done FILE_KIND=update

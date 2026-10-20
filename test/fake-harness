@@ -124,10 +124,10 @@ emit_claude_end() {
 emit_opencode() {
   jq -nc '{type:"step_start",sessionID:"fakefake-0000"}'
   if [[ $ASSISTANT == 1 ]]; then
-    jq -nc --arg t "$MESSAGE" '{type:"text",part:{messageID:"m1",text:$t}}'
+    jq -nc --arg t "$MESSAGE" '{type:"text",part:{messageID:"m2",text:$t}}'
   fi
   if [[ $OPENCODE_TOOL == 1 ]]; then
-    jq -nc '{type:"tool",part:{messageID:"m2",tool:"bash"}}'
+    jq -nc '{type:"tool",part:{messageID:"m3",tool:"bash"}}'
   fi
   jq -nc --arg c "$COST" '{type:"step_finish",part:{reason:"stop",cost:(if $c == "" then null else ($c|tonumber) end)}}'
 }
