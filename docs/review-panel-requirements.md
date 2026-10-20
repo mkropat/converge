@@ -121,7 +121,7 @@ An identifier must not change its meaning. Removed requirements leave their iden
 - **RP-COV-2**: After a complete review and merge phase, the controller must record coverage for the captured commits through the existing cbugs coverage-record mechanism. Agents must not record coverage themselves.
 - **RP-COV-3**: Coverage records must identify the successful reviewer profiles under the cbugs profile-record rules. The merge profile must not count as a reviewer. Coverage must not imply that defects were absent.
 - **RP-COV-4**: The controller must record only commits captured at startup. It must record them even if HEAD changed during the run. Commits added after startup must not receive coverage from this run.
-- **RP-COV-5**: A reviewer failure, merge failure, or interrupted run must prevent coverage recording. Failure to record required coverage must make the run incomplete.
+- **RP-COV-5**: A reviewer failure, merge failure, or operator stop before coverage recording starts must prevent coverage recording. An operator stop during coverage recording must stop further recording. Coverage records saved before the stop must remain. The controller may record each successful reviewer profile in a separate transaction. Failure to record required coverage must make the run incomplete. A stop during coverage recording must leave the run incomplete, even when some coverage records remain.
 - **RP-COV-6**: Coverage must not supply a done vote or claim convergence. It records completion of this live-tree review, not approval of a HEAD or fixed snapshot. New bugs of the panel, invocation failures, and coverage failures must not change the done count or the blocked count of the parent, or block parent convergence.
 
 ## Output and result
