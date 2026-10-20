@@ -151,14 +151,13 @@ test_claude_effort_is_passed() {
   assert_output_contains "worker · claude:opus:high"
 }
 
-test_opencode_vote_and_variant() {
+test_opencode_vote_and_effort() {
   export CONVERGE_WORKER_PROFILE='opencode:provider/model:fast'
   scenario worker MESSAGE=$'Nothing remains.\nCONVERGED'
   run_converge "${LOOP_ARGS[@]}" --consensus 1 docs/requirements.md
   assert_status 0
   assert_eq "$(call_field 1 harness)" opencode "harness"
-  assert_eq "$(call_field 1 model)" provider/model "model"
-  assert_eq "$(call_field 1 effort)" fast "variant"
+  assert_eq "$(call_field 1 model)" provider/model#fast "model with native effort"
 }
 
 test_codex_vote_and_effort() {

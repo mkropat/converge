@@ -878,7 +878,7 @@ wait_child() {
 # session. No check tests that the harness command is on PATH (CV-OOS-32), so
 # the first invocation reports a missing harness itself.
 harness_argv() {
-  local harness=$1 model=$2 effort=$3 prompt=$4
+  local harness=$1 model=$2 effort=$3 prompt=$4 opencode_model
   case $harness in
     claude)
       ARGV=(claude --print --output-format stream-json --verbose
@@ -887,8 +887,9 @@ harness_argv() {
       ARGV+=("$prompt")
       ;;
     opencode)
-      ARGV=(opencode run --format json --model "$model" --auto)
-      [[ -z $effort ]] || ARGV+=(--model "${model}#${effort}")
+      opencode_model=$model
+      [[ -z $effort ]] || opencode_model+="#${effort}"
+      ARGV=(opencode run --format json --model "$opencode_model" --auto)
       ARGV+=("$prompt")
       ;;
     codex)
