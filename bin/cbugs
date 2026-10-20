@@ -1164,11 +1164,10 @@ print_listing() {
   fi
   local id kind status title hidden
   while IFS=$'\t' read -r id kind status title hidden; do
-    # Decode jq's @tsv transport escaping before printing the title.
-    printf -v title '%b' "$title"
+    title=$(printf '%s' "$title" | base64 -d)
     title=$(human_text "$title")
     row_line "$id" "$kind" "$status" "$title" "$hidden"
-  done < <(jq -r '.[] | [.id, .kind, .status, .title, (.hidden // false)] | @tsv' <<<"$rows")
+  done < <(jq -r '.[] | [.id, .kind, .status, (.title | @base64), (.hidden // false)] | @tsv' <<<"$rows")
 }
 
 # current_rows_sql <visible|hidden|all> <extra where> [limit]   The shared
@@ -2267,7 +2266,7 @@ WHERE c.id IS NULL;") || exit 1
       printf -v title '%b' "$title"
       title=$(human_text "$title")
       row_line "$id" "$kind" "$status" "$title" "$hidden"
-    done < <(jq -r '.[] | [.id, .kind, .status, .title, (.hidden // false)] | @tsv' <<<"$rows")
+    done < <(jq -r '.[] | [.id, .kind, .status, (.title | @base64), (.hidden // false)] | @tsv' <<<"$rows")
   else
     printf '%sno bug is open%s\n' "$DIM" "$OFF"
   fi

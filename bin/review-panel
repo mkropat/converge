@@ -465,14 +465,13 @@ join_list() {
 
 # wrap <width> <text>   Breaks text on spaces into lines of at most <width>.
 wrap() {
-  local width=$1 line="" word
+  local width=$1 line="" word input_line
   local -a words=()
-  read -ra words <<<"$2"
-  if ((${#words[@]} == 0)); then
-    printf '\n'
-    return
-  fi
-  for word in "${words[@]}"; do
+  while IFS= read -r input_line || [[ -n $input_line ]]; do
+    words=()
+    read -ra words <<<"$input_line"
+    if ((${#words[@]} == 0)); then printf '\n'; continue; fi
+    for word in "${words[@]}"; do
     if [[ -z $line ]]; then
       line=$word
     elif ((${#line} + 1 + ${#word} <= width)); then
@@ -481,8 +480,10 @@ wrap() {
       printf '%s\n' "$line"
       line=$word
     fi
-  done
-  printf '%s\n' "$line"
+    done
+    printf '%s\n' "$line"
+    line=""
+  done <<<"$2"
 }
 
 # strip_style <text>   Removes the ANSI color codes that gutter embeds.
@@ -671,7 +672,7 @@ harness_argv() {
       ;;
     opencode)
       ARGV=(opencode run --format json --model "$model" --auto)
-      [[ -z $effort ]] || ARGV+=(--variant "$effort")
+      [[ -z $effort ]] || ARGV+=(--model "${model}#${effort}")
       ARGV+=("$prompt")
       ;;
     codex)
@@ -1242,6 +1243,7 @@ format_stream() {
           ;;
         hold)
           if [[ $INVOCATION_HARNESS == codex ]]; then
+            if ((${#hold[@]})); then dispatch_held "${hold[${#hold[@]}-1]}" 0; hold=(); fi
             local held_text
             held_text=$(jq -nr --arg encoded "${rest#*$'\t'}" '$encoded | fromjson')
             hold+=("text"$'\t'"$held_text")
@@ -1273,6 +1275,10 @@ format_stream() {
           fi
           ;;
         tool)
+          if [[ $INVOCATION_HARNESS == codex ]]; then
+            for held in ${hold[@]+"${hold[@]}"}; do dispatch_held "$held" 0; done
+            hold=()
+          fi
           name=${rest%%$'\t'*}
           rest2=${rest#*$'\t'}
           [[ $rest2 == "$rest" ]] && rest2=""
@@ -1282,6 +1288,10 @@ format_stream() {
           render_tool "$name" "$arg" "$lines"
           ;;
         fail)
+          if [[ $INVOCATION_HARNESS == codex ]]; then
+            for held in ${hold[@]+"${hold[@]}"}; do dispatch_held "$held" 0; done
+            hold=()
+          fi
           render_fail "$rest"
           ;;
         final)
@@ -1529,6 +1539,11 @@ record_invocation_cost() {
   [[ $cost_record =~ $DECIMAL_RE ]] || cost_record=""
   if ! {
     flock -x 9 &&
+      if [[ -s $COST_LEDGER ]]; then
+        local last_byte
+        last_byte=$(tail -c 1 "$COST_LEDGER" | od -An -t x1 | tr -d ' \n')
+        [[ $last_byte == 0a ]] || printf '\n' >>"$COST_LEDGER"
+      fi &&
       printf '%s\t%s\t%s\t%s\n' "$COST_SESSION" "$role" "$profile" "$cost_record" >>"$COST_LEDGER"
   } 9>>"$COST_LEDGER" 2>/dev/null; then
     warn "cannot append to the cost ledger $COST_LEDGER; this invocation's cost stays out of the summaries"
@@ -2348,16 +2363,16 @@ for ((i = 0; i < RUN_STARTED; i++)); do
     fi
     rm -f "$end_file"
   fi
-  if ((status == 124 || status == 137)); then
-    warn "reviewer $((i + 1))/$REVIEWER_COUNT $profile exceeded the ${TIMEOUT}s timeout; killed it"
-    show_stderr "$LOG_DIR/$stem" "reviewer $((i + 1))/$REVIEWER_COUNT $profile"
-    [[ -z $stem ]] || printf '{"type":"review_panel_event","event":"timeout","run":"%s","seconds":%s}\n' \
-      "$PANEL_ID" "$TIMEOUT" >>"$LOG_DIR/$stem.jsonl"
-  elif ((HARD_STOP && status != 0 && invocation_finished == 0)); then
+  if ((HARD_STOP && status != 0 && invocation_finished == 0)); then
     warn "reviewer $((i + 1))/$REVIEWER_COUNT $profile stopped by the operator (status $SIGNAL_STATUS)"
     show_stderr "$LOG_DIR/$stem" "reviewer $((i + 1))/$REVIEWER_COUNT $profile"
     [[ -z $stem ]] || printf '{"type":"review_panel_event","event":"stopped","run":"%s","status":%s}\n' \
       "$PANEL_ID" "$SIGNAL_STATUS" >>"$LOG_DIR/$stem.jsonl"
+  elif ((status == 124 || status == 137)); then
+    warn "reviewer $((i + 1))/$REVIEWER_COUNT $profile exceeded the ${TIMEOUT}s timeout; killed it"
+    show_stderr "$LOG_DIR/$stem" "reviewer $((i + 1))/$REVIEWER_COUNT $profile"
+    [[ -z $stem ]] || printf '{"type":"review_panel_event","event":"timeout","run":"%s","seconds":%s}\n' \
+      "$PANEL_ID" "$TIMEOUT" >>"$LOG_DIR/$stem.jsonl"
   elif ((status != 0)); then
     warn "reviewer $((i + 1))/$REVIEWER_COUNT $profile exited with status $status after $(duration "$seconds")"
     show_stderr "$LOG_DIR/$stem" "reviewer $((i + 1))/$REVIEWER_COUNT $profile"

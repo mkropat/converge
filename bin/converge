@@ -250,6 +250,27 @@ fits_bash_integer() {
 # will never read. client_main runs this check again before it starts a
 # loop, when no loop runs.
 validate_start_options() {
+  # Validate profile inputs in the starting client before it waits for a
+  # daemon pid. This keeps startup errors visible to that client.
+  local raw_profiles=() parsed_profiles
+  resolve_profile_env CONVERGE_WORKER_PROFILE "claude:sonnet" parsed_profiles
+  parse_profile_list worker "$parsed_profiles" raw_profiles
+  resolve_profile_env CONVERGE_REVIEWER_PROFILE "claude:opus" parsed_profiles
+  parse_profile_list reviewer "$parsed_profiles" raw_profiles
+  resolve_profile_env CONVERGE_COACH_PROFILE "claude:opus" parsed_profiles
+  parse_profile_list coach "$parsed_profiles" raw_profiles
+  if [[ -n ${CONVERGE_FIXER_PROFILE+x} ]]; then
+    [[ -n $CONVERGE_FIXER_PROFILE ]] || { echo "converge: CONVERGE_FIXER_PROFILE is set but empty" >&2; exit 2; }
+    parse_profile_list fixer "$CONVERGE_FIXER_PROFILE" raw_profiles
+  fi
+  if [[ -n ${CONVERGE_REVIEW_PANEL_PROFILE+x} ]]; then
+    [[ -n $CONVERGE_REVIEW_PANEL_PROFILE ]] || { echo "converge: CONVERGE_REVIEW_PANEL_PROFILE is set but empty; give a comma-separated profile list" >&2; exit 2; }
+    parse_profile_list panel "$CONVERGE_REVIEW_PANEL_PROFILE" raw_profiles
+  fi
+  if [[ -n ${CONVERGE_REVIEW_PANEL_MERGE_PROFILE+x} ]]; then
+    [[ -n $CONVERGE_REVIEW_PANEL_MERGE_PROFILE ]] || { echo "converge: CONVERGE_REVIEW_PANEL_MERGE_PROFILE is set but empty; give one or more profiles" >&2; exit 2; }
+    parse_profile_list merge "$CONVERGE_REVIEW_PANEL_MERGE_PROFILE" raw_profiles
+  fi
   for scope_path in ${SCOPE[@]+"${SCOPE[@]}"}; do
     if [[ ! -e $scope_path ]]; then
       echo "converge: scope path '$scope_path' does not exist" >&2
@@ -722,14 +743,13 @@ votes() {
 
 # wrap <width> <text>   Breaks text on spaces into lines of at most <width>.
 wrap() {
-  local width=$1 line="" word
+  local width=$1 line="" word input_line
   local -a words=()
-  read -ra words <<<"$2"
-  if ((${#words[@]} == 0)); then
-    printf '\n'
-    return
-  fi
-  for word in "${words[@]}"; do
+  while IFS= read -r input_line || [[ -n $input_line ]]; do
+    words=()
+    read -ra words <<<"$input_line"
+    if ((${#words[@]} == 0)); then printf '\n'; continue; fi
+    for word in "${words[@]}"; do
     if [[ -z $line ]]; then
       line=$word
     elif ((${#line} + 1 + ${#word} <= width)); then
@@ -738,8 +758,10 @@ wrap() {
       printf '%s\n' "$line"
       line=$word
     fi
-  done
-  printf '%s\n' "$line"
+    done
+    printf '%s\n' "$line"
+    line=""
+  done <<<"$2"
 }
 
 # strip_style <text>   Removes the ANSI color codes that gutter embeds in its
@@ -849,7 +871,7 @@ harness_argv() {
       ;;
     opencode)
       ARGV=(opencode run --format json --model "$model" --auto)
-      [[ -z $effort ]] || ARGV+=(--variant "$effort")
+      [[ -z $effort ]] || ARGV+=(--model "${model}#${effort}")
       ARGV+=("$prompt")
       ;;
     codex)
@@ -954,9 +976,16 @@ reject_retired_env() {
   local old
   for old in CONVERGE_HARNESS \
     CONVERGE_CLAUDE_MODEL CONVERGE_CLAUDE_REVIEW_MODEL CONVERGE_CLAUDE_COACH_MODEL \
-    CONVERGE_OPENCODE_MODEL CONVERGE_OPENCODE_REVIEW_MODEL CONVERGE_OPENCODE_COACH_MODEL; do
+    CONVERGE_OPENCODE_MODEL CONVERGE_OPENCODE_REVIEW_MODEL CONVERGE_OPENCODE_COACH_MODEL \
+    REVIEW_PANEL_PROFILES REVIEW_PANEL_MERGE_PROFILE; do
     if [[ -n ${!old+x} ]]; then
-      echo "converge: $old is retired; set CONVERGE_WORKER_PROFILE, CONVERGE_REVIEWER_PROFILE, or CONVERGE_COACH_PROFILE instead" >&2
+      if [[ $old == REVIEW_PANEL_PROFILES ]]; then
+        echo "converge: $old is retired; use CONVERGE_REVIEW_PANEL_PROFILE instead" >&2
+      elif [[ $old == REVIEW_PANEL_MERGE_PROFILE ]]; then
+        echo "converge: $old is retired; use CONVERGE_REVIEW_PANEL_MERGE_PROFILE instead" >&2
+      else
+        echo "converge: $old is retired; set CONVERGE_WORKER_PROFILE, CONVERGE_REVIEWER_PROFILE, or CONVERGE_COACH_PROFILE instead" >&2
+      fi
       exit 2
     fi
   done
@@ -2317,6 +2346,10 @@ format_stream() {
           ;;
         hold)
           if [[ $INVOCATION_HARNESS == codex ]]; then
+            if ((${#hold[@]})); then
+              dispatch_held "${hold[${#hold[@]}-1]}" 0
+              hold=()
+            fi
             local held_text
             held_text=$(jq -nr --arg encoded "${rest#*$'\t'}" '$encoded | fromjson')
             hold+=("text"$'\t'"$held_text")
@@ -2347,6 +2380,10 @@ format_stream() {
           fi
           ;;
         tool)
+          if [[ $INVOCATION_HARNESS == codex ]]; then
+            for held in ${hold[@]+"${hold[@]}"}; do dispatch_held "$held" 0; done
+            hold=()
+          fi
           name=${rest%%$'\t'*}
           rest2=${rest#*$'\t'}
           [[ $rest2 == "$rest" ]] && rest2=""
@@ -2356,6 +2393,10 @@ format_stream() {
           render_tool "$name" "$arg" "$lines"
           ;;
         fail)
+          if [[ $INVOCATION_HARNESS == codex ]]; then
+            for held in ${hold[@]+"${hold[@]}"}; do dispatch_held "$held" 0; done
+            hold=()
+          fi
           render_fail "$rest"
           ;;
         final)
@@ -3349,7 +3390,7 @@ exit "$EXIT_STATUS"
 if ((FOREGROUND)); then
   # Keep the loop in this process so its signal traps also handle a signal
   # sent to the foreground command. tee exits when the loop closes its pipe.
-  main_body > >(tee "$SESSION_OUT") 2>&1
+  main_body > >(trap '' INT TERM; tee "$SESSION_OUT") 2>&1
   exit $?
 fi
 main_body
