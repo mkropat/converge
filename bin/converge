@@ -237,6 +237,21 @@ fits_bash_integer() {
     { ((${#value} == 19)) && [[ $value < 9223372036854775808 ]]; }
 }
 
+# resolve_profile_env <variable name> <default> <out variable>
+# CV-HARN-8: an unset variable takes the default; a variable set to an empty
+# value is an error, not a silent default.
+resolve_profile_env() {
+  local varname=$1 default=$2 outvar=$3
+  if [[ -z ${!varname+x} ]]; then
+    printf -v "$outvar" '%s' "$default"
+  elif [[ -z ${!varname} ]]; then
+    echo "converge: $varname is set but empty; give a comma-separated profile list" >&2
+    exit 2
+  else
+    printf -v "$outvar" '%s' "${!varname}"
+  fi
+}
+
 # validate_start_options   Checks the settings that only a run needs to hold:
 # each scope path must exist, resolved against the run directory, and each
 # count must be a whole number. The script never changes its own working
@@ -954,21 +969,6 @@ parse_profile_list() {
     seen[$entry]=1
     out+=("$entry")
   done
-}
-
-# resolve_profile_env <variable name> <default> <out variable>
-# CV-HARN-8: an unset variable takes the default; a variable set to an empty
-# value is an error, not a silent default.
-resolve_profile_env() {
-  local varname=$1 default=$2 outvar=$3
-  if [[ -z ${!varname+x} ]]; then
-    printf -v "$outvar" '%s' "$default"
-  elif [[ -z ${!varname} ]]; then
-    echo "converge: $varname is set but empty; give a comma-separated profile list" >&2
-    exit 2
-  else
-    printf -v "$outvar" '%s' "${!varname}"
-  fi
 }
 
 # reject_retired_env   CV-HARN-12: a new session must reject the retired
