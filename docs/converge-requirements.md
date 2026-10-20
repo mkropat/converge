@@ -124,7 +124,7 @@ These principles explain the intent behind the requirements. Apply them when a r
   - **CV-INV-3.7**: `--no-coach`: disable the coach.
   - **CV-INV-3.8**: Retired. `--review-every <R>` gave the number of worker iterations between review passes. **CV-INV-3.14** replaces this behavior. The count lived in the memory of the loop, and a Ctrl-C that stopped the run threw it away. The count of unreviewed commits is durable, in the bug database.
   - **CV-INV-3.9**: `--no-review`: disable the reviewer.
-  - **CV-INV-3.10**: `--timeout <seconds>`: the maximum duration of one worker, reviewer, or coach invocation. Default: `3600`.
+  - **CV-INV-3.10**: `--timeout <seconds>`: the maximum duration of one worker, reviewer, or coach invocation. Default: `3600`. The value must be a nonnegative whole number. Zero must select an effective timeout of `2147483647` seconds. This setting provides no practical time limit, but the finite limit still applies. The command must replace zero with this effective value before execution and use the normal timeout rules.
   - **CV-INV-3.11**: `--max-iterations <N>`: the maximum number of worker iterations. Default: unbounded.
   - **CV-INV-3.12**: `--foreground`: run the loop in the terminal of the operator, and not in the background.
   - **CV-INV-3.13**: Retired. Required more than `N` unreviewed commits. **CV-INV-3.14** replaces this threshold.
