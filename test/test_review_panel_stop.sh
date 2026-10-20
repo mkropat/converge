@@ -105,6 +105,22 @@ test_coverage_write_failure_remains_a_failure() {
   assert_output_lacks "Review complete"
 }
 
+test_incomplete_report_excludes_merge_dismissed_findings() {
+  export CONVERGE_REVIEW_PANEL_PROFILE='claude:a,claude:b'
+  export CONVERGE_REVIEW_PANEL_MERGE_PROFILE='claude:merge'
+  cbugs add --kind code --title 'Existing finding' --note existing >/dev/null
+  scenario_script reviewer 'cbugs add --kind code --title "Duplicate finding" --note same >/dev/null'
+  scenario reviewer EXIT=1
+  scenario_script merge 'new_id=$(cbugs list --panel-run "$REVIEW_PANEL_RUN" --json | jq -r ".[0].id"); cbugs dismiss "$new_id" --note "duplicate of 1" >/dev/null'
+  local output
+  output=$(CONVERGE_RUN_DIR="$WORK" "$REPO_ROOT/bin/review-panel" docs/requirements.md 2>&1)
+  STATUS=$?
+  OUTPUT=$(sed -E $'s/\\x1b\\[[0-9;]*m//g' <<<"$output")
+  assert_eq "$STATUS" 2 "panel status"
+  assert_output_contains 'summary above is incomplete'
+  assert_output_lacks 'new code bug #2'
+}
+
 test_hard_stop_lists_merge_as_stopped() {
   local output_file="$TEST_TMP/merge-panel.out" panel_pid status i
   export CONVERGE_REVIEW_PANEL_MERGE_PROFILE='claude:merge'

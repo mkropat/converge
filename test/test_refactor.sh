@@ -16,6 +16,7 @@ test_done_vote_runs_refactor_before_panel_and_convergence() {
   call_prompt 2 | grep -qF 'Session start commit:' || fail "Refactor prompt omits session boundary"
   call_prompt 2 | grep -qF 'Pass start commit:' || fail "Refactor prompt omits pass boundary"
   call_prompt 2 | grep -qF 'Cite the coding standard' || fail "Refactor prompt omits coding standard rule"
+  call_prompt 2 | grep -qF 'Project instructions and requirements constrain this work' || fail "Refactor prompt does not limit project instructions"
 }
 
 test_no_refactor_keeps_normal_done_vote() {
@@ -55,6 +56,16 @@ test_dirty_tracked_tree_skips_refactor_and_preserves_vote() {
   assert_eq "$(call_count)" 1 "invocation count"
   assert_output_contains 'Refactor skipped: tracked files have staged or unstaged changes'
   assert_output_lacks 'Refactor changed tracked files'
+}
+
+test_dirty_tree_does_not_repeat_worker_or_refixer() {
+  printf 'pre-existing change\n' >> docs/requirements.md
+  scenario worker MESSAGE=CONVERGED
+  run_converge --foreground --no-coach --no-review --consensus 2 --max-iterations 1 docs/requirements.md
+  assert_status 1
+  assert_calls 1 "role=worker"
+  assert_output_contains 'reached the limit of 1 iteration without convergence'
+  assert_output_lacks 'converged after'
 }
 
 test_refactor_commit_clears_done_vote() {

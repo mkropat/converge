@@ -1183,7 +1183,7 @@ print_listing() {
 current_rows_sql() {
   local vis=$1 extra=$2 limit=${3:-}
   [[ $VIS_HEAD == all ]] || printf '%s\n' "$(vis_prelude head)"
-  printf "SELECT json_group_array(json_object('id', id, 'kind', kind, 'status', status, 'title', title, 'hidden', hidden, 'revision_key', revision_key)) FROM (%s);" \
+  printf "SELECT json_group_array(json_object('id', id, 'kind', kind, 'status', status, 'title', title, 'hidden', hidden, 'revision_key', revision_key, 'role', role, 'panel_run', panel_run)) FROM (%s);" \
     "$(current_inner_sql "$vis" "$extra" "$limit")"
 }
 
@@ -1202,11 +1202,13 @@ WHERE c.id IS NOT NULL" ;;
     hidden) inner+="
 WHERE c.id IS NULL" ;;
   esac
-  local wrapped="SELECT id, kind, status, title, hidden, revision_key
+  local wrapped="SELECT id, kind, status, title, hidden, revision_key, role, panel_run
 FROM (
   SELECT b.id AS id, b.kind AS kind,
        CASE WHEN c.id IS NOT NULL THEN c.status ELSE s.status END AS status,
        CASE WHEN c.id IS NOT NULL THEN c.title ELSE s.title END AS title,
+       CASE WHEN c.id IS NOT NULL THEN c.role ELSE s.role END AS role,
+       CASE WHEN c.id IS NOT NULL THEN c.panel_run ELSE s.panel_run END AS panel_run,
        (c.id IS NULL) AS hidden,
        COALESCE(c.id, s.id) AS revision_key
   $inner
@@ -1679,39 +1681,45 @@ verb_show() {
   local bug revs cites prelude=""
   [[ $VIS_HEAD == all ]] || prelude="$(vis_prelude head)
 "
+  # Read the header, revisions, and citations in one SQL statement. SQLite
+  # evaluates every subquery against one read snapshot (CB-CONC-6).
+  local show_data
+  show_data=$(sqlite3_run raw "${prelude}SELECT json_object(
+  'bug', json((SELECT json_group_array(json_object(
+    'id', b.id, 'kind', b.kind,
+    'status', CASE WHEN c.id IS NOT NULL THEN c.status ELSE NULL END,
+    'title', CASE WHEN c.id IS NOT NULL THEN c.title ELSE NULL END,
+    'hidden', (c.id IS NULL), 'current_revision', c.id
+  )) FROM bug b
+  LEFT JOIN revision c ON c.id = (SELECT MAX(r2.id) FROM revision r2 WHERE r2.bug_id = b.id AND ($(vis_pred head r2)))
+  WHERE b.id = $id)),
+  'revisions', json((SELECT json_group_array(json_object(
+    'id', id, 'status', status, 'title', title, 'note', note, 'role', role,
+    'iteration', iteration, 'commit_id', commit_id, 'created_at', created_at,
+    'panel_run', panel_run, 'panel_profile', panel_profile,
+    'panel_invocation', panel_invocation, 'review_pass', review_pass,
+    'visible', visible
+  )) FROM (
+    SELECT r.id, r.status, r.title, r.note, r.role, r.iteration, r.commit_id,
+           r.created_at, r.panel_run, r.panel_profile, r.panel_invocation,
+           r.review_pass, ($(vis_pred head r)) AS visible
+    FROM revision r WHERE r.bug_id = $id ORDER BY r.id ASC
+  ))),
+  'citations', json((SELECT json_group_array(json_object(
+    'revision_id', c.revision_id, 'path', c.path, 'req', c.req
+  )) FROM citation c JOIN revision r ON r.id = c.revision_id
+  WHERE r.bug_id = $id))
+);") || exit 1
+  bug=$(jq -c '.bug' <<<"$show_data")
+  revs=$(jq -c '.revisions' <<<"$show_data")
+  cites=$(jq -c '.citations' <<<"$show_data")
   # The bug's current state at the captured HEAD (CB-SHOW-5): the newest
   # visible revision, with the current revision id to mark it, and the
   # hidden flag when no revision is visible.
-  bug=$(sqlite3_run raw "${prelude}SELECT json_group_array(json_object(
-  'id', b.id, 'kind', b.kind,
-  'status', CASE WHEN c.id IS NOT NULL THEN c.status ELSE NULL END,
-  'title', CASE WHEN c.id IS NOT NULL THEN c.title ELSE NULL END,
-  'hidden', (c.id IS NULL), 'current_revision', c.id
-))
-FROM bug b
-LEFT JOIN revision c ON c.id = (SELECT MAX(r2.id) FROM revision r2 WHERE r2.bug_id = b.id AND ($(vis_pred head r2)))
-WHERE b.id = $id;") || exit 1
   # Every stored revision in order, each with its own visibility at the
   # captured HEAD (CB-SHOW-7): a revision with no commit is visible at
   # every HEAD, and a revision with a commit is visible when the set of
   # HEAD names it.
-  revs=$(sqlite3_run raw "${prelude}SELECT json_group_array(json_object(
-  'id', id, 'status', status, 'title', title, 'note', note, 'role', role,
-  'iteration', iteration, 'commit_id', commit_id, 'created_at', created_at,
-  'panel_run', panel_run, 'panel_profile', panel_profile,
-  'panel_invocation', panel_invocation, 'review_pass', review_pass,
-  'visible', visible
-)) FROM (
-SELECT r.id, r.status, r.title, r.note, r.role, r.iteration, r.commit_id, r.created_at, r.panel_run, r.panel_profile, r.panel_invocation, r.review_pass,
-       ($(vis_pred head r)) AS visible
-FROM revision r WHERE r.bug_id = $id ORDER BY r.id ASC
-);") || exit 1
-  cites=$(sqlite3_run raw "SELECT json_group_array(json_object('revision_id', revision_id, 'path', path, 'req', req))
-FROM (
-  SELECT c.revision_id, c.path, c.req
-  FROM citation c JOIN revision r ON r.id = c.revision_id
-  WHERE r.bug_id = $id ORDER BY c.id ASC
-);") || exit 1
   # Every revision carries the citations that it wrote, so a reader of the
   # JSON sees which requirement each role named, and when, the same way the
   # human form does. The current flag rides along: the reader sees which
@@ -1848,8 +1856,9 @@ verb_search() {
   rows=$(sqlite3_run raw "${prelude} SELECT json_group_array(json_object('value', json(value)))
  FROM (SELECT json_object(
    'id', t.id, 'kind', t.kind, 'status', t.status, 'title', t.title,
-   'revisions', (SELECT json_group_array(json_object(
-     'title', rv.title, 'note', rv.note,
+  'revisions', (SELECT json_group_array(json_object(
+     'id', rv.id, 'status', rv.status, 'title', rv.title, 'note', rv.note,
+     'role', rv.role, 'panel_run', rv.panel_run,
      'citations', (SELECT json_group_array(json_object(
        'path', cx.path, 'req', cx.req
      )) FROM citation cx WHERE cx.revision_id = rv.id)

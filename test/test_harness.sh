@@ -147,10 +147,11 @@ test_missing_harness_fails_at_invocation() {
   export PATH=${stripped%:}
   export CONVERGE_WORKER_PROFILE='codex:gpt-5-codex,claude:sonnet'
   scenario worker MESSAGE=CONVERGED
+  scenario refactor MESSAGE='no safe refactor'
   run_converge "${LOOP_ARGS[@]}" --consensus 1 docs/requirements.md
   assert_status 0
   assert_output_contains "worker exited with status 127"
-  assert_eq "$(models)" "sonnet" "models that reached a harness"
+  assert_eq "$(models)" "sonnet sonnet" "worker and Refactor fallback models"
 }
 
 test_claude_effort_is_passed() {

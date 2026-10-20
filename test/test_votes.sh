@@ -124,6 +124,8 @@ test_worker_environment_and_prompt() {
     fail "the worker prompt does not name the scope"
   call_prompt 1 | grep -qF "The operator resolves a spec bug." ||
     fail "the worker prompt does not name the operator as the spec bug resolver"
+  call_prompt 1 | grep -qF "Do not vote CONVERGED while an open code bug" ||
+    fail "the worker prompt forbids the blocked vote with an open bug"
 }
 
 test_session_files_record_the_run() {

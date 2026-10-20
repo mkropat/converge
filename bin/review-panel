@@ -2074,7 +2074,7 @@ run_merge_agent() {
   STREAM_LABEL=""
   STREAM_DISPLAY_LABEL=""
 
-  ((MERGE_STATUS == 124 || MERGE_STATUS == 137)) && merge_timed_out=1
+  ((merge_finished == 0 && MERGE_SECONDS >= TIMEOUT)) && merge_timed_out=1
   if ((HARD_STOP && merge_finished == 0 && MERGE_SECONDS < TIMEOUT)); then merge_timed_out=0; fi
   if ((HARD_STOP && MERGE_STATUS != 0 && merge_finished == 0 && MERGE_SECONDS >= TIMEOUT)); then merge_timed_out=1; fi
   if ((merge_timed_out)); then
@@ -2417,7 +2417,7 @@ for ((i = 0; i < RUN_STARTED; i++)); do
     fi
     rm -f "$end_file"
   fi
-  ((status == 124 || status == 137)) && invocation_timed_out=1
+  ((invocation_finished == 0 && seconds >= TIMEOUT)) && invocation_timed_out=1
   if ((HARD_STOP && invocation_finished == 0 && seconds < TIMEOUT)); then invocation_timed_out=0; fi
   if ((HARD_STOP && status != 0 && invocation_finished == 0 && seconds >= TIMEOUT)); then invocation_timed_out=1; fi
   if ((invocation_timed_out)); then
@@ -2549,8 +2549,8 @@ else
     FINDINGS_JSON=$RETAINED_JSON
   fi
 fi
-RETAINED=$(jq -n --argjson prev "$FINDINGS_JSON" --argjson cur "$RETAINED_JSON" \
-  '[$cur[] | select(.status != "wontfix") | select(.id as $i | ([$prev[].id] | index($i)))]' 2>/dev/null) || RETAINED_FAILED=1
+RETAINED=$(jq -n --argjson prev "$FINDINGS_JSON" --argjson cur "$RETAINED_JSON" --arg run "$PANEL_ID" \
+  '[$cur[] | select(.status != "wontfix" or .panel_run != $run) | select(.id as $i | ([$prev[].id] | index($i)))]' 2>/dev/null) || RETAINED_FAILED=1
 RETAINED_CODE_JSON=$(jq -c '[.[] | select(.kind == "code")]' <<<"$RETAINED" 2>/dev/null)
 RETAINED_SPEC_JSON=$(jq -c '[.[] | select(.kind == "spec")]' <<<"$RETAINED" 2>/dev/null)
 [[ $(jq -r 'type' <<<"$RETAINED_CODE_JSON" 2>/dev/null) == array ]] || RETAINED_CODE_JSON='[]'
@@ -2559,6 +2559,9 @@ RETAINED_CODE=$(jq 'length' <<<"$RETAINED_CODE_JSON" 2>/dev/null)
 RETAINED_SPEC=$(jq 'length' <<<"$RETAINED_SPEC_JSON" 2>/dev/null)
 is_number "$RETAINED_CODE" || RETAINED_CODE=0
 is_number "$RETAINED_SPEC" || RETAINED_SPEC=0
+if ((MERGE_RAN)) && ((MERGE_FAILED == 0)) && ((RETAINED_FAILED == 0)); then
+  FINDINGS_JSON=$RETAINED
+fi
 
 # The coverage recording follows a complete review and merge phase
 # (RP-COV-2). A reviewer failure, a merge failure, an operator stop, a
@@ -2654,12 +2657,12 @@ findings_block() {
         COMPLETE=0
       fi
       printf '  %s%s%s %s\n' "$YELLOW" "$G_WARN" "$OFF" \
-        "new $kind bug #$id (hidden): $shown_title"
+        "$word $kind bug #$id (hidden): $shown_title"
       note "$word bug #$id ($kind, hidden): $shown_title"
     else
       decode_tsv_field "$title"; title=$REPLY
       printf '  %s%s%s %s\n' "$YELLOW" "$G_WARN" "$OFF" \
-        "new $kind bug #$id: $title"
+        "$word $kind bug #$id: $title"
       note "$word bug #$id ($kind): $title"
     fi
   done < <(jq -r '.[] | [.id, .kind, .status, .title, (.hidden // false)] | @tsv' <<<"$json")
@@ -2671,7 +2674,7 @@ findings_block() {
 # known current outcome for every finding, including a run that remains
 # incomplete because another phase failed (RP-OUT-6).
 if ((MERGE_RAN)) && ((MERGE_FAILED == 0)) && ((RETAINED_FAILED == 0)); then
-  FINDINGS_JSON=$RETAINED_JSON
+  FINDINGS_JSON=$RETAINED
 fi
 AVAILABLE_COUNT=$(jq -r 'length' <<<"$FINDINGS_JSON" 2>/dev/null)
 is_number "$AVAILABLE_COUNT" || AVAILABLE_COUNT=0
@@ -2703,7 +2706,11 @@ elif ((COMPLETE == 0)); then
       else
         heading "$YELLOW" "findings of this panel run" "read after the merge"
       fi
-      findings_block "$FINDINGS_JSON" "known new"
+      if ((MERGE_RAN)) && ((MERGE_FAILED == 0)) && ((RETAINED_FAILED == 0)); then
+        findings_block "$RETAINED_JSON" "retained new"
+      else
+        findings_block "$FINDINGS_JSON" "known new"
+      fi
     else
       heading "$YELLOW" "available findings" "the merge outcome for these is unknown"
       findings_block "$FINDINGS_JSON" "available new"

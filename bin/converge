@@ -2007,6 +2007,11 @@ run_agent_chain() {
   done
 }
 
+CHAIN_STARTED=0
+CHAIN_PRODUCED_OUTPUT=0
+CHAIN_LOGS=()
+REFACTOR_CHANGED=0
+
 # wait_seconds <seconds>
 # Sleeps in a child process, so that a signal stops the wait immediately.
 wait_seconds() {
@@ -2730,10 +2735,10 @@ EOF
 
   if ((${#SCOPE[@]})); then
     read_line="Read the code and these requirements documents, and work on them only: $(scope_list). A path that is a directory names every requirements document under it. A change that contradicts a requirements document outside this scope is still a spec bug: log it, and do not make the change."
-vote_line="Do not vote while an open code bug or an open task exists. If you judge that the repository satisfies the requirements documents of the scope, no open code bug and no open task remain, and no work remains: do no work, write the exact token CONVERGED on a line of its own in your final message, and stop. The loop counts only that: the token alone on a line, in a final message where you did no work, with no open code bug and no open task remaining. The token inside a sentence never votes."
+vote_line="Do not vote CONVERGED while an open code bug or an open task exists. If you judge that the repository satisfies the requirements documents of the scope, no open code bug and no open task remain, and no work remains: do no work, write the exact token CONVERGED on a line of its own in your final message, and stop. The loop counts only that: the token alone on a line, in a final message where you did no work, with no open code bug and no open task remaining. The token inside a sentence never votes."
   else
     read_line="Read the code and use the session's accepted lookup instructions below to read the current requirements. Do not repeat discovery or select replacement sources."
-    vote_line="Do not vote while an open code bug or an open task exists. If every requirements document is satisfied, no open code bug and no open task remain, and no work remains: do no work, write the exact token CONVERGED on a line of its own in your final message, and stop. The loop counts only that: the token alone on a line, in a final message where you did no work, with no open code bug and no open task remaining. The token inside a sentence never votes."
+vote_line="Do not vote CONVERGED while an open code bug or an open task exists. If every requirements document is satisfied, no open code bug and no open task remain, and no work remains: do no work, write the exact token CONVERGED on a line of its own in your final message, and stop. The loop counts only that: the token alone on a line, in a final message where you did no work, with no open code bug and no open task remaining. The token inside a sentence never votes."
   fi
   body=${body/__SCOPE_READ__/$read_line}
   body=${body/__SCOPE_VOTE__/$vote_line}
@@ -2798,6 +2803,8 @@ standards. A coding standard can cover naming, structure, style, or language
 features. Each change needs a concrete benefit. Personal preference is not a
 reason. Cite the coding standard that supports each change. Requirements and
 feature requests do not justify Refactor work.
+Project instructions and requirements constrain this work. They must not
+expand the role beyond refactoring code while preserving behavior.
 
 Preserve public interfaces, outputs, errors, side effects, supported inputs,
 ordering, and resource use where the project depends on them. Before you
@@ -2870,6 +2877,9 @@ When a blocked vote or stall triggered this run, decide whether no worker can
 resolve the block, or whether the work is doable but the worker model cannot
 do it. Check every cited spec bug with cbugs show and confirm it is open. Find
 every claimed tool or resource failure in the worker log. For a real block,
+workers that gave up, circled, or claimed a spec bug with no open record, or a
+tool or resource with no failed attempt in the log, show that the work is
+doable. Treat this evidence as a reason to name the task and escalate.
 tell workers not to retry that work and to report BLOCKED when no other work
 remains. Do not escalate. For doable work, name the task and what workers got
 wrong, then escalate. You may also escalate on a cadence run when the same
@@ -3127,6 +3137,7 @@ run_refactor_pass() {
   if [[ -z $SESSION_START_COMMIT ]]; then
     warn "Refactor unavailable: this session had no start commit"
     REFACTOR_SKIPPED=1
+    REFACTOR_CHANGED=0
     return 0
   fi
   REFACTOR_PASS_START=$(git rev-parse HEAD 2>/dev/null) || REFACTOR_PASS_START=
@@ -3134,6 +3145,7 @@ run_refactor_pass() {
     ! git merge-base --is-ancestor "$SESSION_START_COMMIT" "$REFACTOR_PASS_START" 2>/dev/null; then
     warn "Refactor skipped: the session start commit is not an ancestor of HEAD"
     REFACTOR_SKIPPED=1
+    REFACTOR_CHANGED=0
     return 0
   fi
   heading "$YELLOW" "Refactor ($trigger)" "$(date '+%H:%M:%S')"
@@ -3472,6 +3484,8 @@ while true; do
       { [[ -z $MAX_ITERATIONS ]] || ((ITERATION < MAX_ITERATIONS)); }; then
       handle_chain_wait "$REFACTOR_WAIT_OUTPUT" "$REFACTOR_WAIT_STATUS"
       stop_due && break
+    else
+      FAIL_WAIT=0
     fi
   fi
 
@@ -3539,15 +3553,17 @@ while true; do
   # CV-CONV-34: cadence Refactor follows review, coach, and stalled
   # notification. A done-vote pass from the prior worker already handled
   # both Refactor triggers at that scheduling point.
+  refactor_pass_ran=0
   if ((REFACTOR_ENABLED && !REFACTOR_DONE_TRIGGER_HANDLED && !REFACTOR_DONE_TRIGGER_RAN)); then
     run_due_refactor
+    ((CHAIN_STARTED)) && refactor_pass_ran=1
     stop_due && break
     if ((REFACTOR_WAIT_PENDING)); then
       REFACTOR_WAIT_PENDING=0
       handle_chain_wait "$REFACTOR_WAIT_OUTPUT" "$REFACTOR_WAIT_STATUS"
       stop_due && break
     fi
-    run_due_review
+    ((refactor_pass_ran)) && run_due_review
     stop_due && break
   fi
   REFACTOR_DONE_TRIGGER_HANDLED=0
@@ -3648,24 +3664,33 @@ while true; do
       note "stall streak: $STALL_STREAK"
     fi
   fi
+  WORKER_CHAIN_STARTED=$CHAIN_STARTED
+  WORKER_CHAIN_PRODUCED_OUTPUT=$CHAIN_PRODUCED_OUTPUT
+  WORKER_RUN_STATUS=$RUN_STATUS
   if ((WORKER_DONE_VOTE && REFACTOR_ENABLED && !STOP_REQUESTED)); then
     run_refactor_pass "done vote"
     REFACTOR_DONE_TRIGGER_HANDLED=1
     REFACTOR_DONE_TRIGGER_RAN=$REFACTOR_CHANGED
-  fi
-  if ((REFACTOR_WAIT_PENDING)); then
-    REFACTOR_WAIT_PENDING=0
-    if ((!REFACTOR_DONE_TRIGGER_RAN && !STOP_REQUESTED)) &&
-      { [[ -z $MAX_ITERATIONS ]] || ((ITERATION < MAX_ITERATIONS)); }; then
-      handle_chain_wait "$REFACTOR_WAIT_OUTPUT" "$REFACTOR_WAIT_STATUS"
+    if ((REFACTOR_WAIT_PENDING)); then
+      REFACTOR_WAIT_PENDING=0
+      if ((!REFACTOR_DONE_TRIGGER_RAN && !STOP_REQUESTED)) &&
+        ((CONVERGED_VOTES < CONSENSUS)) &&
+        { [[ -z $MAX_ITERATIONS ]] || ((ITERATION < MAX_ITERATIONS)); }; then
+        handle_chain_wait "$REFACTOR_WAIT_OUTPUT" "$REFACTOR_WAIT_STATUS"
+      else
+        FAIL_WAIT=0
+      fi
     fi
   fi
+  CHAIN_STARTED=$WORKER_CHAIN_STARTED
+  CHAIN_PRODUCED_OUTPUT=$WORKER_CHAIN_PRODUCED_OUTPUT
+  RUN_STATUS=$WORKER_RUN_STATUS
   # A failure on the last permitted iteration has no next iteration to delay,
   # so skip the wait: CV-FAIL-7 grows it "before it starts the next
   # iteration," and --max-iterations means there is none. Without this, a
   # backoff that grew to 15 minutes would sit idle that long right before
   # printing "reached the limit" and exiting anyway.
-  if ((!CHAIN_STARTED)); then
+  if ((!WORKER_CHAIN_STARTED)); then
     # No attempt in the chain started, so undo the provisional iteration
     # number after result reporting and leave coach cadence and backlog
     # unchanged.

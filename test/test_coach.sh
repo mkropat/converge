@@ -134,6 +134,8 @@ test_blocked_vote_makes_the_coach_due() {
   assert_output_contains "coach (blocked vote)"
   call_prompt 2 | grep -qF "Spec bug #9 stops all work." ||
     fail "the coach prompt lacks the blocked message"
+  call_prompt 2 | grep -qF "no open record" || fail "the coach prompt omits missing-spec evidence"
+  call_prompt 2 | grep -qF "gave up, circled" || fail "the coach prompt omits worker behavior evidence"
 }
 
 # Chains with output, no commit, and no vote are stalled (CV-COACH-11).
