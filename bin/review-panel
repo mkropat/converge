@@ -1626,6 +1626,7 @@ EOF
   (
     trap '' INT
     exec setsid env -u CONVERGE_ITERATION -u CONVERGE_SESSION \
+      -u CONVERGE_REVIEW_PASS \
       -u CONVERGE_DAEMON -u CONVERGE_COST_LEDGER \
       CONVERGE_ROLE=discovery CONVERGE_RUN_DIR="$RUN_DIR" \
       REVIEW_PANEL_RUN="$PANEL_ID" REVIEW_PANEL_PROFILE="$profile" \
@@ -1864,6 +1865,7 @@ ARGV=(bash -c 'end="$1"; shift; setsid "$@" & child=$!; trap "kill -TERM -$child
       exec setsid env \
         -u CONVERGE_ITERATION \
         -u CONVERGE_SESSION \
+        -u CONVERGE_REVIEW_PASS \
         -u CONVERGE_DAEMON \
         -u REVIEW_PANEL_RUN \
         -u REVIEW_PANEL_PROFILE \
@@ -1892,6 +1894,7 @@ ARGV=(bash -c 'end="$1"; shift; setsid "$@" & child=$!; trap "kill -TERM -$child
       exec setsid env \
         -u CONVERGE_ITERATION \
         -u CONVERGE_SESSION \
+        -u CONVERGE_REVIEW_PASS \
         -u CONVERGE_DAEMON \
         -u REVIEW_PANEL_RUN \
         -u REVIEW_PANEL_PROFILE \
@@ -1982,6 +1985,7 @@ run_merge_agent() {
       exec setsid env \
         -u CONVERGE_ITERATION \
         -u CONVERGE_SESSION \
+        -u CONVERGE_REVIEW_PASS \
         -u CONVERGE_DAEMON \
         -u REVIEW_PANEL_RUN \
         -u REVIEW_PANEL_PROFILE \
@@ -2008,6 +2012,7 @@ run_merge_agent() {
       exec setsid env \
         -u CONVERGE_ITERATION \
         -u CONVERGE_SESSION \
+        -u CONVERGE_REVIEW_PASS \
         -u CONVERGE_DAEMON \
         -u REVIEW_PANEL_RUN \
         -u REVIEW_PANEL_PROFILE \

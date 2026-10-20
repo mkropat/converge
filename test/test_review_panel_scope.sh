@@ -23,3 +23,12 @@ test_opencode_effort_uses_one_model_option() {
   assert_eq "$(call_field 1 model)" 'provider/model' "OpenCode model"
   assert_eq "$(call_field 1 effort)" fast "OpenCode effort"
 }
+
+test_panel_does_not_pass_environment_review_pass_to_agents() {
+  export CONVERGE_REVIEW_PASS=stale-pass
+  scenario reviewer MESSAGE='nothing found'
+  (cd "$WORK" && CONVERGE_RUN_DIR="$WORK" \
+    "$REPO_ROOT/bin/review-panel" docs/requirements.md) >/dev/null 2>&1 ||
+    fail "review-panel failed"
+  assert_eq "$(call_field 1 review_pass)" unset "review pass environment"
+}

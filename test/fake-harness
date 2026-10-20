@@ -87,9 +87,9 @@ exec 8>>"$dir/calls.lock"
 flock -x 8
 touch "$dir/calls.log"
 n=$(($(wc -l <"$dir/calls.log") + 1))
-printf '%s harness=%s role=%s iteration=%s model=%s effort=%s scenario=%s\n' \
+printf '%s harness=%s role=%s iteration=%s model=%s effort=%s review_pass=%s scenario=%s\n' \
   "$n" "$harness" "$role" "$iteration" "$model" "${effort:--}" \
-  "${scenario##*/}" >>"$dir/calls.log"
+  "${CONVERGE_REVIEW_PASS-unset}" "${scenario##*/}" >>"$dir/calls.log"
 flock -u 8
 exec 8>&-
 printf '%s' "$PROMPT" >"$dir/calls/$n.prompt"
