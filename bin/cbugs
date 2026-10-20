@@ -50,8 +50,8 @@ Creates one bug with the status "open" and prints its id.
 input is a terminal, in which case add stops with an error.
 
 --kind task stops with an error when the environment holds CONVERGE_ROLE. A
-task records what a human user asked for, and an agent must never log one
-unless a human user directed it.
+task records a request from an operator. An agent must never log one unless
+an operator directed it.
 EOF
 }
 
@@ -1446,7 +1446,7 @@ verb_add() {
   [[ -n $title ]] || { echo "cbugs add: --title must not be empty" >&2; exit 2; }
   title_is_one_line add "$title"
   if [[ $kind == task && ${CONVERGE_ROLE+x} ]]; then
-    echo "cbugs add: a task records a request from a human user; refused for role '$CONVERGE_ROLE'" >&2
+    echo "cbugs add: a task records a request from an operator; refused for role '$CONVERGE_ROLE'" >&2
     exit 1
   fi
 

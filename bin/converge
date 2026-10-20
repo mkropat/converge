@@ -2554,7 +2554,7 @@ You may log a defect you find but will not fix in this iteration with
 duplicate, then `cbugs add --kind code` (defect in the code) or `--kind spec`
 (ambiguity, gap, or contradiction in the requirements), citing the
 requirement with `--cite <path>[:<id>]` or `--cite <uri>`. Never log `--kind task`; an agent
-must never log one unless a human user directed it, and the command refuses
+must never log one unless an operator directed it, and the command refuses
 one from you anyway.
 
 Rules:
@@ -2653,7 +2653,7 @@ else. Do not use it to stop the loop.
 Rules:
 
 - Write only $GUIDANCE, $JOURNAL, and, rarely, a bug with \`cbugs add\` (never
-  \`--kind task\`; only a human user directs that record, and the command
+  \`--kind task\`; only an operator directs that record, and the command
   refuses one from you anyway). Do not edit code or the requirements
   documents. Do not commit. You cannot stop the loop.
 - Correct process, not code. The reviewer looks for defects; do not report a
@@ -2700,7 +2700,7 @@ review.
 
 Rules: write bugs and nothing else. Do not fix a defect, edit code or the
 requirements documents, write the guidance file, close a bug, or stop the
-loop. Never log \`--kind task\`; only a human user directs that record, and
+loop. Never log \`--kind task\`; only an operator directs that record, and
 the command refuses one from you anyway.
 EOF
   if ((${#SCOPE[@]} == 0)) && [[ -n $LOOKUP_TEXT ]]; then
