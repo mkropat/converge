@@ -141,3 +141,11 @@ test_fixer_profile_shown_when_set() {
   assert_status 0
   assert_output_contains "fixer      claude:opus:max"
 }
+
+test_fixer_profile_list_is_not_shortened() {
+  local profiles='claude:opus:max, codex:gpt-5-codex:high, opencode:anthropic/claude-opus-4-1:high, codex:gpt-5:xhigh'
+  export CONVERGE_FIXER_PROFILE=$profiles
+  start_loop
+  assert_status 0
+  assert_output_contains "fixer      $profiles"
+}
