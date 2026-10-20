@@ -113,7 +113,7 @@ test_background_loop_reports_its_status() {
 test_second_client_attaches() {
   scenario worker SLEEP=2
   scenario worker MESSAGE=CONVERGED
-  start_converge "${LOOP_ARGS[@]}" --consensus 1 docs/requirements.md
+  start_converge "${LOOP_ARGS[@]}" --no-refactor --consensus 1 docs/requirements.md
   local first=$PID first_out=$OUT
   wait_for 10 agent_started 1 || fail "the worker did not start"
   start_converge --consensus 7

@@ -1,6 +1,6 @@
 # Requirements discovery for a session with no scope argument (CV-DISC).
 
-LOOP_ARGS=(--foreground --no-coach --no-review)
+LOOP_ARGS=(--foreground --no-coach --no-review --no-refactor)
 
 # write_lookup <text>   Scenario text for a discovery agent that writes the
 # lookup file whose path its prompt names.

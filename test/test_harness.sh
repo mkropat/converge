@@ -71,7 +71,7 @@ test_failed_attempt_before_success_keeps_the_count() {
   scenario worker MESSAGE=CONVERGED
   scenario worker MESSAGE=CONVERGED EXIT=1
   scenario worker MESSAGE=CONVERGED
-  run_converge "${LOOP_ARGS[@]}" --consensus 2 docs/requirements.md
+  run_converge "${LOOP_ARGS[@]}" --no-refactor --consensus 2 docs/requirements.md
   assert_status 0
   assert_eq "$(models)" "a b a" "worker models"
   assert_eq "$(iterations)" "1 2 2" "worker iterations"
