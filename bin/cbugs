@@ -1357,7 +1357,7 @@ CITE_REQS=()
 add_citation() {
   local value=$1 path req="" has_colon=0 test_path i
   if [[ $value =~ ^[A-Za-z][A-Za-z0-9+.-]*:// ]]; then
-    if [[ $value == *[[:space:]]* || $value == *:// ]]; then
+    if [[ $value == *[[:space:]]* || -z ${value#*://} ]]; then
       echo "cbugs: --cite '$value' must be a URI with no whitespace and content after ://" >&2
       exit 2
     fi
