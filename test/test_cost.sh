@@ -81,10 +81,6 @@ test_codex_cost_is_absent() {
 # A torn line from a killed run is dropped, not counted, and the costs of
 # later sessions still count (CV-COST-9).
 #
-# KNOWN BUG: run_agent appends its row with no check that the ledger ends in
-# a newline, so the first row of the next session glues onto the torn tail.
-# print_cost_summary then drops the glued line, and that session's cost is
-# lost from every later summary.
 test_torn_ledger_line_is_ignored() {
   local dir
   dir=$("$CONVERGE" --init-state)
@@ -95,5 +91,5 @@ test_torn_ledger_line_is_ignored() {
   session_cost_counted() {
     [[ $OUTPUT == *"Total spend                     \$1.000000  \$3.000000"* ]]
   }
-  known_failure "a row appended after a torn ledger line is lost" session_cost_counted
+  session_cost_counted || fail "the session cost was not counted after a torn ledger line"
 }

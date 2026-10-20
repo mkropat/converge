@@ -1818,8 +1818,8 @@ run_agent() {
   if ((!fifo_failed)); then
     {
       flock -x 9
-      # A hard stop can leave a partial final record. Keep it as its own
-      # invalid line so this invocation's complete record remains readable.
+      # A hard stop can leave a partial final record. Add a newline before
+      # this complete record so it remains readable after the torn record.
       if [[ -s $COST_LEDGER ]]; then
         local last_byte
         last_byte=$(tail -c 1 "$COST_LEDGER" | od -An -t x1 | tr -d ' \n')
