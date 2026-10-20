@@ -1553,6 +1553,21 @@ if ((REVIEW_ENABLED)); then
 else
   REVIEW_SUMMARY="disabled ($(join_list "${REVIEWER_PROFILES[@]}"))"
 fi
+if ((REVIEW_ENABLED)); then
+  REVIEW_PANEL_SUMMARY="$(join_list "${PANEL_PROFILES[@]}")"
+  if [[ -n $PANEL_MERGE_PROFILE ]]; then
+    REVIEW_PANEL_MERGE_SUMMARY="$PANEL_MERGE_PROFILE"
+  else
+    REVIEW_PANEL_MERGE_SUMMARY="${PANEL_PROFILES[0]} (first vote-panel reviewer)"
+  fi
+else
+  REVIEW_PANEL_SUMMARY="disabled ($(join_list "${PANEL_PROFILES[@]}"))"
+  if [[ -n $PANEL_MERGE_PROFILE ]]; then
+    REVIEW_PANEL_MERGE_SUMMARY="disabled ($PANEL_MERGE_PROFILE)"
+  else
+    REVIEW_PANEL_MERGE_SUMMARY="disabled (${PANEL_PROFILES[0]} fallback)"
+  fi
+fi
 if ((REFACTOR_ENABLED)); then
   REFACTOR_SUMMARY="enabled after $(plural "$REFACTOR_AFTER" "relevant commit")"
 else
@@ -1593,6 +1608,8 @@ PANEL_ROWS=(
 PANEL_ROWS+=(
   "worker|$WORKER_SUMMARY"
   "review|$REVIEW_SUMMARY"
+  "vote-panel reviewers|$REVIEW_PANEL_SUMMARY"
+  "vote-panel merge|$REVIEW_PANEL_MERGE_SUMMARY"
   "pending review|$UNREVIEWED_SUMMARY"
   "coach|$COACH_SUMMARY; stall after $(plural "$STALL_AFTER" "stalled chain")"
   "notification|$(if [[ -n $NOTIFY_COMMAND ]]; then echo "command set; stalled after $(plural "$STALL_NOTIFY" "stalled chain")"; else echo "off"; fi)"

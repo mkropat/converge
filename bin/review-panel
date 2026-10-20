@@ -1048,7 +1048,7 @@ render_tool() {
   arg=$(fit "$budget" "$arg")$suffix
   # Each harness names its tools in its own case.
   case ${name,,} in
-    write|edit|multiedit|notebookedit|patch)
+    write|edit|multiedit|notebookedit|patch|update|add|delete)
       gutter "$YELLOW" "$G_EDIT" "$YELLOW$name$OFF $arg" "tool" ;;
     bash)
       gutter "$CYAN" "$G_SHELL" "$arg" "tool" ;;
