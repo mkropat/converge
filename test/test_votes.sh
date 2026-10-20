@@ -121,6 +121,8 @@ test_worker_environment_and_prompt() {
   assert_eq "$(call_field 1 iteration)" 1 "iteration"
   call_prompt 1 | grep -qF "work on them only: docs/requirements.md" ||
     fail "the worker prompt does not name the scope"
+  call_prompt 1 | grep -qF "The operator resolves a spec bug." ||
+    fail "the worker prompt does not name the operator as the spec bug resolver"
 }
 
 test_session_files_record_the_run() {
