@@ -1494,30 +1494,39 @@ finish_launch_critical() {
 # record_reviewed <profile> <completed-at>   Appends one coverage record per
 # captured commit, under the profile of one successful reviewer (RP-COV-3).
 record_reviewed() {
-  local completed_at=$1 status=0 out_file="$RUNTIME_DIR/coverage-$PANEL_ID.out"
+  local completed_at=$1 status=0 out_file profile index=0 out
   shift
-  local -a profile_args=()
-  local profile
-  for profile in "$@"; do profile_args+=(--profile "$profile"); done
-  printf '%s\n' "${PENDING_HASHES[@]:-}" |
-    setsid env -u CONVERGE_ROLE -u CONVERGE_ITERATION \
-      CONVERGE_RUN_DIR="$RUN_DIR" \
-      "$BIN_DIR/cbugs" reviewed add \
-      "${profile_args[@]}" --completed-at "$completed_at" >"$out_file" &
-  REVIEWED_PID=$!
-  wait "$REVIEWED_PID" || status=$?
-  REVIEWED_PID=0
-  out=$(cat "$out_file" 2>/dev/null || true)
-  rm -f "$out_file"
-  if ((STOP_REQUESTED || HARD_STOP)); then
-    warn "coverage recording stopped after an operator stop"
-    return 1
-  fi
-  if ((status != 0)); then
-    warn "cbugs reviewed add failed; the panel recorded no coverage"
-    return 1
-  fi
-  note "coverage recorded: profiles=$* $out"
+  # cbugs accepts one profile per call (CB-RVW-19). Keep the captured
+  # commits and completion time fixed across calls so each successful
+  # reviewer profile receives the same coverage (RP-COV-3, RP-COV-4).
+  for profile in "$@"; do
+    if ((STOP_REQUESTED || HARD_STOP)); then
+      warn "coverage recording stopped after an operator stop"
+      return 1
+    fi
+    ((++index))
+    out_file="$RUNTIME_DIR/coverage-$PANEL_ID-$index.out"
+    status=0
+    printf '%s\n' "${PENDING_HASHES[@]:-}" |
+      setsid env -u CONVERGE_ROLE -u CONVERGE_ITERATION \
+        CONVERGE_RUN_DIR="$RUN_DIR" \
+        "$BIN_DIR/cbugs" reviewed add --profile "$profile" \
+        --completed-at "$completed_at" >"$out_file" &
+    REVIEWED_PID=$!
+    wait "$REVIEWED_PID" || status=$?
+    REVIEWED_PID=0
+    out=$(cat "$out_file" 2>/dev/null || true)
+    rm -f "$out_file"
+    if ((STOP_REQUESTED || HARD_STOP)); then
+      warn "coverage recording stopped after an operator stop"
+      return 1
+    fi
+    if ((status != 0)); then
+      warn "cbugs reviewed add failed for reviewer profile $profile"
+      return 1
+    fi
+    note "coverage recorded: profile=$profile $out"
+  done
   return 0
 }
 

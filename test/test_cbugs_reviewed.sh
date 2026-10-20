@@ -36,12 +36,12 @@ test_json_recorded_grows_with_each_record() {
   assert_eq "$(jq -c .recorded <<<"$OUTPUT")" 2 "recorded after two records"
 }
 
-test_reviewed_add_records_all_profiles_in_one_call() {
+test_reviewed_add_rejects_repeated_profiles() {
   cbugs_run reviewed add --profile claude:a --profile codex:b HEAD
-  assert_status 0
-  local rows
-  rows=$(sqlite3 "$(state_dir)/cbugs.db" 'SELECT profile FROM reviewed ORDER BY id;')
-  assert_eq "$rows" $'claude:a\ncodex:b' "profiles in the atomic coverage write"
+  [[ $STATUS != 0 ]] || fail "reviewed add accepted repeated --profile options"
+  assert_output_contains "--profile must be given at most once"
+  assert_eq "$(sqlite3 "$(state_dir)/cbugs.db" 'SELECT count(*) FROM reviewed;')" 0 \
+    "coverage records after a rejected call"
 }
 
 # With no pending commit, the JSON form still prints the object

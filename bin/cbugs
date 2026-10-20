@@ -152,7 +152,7 @@ EOF
 
 usage_reviewed_add() {
   cat >&2 <<'EOF'
-Usage: cbugs reviewed add [--iteration <N>] [--profile <profile>]...
+Usage: cbugs reviewed add [--iteration <N>] [--profile <profile>]
                           [--completed-at <timestamp>] [<commit>]... [--json]
 
 Records the commits that one review pass of converge covered. The commits
@@ -2072,17 +2072,18 @@ verb_reviewed_pending() {
 
 verb_reviewed_add() {
   local iter="" iter_set=0 json=0 value profile="" profile_set=0 completed_at="" completed_at_set=0
-  local -a profiles=()
   local -a commits=() named=() resolved=() absent=()
   while (($#)); do
     case $1 in
       --iteration) need_value "$1" $#; iter=$2; iter_set=1; shift 2 ;;
       --iteration=*) iter=${1#*=}; iter_set=1; shift ;;
       --profile)
-        need_value "$1" $#; profile=$2; profile_set=1; profiles+=("$2"); shift 2
+        ((!profile_set)) || { echo "cbugs reviewed add: --profile must be given at most once" >&2; exit 2; }
+        need_value "$1" $#; profile=$2; profile_set=1; shift 2
         ;;
       --profile=*)
-        profile=${1#*=}; profile_set=1; profiles+=("$profile"); shift
+        ((!profile_set)) || { echo "cbugs reviewed add: --profile must be given at most once" >&2; exit 2; }
+        profile=${1#*=}; profile_set=1; shift
         ;;
       --completed-at)
         ((! completed_at_set)) || { echo "cbugs reviewed add: --completed-at given more than once" >&2; exit 2; }
@@ -2108,12 +2109,10 @@ verb_reviewed_add() {
   # unchanged (CB-RVW-19). This runs before any commit is resolved, so an
   # invalid profile fails before any record is written.
   if ((profile_set)); then
-    for profile in ${profiles[@]+"${profiles[@]}"}; do
-      [[ $profile =~ ^(claude|opencode|codex):[^:,[:space:]]+(:[^:,[:space:]]+)?$ ]] || {
-        echo "cbugs reviewed add: --profile '$profile' must be claude:model[:effort], opencode:model[:effort], or codex:model[:effort], with nonempty fields and no colon, comma, or whitespace" >&2
-        exit 2
-      }
-    done
+    [[ $profile =~ ^(claude|opencode|codex):[^:,[:space:]]+(:[^:,[:space:]]+)?$ ]] || {
+      echo "cbugs reviewed add: --profile '$profile' must be claude:model[:effort], opencode:model[:effort], or codex:model[:effort], with nonempty fields and no colon, comma, or whitespace" >&2
+      exit 2
+    }
   fi
   # A supplied completion time must be a valid UTC date and time in
   # YYYY-MM-DDTHH:MM:SSZ form (CB-RVW-15). Re-formatting the parsed value and
@@ -2193,14 +2192,8 @@ verb_reviewed_add() {
   # this call, even when a row already names it (CB-RVW-12). A temp table
   # holds the candidates: SQLite gives a VALUES table no alias to name its
   # column with, and both statements below read the same names.
-  local values_sql="" profiles_sql="" out hash selected_profile
-  if ((profile_set)); then
-    for selected_profile in ${profiles[@]+"${profiles[@]}"}; do
-      profiles_sql+="${profiles_sql:+,}('$(sql_quote "$selected_profile")')"
-    done
-  else
-    profiles_sql="(NULL)"
-  fi
+  local values_sql="" profile_sql="NULL" out hash
+  ((profile_set)) && profile_sql="'$(sql_quote "$profile")'"
   for hash in ${resolved[@]+"${resolved[@]}"}; do
     values_sql+="${values_sql:+,}('$(sql_quote "$hash")')"
   done
@@ -2209,11 +2202,9 @@ BEGIN IMMEDIATE;
 DROP TABLE IF EXISTS temp.reviewed_add;
 CREATE TEMP TABLE reviewed_add (c TEXT NOT NULL);
 INSERT INTO reviewed_add (c) VALUES $values_sql;
-CREATE TEMP TABLE reviewed_profiles (profile TEXT);
-INSERT INTO reviewed_profiles (profile) VALUES $profiles_sql;
 SELECT EXISTS(SELECT 1 FROM reviewed WHERE commit_id = reviewed_add.c) FROM reviewed_add;
 INSERT INTO reviewed (commit_id, iteration, created_at, profile)
-SELECT c, ${iter:-NULL}, '$CREATED_AT', profile FROM reviewed_add CROSS JOIN reviewed_profiles;
+SELECT c, ${iter:-NULL}, '$CREATED_AT', $profile_sql FROM reviewed_add;
 COMMIT;
 ") || exit 1
   # Every commit answers one probe line: whether a row already named it
@@ -2227,15 +2218,12 @@ COMMIT;
     [[ ${probe_rows[$i]} == 1 ]] && ((++already))
   done
   if ((json)); then
-    local profiles_json
-    printf '%s\n' ${profiles[@]+"${profiles[@]}"} | jq -Rsc 'split("\n") | map(select(length > 0))' >"$ERRFILE"
-    profiles_json=$(<"$ERRFILE")
     jq -Mcn --argjson added "$n" --argjson already "$already" --arg created_at "$CREATED_AT" \
-      --argjson profiles "$profiles_json" --argjson has_profile "$profile_set" \
-      '{added: $added, already: $already, profile: (if $has_profile then (if ($profiles|length)==1 then $profiles[0] else $profiles end) else null end), created_at: $created_at}'
+      --arg profile "$profile" --argjson has_profile "$profile_set" \
+      '{added: $added, already: $already, profile: (if $has_profile then $profile else null end), created_at: $created_at}'
   else
     printf 'added %s, %s that a row already named, profile %s, completed at %s\n' \
-      "$(plural "$n" commit)" "$(plural "$already" commit)" "${profiles[*]:-unknown}" "$CREATED_AT"
+      "$(plural "$n" commit)" "$(plural "$already" commit)" "${profile:-unknown}" "$CREATED_AT"
   fi
 }
 
