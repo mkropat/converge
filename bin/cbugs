@@ -84,7 +84,8 @@ EOF
 usage_list() {
   cat >&2 <<'EOF'
 Usage: cbugs list [--kind code|spec|task]... [--status open|closed|wontfix]...
-                  [--visibility visible|hidden|all] [--panel-run <id>] [--json]
+                  [--visibility visible|hidden|all] [--panel-run <id>]
+                  [--review-pass <id>] [--json]
 
 Prints the bugs of the project, newest revision first. Repeat --kind or
 --status to show more than one value; several values of one option mean
@@ -101,6 +102,11 @@ revision that supplies it.
 returns every bug of that run and marks the hidden ones, so a run's own
 finding selection cannot lose a bug at a later HEAD. The run id of a
 review-panel agent is in the first revision of each bug it logged.
+
+--review-pass <id> shows only the bugs that the named cadence review pass
+of converge created. Like --panel-run, it returns every bug of that pass
+and marks the hidden ones. The pass id of a converge reviewer is in the
+first revision of each bug it logged.
 EOF
 }
 
@@ -120,13 +126,15 @@ EOF
 usage_search() {
   cat >&2 <<'EOF'
 Usage: cbugs search <text> [--kind code|spec|task]... [--status open|closed|wontfix]...
-                            [--panel-run <id>] [--json]
+                            [--panel-run <id>] [--review-pass <id>] [--json]
 
 Prints the visible bugs whose title, notes, or citations, in a visible
 revision, contain the text. The search ignores the difference between
 capital and small letters. Accepts the kind and status options and the
-same order and row form as list. It takes no --visibility option: the
-audit interface is 'cbugs list --visibility hidden|all'.
+same order and row form as list. --panel-run and --review-pass select the
+bugs that the named panel run or cadence review pass created, as in list,
+but search keeps only the visible ones. It takes no --visibility option:
+the audit interface is 'cbugs list --visibility hidden|all'.
 EOF
 }
 
@@ -243,7 +251,7 @@ for arg in "$@"; do
     --help) EARLY_HELP=1 ;;
     -h) [[ ${1:-} == search ]] || EARLY_HELP=1 ;;
     --) break ;;
-    --title|--kind|--note|--cite|--commit|--status|--iteration|--profile|--completed-at|--panel-run) skip_next=1 ;;
+    --title|--kind|--note|--cite|--commit|--status|--iteration|--profile|--completed-at|--panel-run|--review-pass) skip_next=1 ;;
   esac
 done
 
@@ -383,8 +391,8 @@ create_state_dir() {
 # any directory, including one that is not a converge project.
 #
 # Skip the token after a value-taking option, so a literal '-h' or '--help'
-# given as a --title, --note, --cite, --commit, --status, or --panel-run
-# value is not mistaken for the flag.
+# given as a --title, --note, --cite, --commit, --status, --panel-run, or
+# --review-pass value is not mistaken for the flag.
 HELP_REQUESTED=0
 skip_next=0
 for arg in "$@"; do
@@ -396,7 +404,7 @@ for arg in "$@"; do
     --help) HELP_REQUESTED=1 ;;
     -h) [[ ${1:-} == search ]] || HELP_REQUESTED=1 ;;
     --) break ;;
-    --title|--kind|--note|--cite|--commit|--status|--iteration|--profile|--completed-at|--panel-run) skip_next=1 ;;
+    --title|--kind|--note|--cite|--commit|--status|--iteration|--profile|--completed-at|--panel-run|--review-pass) skip_next=1 ;;
   esac
 done
 
@@ -552,7 +560,7 @@ like_escape() {
 # changed or removed: current state comes from the revisions through the
 # visibility rules at the repository HEAD of the call (CB-PRIN-6, CB-VIS-1
 # through CB-VIS-8), and a row of reviewed commits never changes.
-DB_VERSION=8
+DB_VERSION=9
 
 SCHEMA_SQL=$(cat <<SQL
 BEGIN IMMEDIATE;
@@ -574,7 +582,8 @@ CREATE TABLE IF NOT EXISTS revision (
   created_at    TEXT NOT NULL,
   panel_run     TEXT CHECK (panel_run <> ''),
   panel_profile TEXT CHECK (panel_profile <> ''),
-  panel_invocation TEXT CHECK (panel_invocation <> '')
+  panel_invocation TEXT CHECK (panel_invocation <> ''),
+  review_pass   TEXT CHECK (review_pass <> '')
 );
 
 CREATE INDEX IF NOT EXISTS revision_bug ON revision (bug_id, id);
@@ -718,9 +727,24 @@ COMMIT;
 SQL
 )
 
+# The migration from version 8 to version 9. It adds the review pass column to
+# the revision table, and nothing else. The value names the cadence review
+# pass of converge that wrote the revision, which the environment carries as
+# CONVERGE_REVIEW_PASS (CB-PROV-9); every existing revision keeps NULL, which
+# means the revision names no review pass (CB-MIG-17). Every bug, citation,
+# review record, and panel value is preserved unchanged. One transaction, like
+# the previous steps.
+MIGRATE_V8_9_SQL=$(cat <<SQL
+BEGIN IMMEDIATE;
+ALTER TABLE revision ADD COLUMN review_pass TEXT CHECK (review_pass <> '');
+PRAGMA user_version = 9;
+COMMIT;
+SQL
+)
+
 # init_db   Prepares the database before the command answers the call. It
-# creates the database on first use, migrates a version 2, 3, 4, 5, 6, or 7
-# database in one transaction -- one transaction for the complete path -- and stops
+# creates the database on first use, migrates a version 2, 3, 4, 5, 6, 7, or
+# 8 database in one transaction -- one transaction for the complete path -- and stops
 # with an error when the version is one that this command does not know.
 #
 # The migration steps run under a lock of their own (CB-MIG-5), not only
@@ -750,7 +774,7 @@ init_db() {
     if [[ $ver == 0 ]]; then
       sqlite3_run raw "$SCHEMA_SQL" >/dev/null || exit 1
     elif [[ $ver != "$DB_VERSION" ]]; then
-      echo "cbugs: $DB is database version $ver, but this command knows version $DB_VERSION and migrates only versions 2, 3, 4, 5, 6, and 7" >&2
+      echo "cbugs: $DB is database version $ver, but this command knows version $DB_VERSION and migrates only versions 2, 3, 4, 5, 6, 7, and 8" >&2
       exit 1
     fi
     flock -u 9
@@ -758,9 +782,9 @@ init_db() {
     return
   fi
   case $ver in
-    2|3|4|5|6|7) ;;
+    2|3|4|5|6|7|8) ;;
     *)
-      echo "cbugs: $DB is database version $ver, but this command knows version $DB_VERSION and migrates only versions 2, 3, 4, 5, 6, and 7" >&2
+      echo "cbugs: $DB is database version $ver, but this command knows version $DB_VERSION and migrates only versions 2, 3, 4, 5, 6, 7, and 8" >&2
       exit 1
       ;;
   esac
@@ -782,8 +806,9 @@ init_db() {
       5) step=$MIGRATE_V5_6_SQL ;;
       6) step=$MIGRATE_V6_7_SQL ;;
       7) step=$MIGRATE_V7_8_SQL ;;
+      8) step=$MIGRATE_V8_9_SQL ;;
       *)
-        echo "cbugs: $DB is database version $ver, but this command knows version $DB_VERSION and migrates only versions 2, 3, 4, 5, 6, and 7" >&2
+        echo "cbugs: $DB is database version $ver, but this command knows version $DB_VERSION and migrates only versions 2, 3, 4, 5, 6, 7, and 8" >&2
         exit 1
         ;;
     esac
@@ -811,6 +836,7 @@ COMMIT_SQL="NULL"
 PANEL_RUN_SQL="NULL"
 PANEL_PROFILE_SQL="NULL"
 PANEL_INVOCATION_SQL="NULL"
+REVIEW_PASS_SQL="NULL"
 CREATED_AT=""
 
 # ------------------------------------------------------- visibility at a commit
@@ -962,6 +988,12 @@ vis_pred() {
 # that sets none of them keeps the plain authorship rules: both fields stay
 # NULL, and the command refuses nothing (CB-PROV-1 through CB-PROV-5 hold
 # as before). An empty value counts as an absent one.
+#
+# The loop exports CONVERGE_REVIEW_PASS into the reviewers of one cadence
+# review pass, and into no other agent (CB-PROV-9,
+# docs/converge-requirements.md:CV-ENV-10). Each revision that such a
+# reviewer writes names the pass, so the loop can select the bugs that the
+# pass created with --review-pass. An empty value counts as an absent one.
 provenance() {
   local override=$1 explicit=${2:-0} commit=""
   if [[ ${CONVERGE_ROLE+x} ]]; then
@@ -988,6 +1020,11 @@ provenance() {
     PANEL_INVOCATION_SQL="'$(sql_quote "$REVIEW_PANEL_INVOCATION")'"
   else
     PANEL_INVOCATION_SQL="NULL"
+  fi
+  if [[ -n ${CONVERGE_REVIEW_PASS:-} ]]; then
+    REVIEW_PASS_SQL="'$(sql_quote "$CONVERGE_REVIEW_PASS")'"
+  else
+    REVIEW_PASS_SQL="NULL"
   fi
   # The write commit (CB-PROV-4 through CB-PROV-7). An explicit --commit
   # value must resolve to exactly one commit of the repository before the
@@ -1257,6 +1294,20 @@ panel_clause() {
   printf '%s' "EXISTS (SELECT 1 FROM revision fp WHERE fp.bug_id = $1 AND fp.id = (SELECT MIN(f2.id) FROM revision f2 WHERE f2.bug_id = $1) AND fp.panel_run = '$(sql_quote "$2")')"
 }
 
+# review_pass_clause <bug id expression> <review pass id>   SQL that selects
+# the bugs whose first revision the given cadence review pass wrote, in the
+# same way as panel_clause (CB-LIST-10).
+review_pass_clause() {
+  printf '%s' "EXISTS (SELECT 1 FROM revision fq WHERE fq.bug_id = $1 AND fq.id = (SELECT MIN(f3.id) FROM revision f3 WHERE f3.bug_id = $1) AND fq.review_pass = '$(sql_quote "$2")')"
+}
+
+# parse_review_pass <value>   Rejects an empty review pass id, as
+# parse_panel_run rejects an empty panel run id.
+parse_review_pass() {
+  [[ -n $1 ]] || { echo "cbugs: --review-pass must name a review pass id" >&2; return 2; }
+  printf '%s' "$1"
+}
+
 # parse_panel_run <value>   Rejects an empty panel run id. Callers propagate
 # its status because they run this function in a command substitution.
 parse_panel_run() {
@@ -1414,8 +1465,8 @@ verb_add() {
   id=$(sqlite3_run raw "
 BEGIN IMMEDIATE;
 INSERT INTO bug (kind) VALUES ('$(sql_quote "$kind")');
-INSERT INTO revision (bug_id, status, title, note, role, iteration, commit_id, created_at, panel_run, panel_profile, panel_invocation)
-VALUES (last_insert_rowid(), 'open', '$(sql_quote "$title")', '$(sql_quote "$note")', $ROLE_SQL, $ITERATION_SQL, $COMMIT_SQL, '$CREATED_AT', $PANEL_RUN_SQL, $PANEL_PROFILE_SQL, $PANEL_INVOCATION_SQL);
+INSERT INTO revision (bug_id, status, title, note, role, iteration, commit_id, created_at, panel_run, panel_profile, panel_invocation, review_pass)
+VALUES (last_insert_rowid(), 'open', '$(sql_quote "$title")', '$(sql_quote "$note")', $ROLE_SQL, $ITERATION_SQL, $COMMIT_SQL, '$CREATED_AT', $PANEL_RUN_SQL, $PANEL_PROFILE_SQL, $PANEL_INVOCATION_SQL, $REVIEW_PASS_SQL);
 $(citation_sql)
 SELECT bug_id FROM revision ORDER BY id DESC LIMIT 1;
 COMMIT;
@@ -1462,8 +1513,8 @@ write_revision() {
 "
   sqlite3_run raw "${prelude}
 BEGIN IMMEDIATE;
-INSERT INTO revision (bug_id, status, title, note, role, iteration, commit_id, created_at, panel_run, panel_profile, panel_invocation)
-VALUES ($id, $status_val, $title_val, '$(sql_quote "$note")', $ROLE_SQL, $ITERATION_SQL, $COMMIT_SQL, '$CREATED_AT', $PANEL_RUN_SQL, $PANEL_PROFILE_SQL, $PANEL_INVOCATION_SQL);
+INSERT INTO revision (bug_id, status, title, note, role, iteration, commit_id, created_at, panel_run, panel_profile, panel_invocation, review_pass)
+VALUES ($id, $status_val, $title_val, '$(sql_quote "$note")', $ROLE_SQL, $ITERATION_SQL, $COMMIT_SQL, '$CREATED_AT', $PANEL_RUN_SQL, $PANEL_PROFILE_SQL, $PANEL_INVOCATION_SQL, $REVIEW_PASS_SQL);
 $(citation_sql)
 COMMIT;
 " >/dev/null
@@ -1560,7 +1611,7 @@ WHERE b.id = $id;") || exit 1
 # --------------------------------------------------------------- list, show, search
 
 verb_list() {
-  local json=0 panel_run="" visibility=visible visibility_set=0
+  local json=0 panel_run="" review_pass="" visibility=visible visibility_set=0
   local -a kinds=() statuses=()
   while (($#)); do
     case $1 in
@@ -1576,6 +1627,8 @@ verb_list() {
         visibility=${1#*=}; visibility_set=1; shift ;;
       --panel-run) need_value "$1" $#; panel_run=$(parse_panel_run "$2") || exit $?; shift 2 ;;
       --panel-run=*) panel_run=$(parse_panel_run "${1#*=}") || exit $?; shift ;;
+      --review-pass) need_value "$1" $#; review_pass=$(parse_review_pass "$2") || exit $?; shift 2 ;;
+      --review-pass=*) review_pass=$(parse_review_pass "${1#*=}") || exit $?; shift ;;
       --json) json=1; shift ;;
       -h|--help) usage_list; exit 0 ;;
       *) echo "cbugs list: unexpected argument '$1'" >&2; exit 2 ;;
@@ -1595,10 +1648,14 @@ verb_list() {
   # marked, so the controller selects new bugs by ids and not by a
   # visible-only list. A visible-only selection would drop a panel bug at
   # a later HEAD and break RP-OUT-10.
-  [[ -n $panel_run && $visibility == visible ]] && visibility=all
+  # A --review-pass selection is the attribution list of one cadence review
+  # pass in the same way (CB-LIST-10): the loop reports every bug that the
+  # pass created, also one that a later HEAD hides.
+  [[ (-n $panel_run || -n $review_pass) && $visibility == visible ]] && visibility=all
   local rows extra
   extra=$(where_clause ${kinds[@]+"${kinds[@]}"} -- ${statuses[@]+"${statuses[@]}"})
   [[ -z $panel_run ]] || extra="${extra:+$extra AND }$(panel_clause t.id "$panel_run")"
+  [[ -z $review_pass ]] || extra="${extra:+$extra AND }$(review_pass_clause t.id "$review_pass")"
   rows=$(sqlite3_run raw "$(current_rows_sql "$visibility" "$extra")") || exit 1
   print_listing "$rows" "$json"
 }
@@ -1641,9 +1698,10 @@ WHERE b.id = $id;") || exit 1
   'id', id, 'status', status, 'title', title, 'note', note, 'role', role,
   'iteration', iteration, 'commit_id', commit_id, 'created_at', created_at,
   'panel_run', panel_run, 'panel_profile', panel_profile,
-  'panel_invocation', panel_invocation, 'visible', visible
+  'panel_invocation', panel_invocation, 'review_pass', review_pass,
+  'visible', visible
 )) FROM (
-SELECT r.id, r.status, r.title, r.note, r.role, r.iteration, r.commit_id, r.created_at, r.panel_run, r.panel_profile, r.panel_invocation,
+SELECT r.id, r.status, r.title, r.note, r.role, r.iteration, r.commit_id, r.created_at, r.panel_run, r.panel_profile, r.panel_invocation, r.review_pass,
        ($(vis_pred head r)) AS visible
 FROM revision r WHERE r.bug_id = $id ORDER BY r.id ASC
 );") || exit 1
@@ -1689,7 +1747,7 @@ FROM (
   fi
   printf '\n%srevisions%s\n' "$BOLD" "$OFF"
   local rid rstatus rtitle rnote rrole riter rcommit rcreated meta rcite revision rtag
-  local rpanelrun rpanelprofile rpanelinv rvisible
+  local rpanelrun rpanelprofile rpanelinv rreviewpass rvisible
   while IFS= read -r revision; do
     rid=$(jq -r '.id' <<<"$revision")
     rstatus=$(jq -r '.status' <<<"$revision")
@@ -1702,6 +1760,7 @@ FROM (
     rpanelrun=$(jq -r '.panel_run // "-"' <<<"$revision")
     rpanelprofile=$(jq -r '.panel_profile // "-"' <<<"$revision")
     rpanelinv=$(jq -r '.panel_invocation // "-"' <<<"$revision")
+    rreviewpass=$(jq -r '.review_pass // "-"' <<<"$revision")
     rvisible=$(jq -r '.visible' <<<"$revision")
     meta="?"
     [[ $rrole == "-" ]] || meta="$rrole"
@@ -1710,6 +1769,7 @@ FROM (
     [[ $rpanelrun == "-" ]] || meta+=" panel run $rpanelrun"
     [[ $rpanelprofile == "-" ]] || meta+=" profile $rpanelprofile"
     [[ $rpanelinv == "-" ]] || meta+=" invocation $rpanelinv"
+    [[ $rreviewpass == "-" ]] || meta+=" review pass $rreviewpass"
     # The visibility tag says why a revision does or does not give the
     # current state (CB-SHOW-7), and the current mark names the one that
     # does (CB-SHOW-5).
@@ -1737,7 +1797,7 @@ FROM (
 }
 
 verb_search() {
-  local text="" json=0 panel_run=""
+  local text="" json=0 panel_run="" review_pass=""
   local -a kinds=() statuses=()
   [[ ${1:-} == --help ]] && { usage_search; exit 0; }
   need_tool python3 python
@@ -1756,6 +1816,8 @@ verb_search() {
         exit 2 ;;
       --panel-run) need_value "$1" $#; panel_run=$(parse_panel_run "$2") || exit $?; shift 2 ;;
       --panel-run=*) panel_run=$(parse_panel_run "${1#*=}") || exit $?; shift ;;
+      --review-pass) need_value "$1" $#; review_pass=$(parse_review_pass "$2") || exit $?; shift 2 ;;
+      --review-pass=*) review_pass=$(parse_review_pass "${1#*=}") || exit $?; shift ;;
       --json) json=1; shift ;;
       -h|--help) usage_search; exit 0 ;;
       *) echo "cbugs search: unexpected argument '$1'" >&2; exit 2 ;;
@@ -1777,6 +1839,7 @@ verb_search() {
   visrv=$(vis_pred head rv)
   local where extra panel_extra=""
   [[ -z $panel_run ]] || panel_extra=" AND $(panel_clause b.id "$panel_run")"
+  [[ -z $review_pass ]] || panel_extra+=" AND $(review_pass_clause b.id "$review_pass")"
   where=$(where_clause ${kinds[@]+"${kinds[@]}"} -- ${statuses[@]+"${statuses[@]}"})
   # The filter sits inside the current-row subquery, where both revision
   # aliases have status columns. Apply status to the selected current state.

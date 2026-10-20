@@ -14,7 +14,7 @@
 -- The reviewed commits form a history of coverage. Multiple rows can name
 -- one commit, and each row is immutable.
 
-PRAGMA user_version = 8;
+PRAGMA user_version = 9;
 
 -- The identity of a defect.
 --
@@ -62,6 +62,12 @@ CREATE TABLE bug (
 -- are null for every other caller, and null values hold no meaning: the
 -- plain authorship rules of `role` and `iteration` stand beside them
 -- unchanged.
+--
+-- `review_pass` comes from `CONVERGE_REVIEW_PASS`. The loop exports this
+-- variable only to the reviewers of one cadence review pass, so every
+-- revision that such a reviewer writes names the pass. The review pass of the
+-- first revision names the pass that created the bug. The value is null for
+-- every other caller.
 CREATE TABLE revision (
   id            INTEGER PRIMARY KEY,
   bug_id        INTEGER NOT NULL REFERENCES bug (id),
@@ -74,7 +80,8 @@ CREATE TABLE revision (
   created_at    TEXT NOT NULL,
   panel_run     TEXT CHECK (panel_run <> ''),
   panel_profile TEXT CHECK (panel_profile <> ''),
-  panel_invocation TEXT CHECK (panel_invocation <> '')
+  panel_invocation TEXT CHECK (panel_invocation <> ''),
+  review_pass   TEXT CHECK (review_pass <> '')
 );
 
 CREATE INDEX revision_bug ON revision (bug_id, id);
@@ -177,6 +184,7 @@ CREATE INDEX reviewed_commit ON reviewed (commit_id);
 -- with null for each old revision. Version 6 to version 7 adds
 -- `panel_invocation`, with null for each old revision. Version 7 to version 8
 -- removes the global `bug_current` view. Current state now depends on Git HEAD
--- and is a read-time relation. All steps preserve bugs, revisions, citations,
+-- and is a read-time relation. Version 8 to version 9 adds `review_pass`, with
+-- null for each old revision. All steps preserve bugs, revisions, citations,
 -- and reviewed records except the kind rename. Unsupported versions cause an
 -- error that names both versions.

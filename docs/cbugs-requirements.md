@@ -317,11 +317,10 @@ migrates it, and the history carries over.
   change. Each existing record must have a NULL profile, which means unknown.
   Every bug, revision, and citation must remain unchanged. The transaction and
   concurrency rules of CB-MIG-4 and CB-MIG-5 apply.
-- **CB-MIG-12**: The database must record the version of its model in `PRAGMA
-  user_version`. The current version is 8.
-- **CB-MIG-13**: The command must know how to migrate versions 5, 6, and 7 to the
-  current version before it answers any verb. The supported paths from versions
-  2, 3, and 4 must remain available.
+- **CB-MIG-12**: Retired. Named model version 8 as current. **CB-MIG-18**
+  replaces it.
+- **CB-MIG-13**: Retired. Named versions 5, 6, and 7 as the newer supported
+  versions. **CB-MIG-19** replaces it.
 - **CB-MIG-14**: The migration from version 5 to version 6 must add the optional
   `panel_run` and `panel_profile` fields to revisions. It must preserve every
   stored value and give each old revision null panel fields.
@@ -333,6 +332,16 @@ migrates it, and the history carries over.
   **CB-VIS-1** through **CB-VIS-8** define. The migration must preserve every
   bug, revision, citation, reviewed record, panel value, id, commit, and time.
   The transaction and concurrency rules of **CB-MIG-4** and **CB-MIG-5** apply.
+- **CB-MIG-17**: The migration from version 8 to version 9 must add the optional
+  `review_pass` field to revisions, and nothing else. It must preserve every
+  bug, revision, citation, reviewed record, panel value, id, commit, and time.
+  Each old revision must have a null review pass. The transaction and
+  concurrency rules of **CB-MIG-4** and **CB-MIG-5** apply.
+- **CB-MIG-18**: The database must record the version of its model in `PRAGMA
+  user_version`. The current version is 9.
+- **CB-MIG-19**: The command must know how to migrate versions 5, 6, 7, and 8 to
+  the current version before it answers any verb. The supported paths from
+  versions 2, 3, and 4 must remain available.
 
 ## Bugs
 
@@ -391,6 +400,11 @@ These rules govern every revision.
 - **CB-REV-11**: The created time of the first stored revision is the time the bug
   was logged. For a visible bug, the created time of its current revision is the
   time the bug last changed at the current repository `HEAD`.
+- **CB-REV-12**: A revision must also hold an optional **review pass**: the id of
+  the cadence review pass of `converge` that wrote it. **CB-PROV-9** gives its
+  source. The value is null for a revision that no cadence reviewer wrote. A
+  revision does not copy the review pass forward. The review pass of the first
+  revision names the pass that created the bug.
 
 ## Visibility at HEAD
 
@@ -475,6 +489,12 @@ it means.
 - **CB-PROV-7**: An explicit `--commit` value must replace `HEAD` for both the
   stored provenance and the visible source revision that **CB-REV-10** uses.
 - **CB-PROV-8**: Each controller must export `CONVERGE_ROLE` for its agents. The loop must supply `CONVERGE_ITERATION` under `docs/converge-requirements.md:CV-ENV-8`. Discovery and panel agents must run with that variable unset.
+- **CB-PROV-9**: The command must read the review pass of **CB-REV-12** from the
+  environment variable `CONVERGE_REVIEW_PASS`. The loop exports it only to the
+  reviewers of a cadence review pass, under
+  `docs/converge-requirements.md:CV-ENV-10`. When the variable is absent or
+  empty, the command must record no review pass and must continue. The caller
+  gives no option for the value.
 
 ## Reviewed commits
 
@@ -741,6 +761,18 @@ next, and the help text does not tell it which bugs are open.
   title. A hidden row must show the id, kind, newest stored status, newest stored
   title, and a `hidden` mark. It must not present the stored status or title as
   current at repository `HEAD`. A listing must not show revisions.
+- **CB-LIST-10**: `cbugs list` must accept `--review-pass <id>`. It must then
+  print only the bugs whose first revision holds that review pass id. The pass
+  created these bugs. A bug that the pass only changed, as with a note, must not
+  be printed.
+  - **CB-LIST-10.1**: Without `--visibility`, the selection must include every
+    such bug, visible and hidden. A hidden row must have the `hidden` mark of
+    **CB-LIST-9**. A pass therefore cannot lose a bug that it created when
+    `HEAD` moves.
+  - **CB-LIST-10.2**: The kind and status options must further restrict the
+    selection. `--visibility hidden` must restrict it to the hidden bugs.
+  - **CB-LIST-10.3**: The command must reject an empty id under **CB-ERR-5**.
+    It must write nothing and print no row.
 
 ### show
 
@@ -763,6 +795,10 @@ next, and the help text does not tell it which bugs are open.
 - **CB-SHOW-7**: `show` must identify whether each revision is visible at the
   current repository `HEAD`. This lets a reader see why an older revision gives
   current state.
+- **CB-SHOW-8**: `show` must print the review pass of each revision that holds
+  one. In the `--json` form, each revision object must hold the field
+  `review_pass`, next to the panel fields. The value is null when the revision
+  holds no review pass.
 
 ### search
 
@@ -781,6 +817,10 @@ next, and the help text does not tell it which bugs are open.
 - **CB-SEARCH-6**: `search` must accept the kind and status options of `list`.
   It must use the visible-list order and row form. It must not accept
   `--visibility`: the audit interface is `list --visibility hidden|all`.
+- **CB-SEARCH-7**: `search` must accept `--review-pass <id>`. It must then
+  match only the bugs whose first revision holds that review pass id. The rules
+  of **CB-SEARCH-5** still apply, so a hidden bug must not match. The command
+  must reject an empty id under **CB-ERR-5**.
 
 ## Status changes
 
