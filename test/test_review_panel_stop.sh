@@ -47,6 +47,64 @@ test_panel_records_successful_profiles_in_one_coverage_write() {
   assert_eq "$rows" $'claude:a\nclaude:b' "coverage profiles"
 }
 
+# Stop or fail the second coverage write after the first write succeeds.
+prepare_panel_coverage_failure() {
+  cp "$REPO_ROOT/bin/review-panel" "$TEST_TMP/bin/review-panel"
+  export PANEL_TEST_CBUGS="$CBUGS"
+  export PANEL_TEST_COVERAGE_READY="$TEST_TMP/coverage-ready"
+  cat >"$TEST_TMP/bin/cbugs" <<'EOF'
+#!/usr/bin/env bash
+if [[ ${1-} == reviewed && ${2-} == add && ${4-} == claude:b ]]; then
+  : >"$PANEL_TEST_COVERAGE_READY"
+  if [[ ${PANEL_TEST_WAIT_FOR_STOP:-0} == 1 ]]; then
+    sleep 30
+  fi
+  exit 1
+fi
+exec "$PANEL_TEST_CBUGS" "$@"
+EOF
+  chmod +x "$TEST_TMP/bin/cbugs"
+  export CONVERGE_REVIEW_PANEL_PROFILE='claude:a,claude:b'
+  scenario_script reviewer 'MESSAGE=found; cbugs add --kind code --title "Finding" --note x >/dev/null'
+  scenario reviewer MESSAGE="nothing found"
+  scenario merge MESSAGE="no duplicates"
+}
+
+test_stop_during_coverage_does_not_report_a_coverage_failure() {
+  prepare_panel_coverage_failure
+  export PANEL_TEST_WAIT_FOR_STOP=1
+  local output_file="$TEST_TMP/coverage-panel.out" panel_pid status
+  CONVERGE_RUN_DIR="$WORK" "$TEST_TMP/bin/review-panel" docs/requirements.md >"$output_file" 2>&1 &
+  panel_pid=$!
+  wait_for 10 test -f "$PANEL_TEST_COVERAGE_READY" || fail "the second coverage write did not start"
+  kill -USR1 "$panel_pid" || fail "cannot stop the panel"
+  wait "$panel_pid"; status=$?
+  OUTPUT=$(sed -E $'s/\x1b\\[[0-9;]*m//g' "$output_file")
+  assert_eq "$status" 130 "panel status"
+  assert_output_contains "coverage recording stopped after an operator stop"
+  assert_output_contains "review stopped on the request of the operator"
+  assert_output_contains "the summary above is incomplete"
+  assert_output_contains "new code bug #1: Finding"
+  assert_output_lacks "coverage recording: cbugs reviewed add failed"
+  assert_output_lacks "recorded coverage for"
+  assert_output_lacks "Review complete"
+}
+
+test_coverage_write_failure_remains_a_failure() {
+  prepare_panel_coverage_failure
+  local output
+  output=$(CONVERGE_RUN_DIR="$WORK" "$TEST_TMP/bin/review-panel" docs/requirements.md 2>&1)
+  STATUS=$?
+  OUTPUT=$(sed -E $'s/\x1b\\[[0-9;]*m//g' <<<"$output")
+  assert_status 2
+  assert_output_contains "coverage recording: cbugs reviewed add failed"
+  assert_output_contains "review incomplete"
+  assert_output_contains "new code bug #1: Finding"
+  assert_output_lacks "review stopped"
+  assert_output_lacks "recorded coverage for"
+  assert_output_lacks "Review complete"
+}
+
 test_hard_stop_lists_merge_as_stopped() {
   local output_file="$TEST_TMP/merge-panel.out" panel_pid status i
   export CONVERGE_REVIEW_PANEL_MERGE_PROFILE='claude:merge'

@@ -2582,7 +2582,8 @@ if ((coverage_enabled)) && ((PENDING_COUNT > 0)); then
   elif ((${#successful_profiles[@]})); then
     record_reviewed "$completed_at" "${successful_profiles[@]}" || coverage_status=1
   fi
-  if ((!coverage_enabled)); then
+  # A stop can arrive during record_reviewed (RP-STOP-3).
+  if ((!coverage_enabled || STOP_REQUESTED || HARD_STOP)); then
     info "coverage recording stopped after an operator stop"
   elif ((coverage_status)); then
     COVERAGE_FAILED=1
