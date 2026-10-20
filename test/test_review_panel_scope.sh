@@ -64,3 +64,19 @@ test_codex_mcp_web_search_and_failed_file_change_are_visible_in_panel() {
   assert_output_contains 'update changed.txt'
   assert_output_contains 'file boom'
 }
+
+test_panel_excludes_dismissed_duplicates_from_retained_findings() {
+  export CONVERGE_REVIEW_PANEL_MERGE_PROFILE='claude:merge'
+  cbugs add --kind code --title 'Existing finding' --note 'existing' \
+    --cite docs/requirements.md >/dev/null || fail "could not create existing bug"
+  scenario_script reviewer 'cbugs add --kind code --title "Duplicate finding" --note "same defect" --cite docs/requirements.md >/dev/null'
+  scenario_script merge 'new_id=$(cbugs list --panel-run "$REVIEW_PANEL_RUN" --json | jq -r ".[0].id"); cbugs dismiss "$new_id" --note "duplicate of 1" >/dev/null'
+  local output
+  output=$(cd "$WORK" && CONVERGE_RUN_DIR="$WORK" \
+    "$REPO_ROOT/bin/review-panel" docs/requirements.md 2>&1)
+  STATUS=$?
+  OUTPUT=$(sed -E $'s/\\x1b\\[[0-9;]*m//g' <<<"$output")
+  assert_eq "$STATUS" 0 "panel status"
+  assert_output_lacks 'retained new code bug'
+  assert_output_contains 'No new bugs found.'
+}
