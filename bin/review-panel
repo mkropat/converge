@@ -2557,9 +2557,11 @@ else
   fi
 fi
 # A later note copies the status. Read the status change to find its author.
+# Return 0 for a merge dismissal, 1 for a valid non-duplicate, and 2 when the
+# audit could not be read or parsed.
 merge_dismissed_as_duplicate() {
   local id=$1 audit
-  audit=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" show "$id" --json 2>/dev/null) || return 1
+  audit=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" show "$id" --json 2>/dev/null) || return 2
   if jq -e --arg run "$PANEL_ID" '
     .hidden as $hidden |
     reduce (.revisions[] | select($hidden == 1 or $hidden == true or .visible == 1 or .visible == true)) as $revision
@@ -2573,15 +2575,15 @@ merge_dismissed_as_duplicate() {
     return 0
   else
     local jq_status=$?
-    ((jq_status == 1)) && return 2
-    return 1
+    ((jq_status == 1)) && return 1
+    return 2
   fi
 }
 DUPLICATE_IDS='[]'
 while IFS= read -r id; do
   merge_dismissed_as_duplicate "$id"
   duplicate_status=$?
-  if ((duplicate_status == 1)); then
+  if ((duplicate_status == 2)); then
     RETAINED_FAILED=1
     warn "cbugs show #$id failed; the panel cannot check its duplicate status"
     continue
