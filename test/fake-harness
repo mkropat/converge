@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# fake-harness: a scriptable stand-in for the claude, opencode, and codex
+# agent commands. The test library links it into a directory at the front of
+# PATH under each harness name, so converge and review-panel start it exactly
+# as they start the real harness.
+#
+# Each invocation takes one scenario file from a queue and acts it out. The
+# queue lives in $FAKE_HARNESS_DIR:
+#
+#   queue/<role>/NNN   Scenarios for one role (CONVERGE_ROLE: worker,
+#                      reviewer, coach, discovery, merge). A fixer runs with
+#                      CONVERGE_ROLE=worker, as the real loop sets it.
+#   queue/any/NNN      Scenarios for any role, used when the role has none.
+#
+# The lowest-numbered file wins. A scenario file is bash that the stub
+# sources, so it can set these variables or run any extra command:
+#
+#   EXIT=0          Exit status of the invocation.
+#   MESSAGE=...     Final message text (may hold newlines).
+#   ASSISTANT=1     Emit a real assistant message line. 0 emits none, which
+#                   converge reads as "produced no output". "synthetic" emits
+#                   the quota-rejection form that must not count as output.
+#   COST=           Harness cost total in USD. Empty: no cost reported.
+#   SLEEP=          Seconds to sleep before the final message (timeouts).
+#   COMMIT=         Make a commit in the current directory with this subject.
+#
+# The prompt is in $PROMPT while the scenario runs.
+#
+# Every invocation appends one line to $FAKE_HARNESS_DIR/calls.log:
+#
+#   <n> harness=<h> role=<r> iteration=<i> model=<m> effort=<e> scenario=<f>
+#
+# and saves its prompt to calls/<n>.prompt. An empty queue is a test bug: the
+# stub then exits 97 with no output, which converge reads as a failure.
+set -uo pipefail
+
+dir=${FAKE_HARNESS_DIR:?FAKE_HARNESS_DIR is not set}
+harness=${0##*/}
+role=${CONVERGE_ROLE-unset}
+iteration=${CONVERGE_ITERATION-unset}
+
+# Read the model, effort, and prompt from the argv that harness_argv builds.
+# The prompt is always the last argument.
+model="" effort=""
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+  case ${args[i]} in
+    --model) model=${args[i + 1]:-} ;;
+    --effort|--variant) effort=${args[i + 1]:-} ;;
+    --config)
+      if [[ ${args[i + 1]:-} == model_reasoning_effort=* ]]; then
+        effort=${args[i + 1]#model_reasoning_effort=}
+        effort=${effort//\"/}
+      fi
+      ;;
+  esac
+done
+PROMPT=${args[${#args[@]} - 1]:-}
+
+# Claim the next scenario. mv is a rename, and a rename is atomic, so two
+# concurrent invocations (a review panel) cannot claim the same file.
+mkdir -p "$dir/claimed" "$dir/calls"
+scenario=""
+for q in "$dir/queue/$role" "$dir/queue/any"; do
+  [[ -d $q ]] || continue
+  while :; do
+    next=$(find "$q" -maxdepth 1 -type f -printf '%f\n' 2>/dev/null | sort | head -n 1)
+    [[ -n $next ]] || break
+    if mv "$q/$next" "$dir/claimed/${role}-$next" 2>/dev/null; then
+      scenario="$dir/claimed/${role}-$next"
+      break 2
+    fi
+  done
+done
+
+# Number the call under a lock, so concurrent calls get distinct numbers.
+exec 8>>"$dir/calls.lock"
+flock -x 8
+n=$(($(wc -l <"$dir/calls.log" 2>/dev/null || echo 0) + 1))
+printf '%s harness=%s role=%s iteration=%s model=%s effort=%s scenario=%s\n' \
+  "$n" "$harness" "$role" "$iteration" "$model" "${effort:--}" \
+  "${scenario##*/}" >>"$dir/calls.log"
+flock -u 8
+exec 8>&-
+printf '%s' "$PROMPT" >"$dir/calls/$n.prompt"
+
+if [[ -z $scenario ]]; then
+  echo "fake-harness: no scenario queued for role '$role'" >&2
+  exit 97
+fi
+
+EXIT=0 MESSAGE="" ASSISTANT=1 COST="" SLEEP="" COMMIT=""
+# shellcheck source=/dev/null
+source "$scenario"
+
+if [[ -n $COMMIT ]]; then
+  printf '%s\n' "$COMMIT" >>"fake-harness-commits.txt"
+  git add fake-harness-commits.txt >/dev/null
+  git commit -q -m "$COMMIT" >/dev/null
+fi
+
+# The real harness streams its work before the final message, so emit the
+# assistant line first. A timeout test then sees output before the sleep.
+emit_claude_start() {
+  jq -nc '{type:"system",subtype:"init",session_id:"fakefake-0000"}'
+  case $ASSISTANT in
+    1) jq -nc --arg m "$model" '{type:"assistant",message:{model:$m,content:[{type:"text",text:"working"}]}}' ;;
+    synthetic) jq -nc '{type:"assistant",message:{model:"<synthetic>",content:[{type:"text",text:"quota"}]}}' ;;
+  esac
+}
+emit_claude_end() {
+  if [[ -n $COST ]]; then
+    jq -nc --arg r "$MESSAGE" --argjson c "$COST" \
+      '{type:"result",result:$r,num_turns:1,duration_ms:10,total_cost_usd:$c}'
+  else
+    jq -nc --arg r "$MESSAGE" '{type:"result",result:$r,num_turns:1,duration_ms:10}'
+  fi
+}
+emit_opencode() {
+  jq -nc '{type:"step_start",sessionID:"fakefake-0000"}'
+  if [[ $ASSISTANT == 1 ]]; then
+    jq -nc --arg t "$MESSAGE" '{type:"text",part:{messageID:"m1",text:$t}}'
+  fi
+  jq -nc --arg c "$COST" '{type:"step_finish",part:{reason:"stop",cost:(if $c == "" then null else ($c|tonumber) end)}}'
+}
+emit_codex() {
+  jq -nc '{type:"thread.started",thread_id:"fakefake-0000"}'
+  if [[ $ASSISTANT == 1 ]]; then
+    jq -nc --arg t "$MESSAGE" '{type:"item.completed",item:{type:"agent_message",text:$t}}'
+  fi
+  jq -nc '{type:"turn.completed"}'
+}
+
+[[ $harness == claude ]] && emit_claude_start
+if [[ -n $SLEEP ]]; then
+  # exec, so the timeout's signal reaches the process that holds the
+  # stream pipe open, and the transcript reader sees end of file at once.
+  exec sleep "$SLEEP"
+fi
+case $harness in
+  claude) emit_claude_end ;;
+  opencode) emit_opencode ;;
+  codex) emit_codex ;;
+  *) echo "fake-harness: unknown harness name '$harness'" >&2; exit 98 ;;
+esac
+exit "$EXIT"

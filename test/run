@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# run: the converge test runner.
+#
+# Usage: test/run [-v] [-k pattern] [-j jobs] [file...]
+#
+# -k runs only the tests whose file or function name holds the pattern.
+# -j sets the number of tests that run at the same time.
+# -v shows the output of every test, not only of a failed one.
+#
+# Each test file under test/ named test_*.sh defines functions named test_*.
+# The runner starts every test function in its own bash process, with
+# test/lib.sh loaded and setup_test run first, so one test cannot change the
+# state of another. A test passes when its function returns 0. A test can
+# also report "skip" (status 77) or "known failure" (status 78); see lib.sh.
+#
+# The runner needs no network and no third-party test framework: bash,
+# coreutils, git, jq, and sqlite3 are already requirements of converge.
+set -uo pipefail
+
+TEST_ROOT=$(cd "$(dirname "$0")" && pwd)
+pattern=""
+verbose=0
+jobs=$(nproc 2>/dev/null || echo 2)
+files=()
+while (($#)); do
+  case $1 in
+    -k) pattern=$2; shift 2 ;;
+    -j) jobs=$2; shift 2 ;;
+    -v) verbose=1; shift ;;
+    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
+    *) files+=("$1"); shift ;;
+  esac
+done
+((${#files[@]})) || files=("$TEST_ROOT"/test_*.sh)
+
+results=$(mktemp -d "${TMPDIR:-/tmp}/converge-test-results.XXXXXX")
+trap 'rm -rf "$results"' EXIT
+
+# run_one <file> <function>   Runs one test and records its result.
+run_one() {
+  local file=$1 fn=$2 log status
+  log="$results/${file##*/}.$fn"
+  # A hung loop must not hang the suite. The limit is wide: each test keeps
+  # its own converge runs under a shorter guard.
+  timeout -k 5 "${TEST_TIMEOUT:-180}" bash -c '
+    source "$1/lib.sh"
+    source "$2"
+    setup_test
+    trap teardown_test EXIT
+
+    "$3"
+  ' run-test "$TEST_ROOT" "$file" "$fn" >"$log.out" 2>&1
+  status=$?
+  printf '%s\n' "$status" >"$log.status"
+}
+
+tests=()
+for file in "${files[@]}"; do
+  while read -r fn; do
+    [[ -z $pattern || $fn == *$pattern* || ${file##*/} == *$pattern* ]] || continue
+    tests+=("$file:$fn")
+  done < <(bash -c 'source "$1"; declare -F | awk "{print \$3}" | grep "^test_"' list "$file")
+done
+
+# Run the tests in parallel. Every test has its own temporary world, so the
+# only shared resource is the CPU.
+running=0
+for t in "${tests[@]}"; do
+  run_one "${t%%:*}" "${t#*:}" &
+  if ((++running >= jobs)); then
+    wait -n
+    ((running--))
+  fi
+done
+wait
+
+pass=0 failed=0 skipped=0 xfail=0
+for t in "${tests[@]}"; do
+  file=${t%%:*} fn=${t#*:}
+  log="$results/${file##*/}.$fn"
+  status=$(cat "$log.status" 2>/dev/null || echo 255)
+  name="${file##*/} $fn"
+  case $status in
+    0)
+      ((++pass)); printf 'ok      %s\n' "$name"
+      ((verbose)) && sed 's/^/    | /' "$log.out"
+      ;;
+    77) ((++skipped)); printf 'skip    %s (%s)\n' "$name" "$(grep -m1 '^SKIP:' "$log.out" | cut -c7-)" ;;
+    78) ((++xfail)); printf 'xfail   %s (%s)\n' "$name" "$(grep -m1 '^XFAIL:' "$log.out" | cut -c8-)" ;;
+    *)
+      ((++failed))
+      printf 'FAIL    %s (status %s)\n' "$name" "$status"
+      sed 's/^/    | /' "$log.out" | tail -n 60
+      ;;
+  esac
+done
+printf '\n%d passed, %d failed, %d skipped, %d known failures\n' \
+  "$pass" "$failed" "$skipped" "$xfail"
+((failed == 0))
