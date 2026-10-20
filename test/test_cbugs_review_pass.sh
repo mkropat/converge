@@ -61,16 +61,26 @@ test_list_review_pass_includes_hidden_bugs() {
   git -C "$WORK" checkout -q -b side
   git -C "$WORK" commit -q --allow-empty -m "Side commit"
   add_bug "Side find" pass-1 >/dev/null
+  CONVERGE_RUN_DIR=$WORK REVIEW_PANEL_RUN=panel-1 "$CBUGS" add --kind code --title "Panel side find" --note x \
+    >/dev/null </dev/null || fail "could not add panel-run bug"
   git -C "$WORK" checkout -q main
   add_bug "Main find" pass-1 >/dev/null
   cbugs_run list --json
-  assert_eq "$(jq -c '[.[].id]' <<<"$OUTPUT")" "[2]" "visible bugs"
+  assert_eq "$(jq -c '[.[].id]' <<<"$OUTPUT")" "[3]" "visible bugs"
   cbugs_run list --review-pass pass-1 --json
   assert_status 0
   assert_eq "$(jq -c 'map({id, hidden: (.hidden == true or .hidden == 1)}) | sort_by(.id)' <<<"$OUTPUT")" \
-    '[{"id":1,"hidden":true},{"id":2,"hidden":false}]' "bugs of pass-1"
+    '[{"id":1,"hidden":true},{"id":3,"hidden":false}]' "bugs of pass-1"
   cbugs_run list --review-pass pass-1 --visibility hidden --json
   assert_eq "$(jq -c '[.[].id]' <<<"$OUTPUT")" "[1]" "hidden bugs of pass-1"
+  cbugs_run list --review-pass pass-1 --visibility visible --json
+  assert_eq "$(jq -c '[.[].id]' <<<"$OUTPUT")" "[3]" "visible bugs of pass-1"
+  cbugs_run list --panel-run panel-1 --json
+  assert_eq "$(jq -c '[.[].id]' <<<"$OUTPUT")" "[2]" "default panel-run selection"
+  cbugs_run list --panel-run panel-1 --visibility visible --json
+  assert_eq "$OUTPUT" "" "visible bugs of panel-run"
+  cbugs_run list --panel-run panel-1 --visibility hidden --json
+  assert_eq "$(jq -c '[.[].id]' <<<"$OUTPUT")" "[2]" "hidden bugs of panel-run"
   cbugs_run list --review-pass pass-1
   [[ $(grep -c hidden <<<"$OUTPUT") == 1 ]] || fail "the human form does not mark one hidden bug"
 }

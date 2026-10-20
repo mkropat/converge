@@ -1650,7 +1650,9 @@ verb_list() {
   # A --review-pass selection is the attribution list of one cadence review
   # pass in the same way (CB-LIST-10): the loop reports every bug that the
   # pass created, also one that a later HEAD hides.
-  [[ (-n $panel_run || -n $review_pass) && $visibility == visible ]] && visibility=all
+  if [[ (-n $panel_run || -n $review_pass) && $visibility_set == 0 ]]; then
+    visibility=all
+  fi
   local rows extra
   extra=$(where_clause ${kinds[@]+"${kinds[@]}"} -- ${statuses[@]+"${statuses[@]}"})
   [[ -z $panel_run ]] || extra="${extra:+$extra AND }$(panel_clause t.id "$panel_run")"
