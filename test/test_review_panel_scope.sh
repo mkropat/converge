@@ -100,7 +100,7 @@ test_merge_status_124_falls_back_but_real_timeout_stops() {
   local output
   output=$(CONVERGE_RUN_DIR="$WORK" "$REPO_ROOT/bin/review-panel" docs/requirements.md 2>&1)
   STATUS=$?
-  assert_eq "$STATUS" 0 "panel status after fallback success"
+  assert_eq "$STATUS" 1 "panel status with a retained code bug after fallback success"
   assert_eq "$(call_count 'role=merge')" 2 "merge attempt count"
 
   rm -rf "$FAKE_HARNESS_DIR/calls" "$FAKE_HARNESS_DIR/queue"

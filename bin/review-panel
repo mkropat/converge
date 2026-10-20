@@ -2556,8 +2556,29 @@ else
     FINDINGS_JSON=$RETAINED_JSON
   fi
 fi
-RETAINED=$(jq -n --argjson prev "$FINDINGS_JSON" --argjson cur "$RETAINED_JSON" \
-  '[$cur[] as $bug | select($bug.status != "wontfix" or ([ $prev[] | select(.id == $bug.id) | .status ][0] != "wontfix")) | select($bug.id as $i | ([$prev[].id] | index($i)))]' 2>/dev/null) || RETAINED_FAILED=1
+# A later note copies the status. Read the status change to find its author.
+DUPLICATE_IDS='[]'
+while IFS= read -r id; do
+  if ! audit=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" show "$id" --json 2>/dev/null); then
+    RETAINED_FAILED=1
+    warn "cbugs show #$id failed; the panel cannot check its duplicate status"
+    continue
+  fi
+  if jq -e --arg run "$PANEL_ID" '
+    .hidden as $hidden |
+    reduce (.revisions[] | select($hidden == 1 or $hidden == true or .visible == 1 or .visible == true)) as $revision
+      ({status: null, duplicate: false};
+       if .status != $revision.status then
+         .duplicate = ($revision.status == "wontfix" and $revision.role == "merge" and $revision.panel_run == $run)
+       else . end |
+       .status = $revision.status) |
+    .duplicate
+  ' <<<"$audit" >/dev/null; then
+    DUPLICATE_IDS=$(jq --argjson id "$id" '. + [$id]' <<<"$DUPLICATE_IDS")
+  fi
+done < <(jq -r '.[] | select(.status == "wontfix") | .id' <<<"$RETAINED_JSON")
+RETAINED=$(jq -n --argjson prev "$FINDINGS_JSON" --argjson cur "$RETAINED_JSON" --argjson duplicates "$DUPLICATE_IDS" \
+  '[$cur[] | select(.id as $id | ($duplicates | index($id) | not)) | select(.id as $id | ([$prev[].id] | index($id)))]' 2>/dev/null) || RETAINED_FAILED=1
 RETAINED_CODE_JSON=$(jq -c '[.[] | select(.kind == "code")]' <<<"$RETAINED" 2>/dev/null)
 RETAINED_SPEC_JSON=$(jq -c '[.[] | select(.kind == "spec")]' <<<"$RETAINED" 2>/dev/null)
 [[ $(jq -r 'type' <<<"$RETAINED_CODE_JSON" 2>/dev/null) == array ]] || RETAINED_CODE_JSON='[]'
@@ -2640,7 +2661,7 @@ fi
 ((COVERAGE_FAILED)) && FAILED_ROWS+=("coverage recording: cbugs reviewed add failed")
 ((FINDINGS_COLLECT_FAILED)) && \
   FAILED_ROWS+=("findings: cbugs list --panel-run failed before the merge")
-((RETAINED_FAILED)) && FAILED_ROWS+=("findings: cbugs list --panel-run failed after the merge")
+((RETAINED_FAILED)) && FAILED_ROWS+=("findings: retained bug selection failed after the merge")
 ((COST_RECORD_FAILED)) && FAILED_ROWS+=("cost ledger: one or more invocation records could not be written")
 
 findings_block() {
