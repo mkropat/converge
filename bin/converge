@@ -1777,6 +1777,13 @@ run_agent() {
   if ((!fifo_failed)); then
     {
       flock -x 9
+      # A hard stop can leave a partial final record. Keep it as its own
+      # invalid line so this invocation's complete record remains readable.
+      if [[ -s $COST_LEDGER ]]; then
+        local last_byte
+        last_byte=$(tail -c 1 "$COST_LEDGER" | od -An -t x1 | tr -d ' \n')
+        [[ $last_byte == 0a ]] || printf '\n' >&9
+      fi
       printf '%s\t%s\t%s\t%s\n' "$RUN_ID" "$role" "$RUN_PROFILE" "$cost_record" >>"$COST_LEDGER"
     } 9>>"$COST_LEDGER" 2>/dev/null || \
       warn "cannot append to the cost history $COST_LEDGER; this invocation's cost stays out of the summaries"
@@ -3340,11 +3347,9 @@ exit "$EXIT_STATUS"
 }
 
 if ((FOREGROUND)); then
-  # tee must outlive a Ctrl-C that reaches the terminal's foreground group:
-  # the transcript and the closing report must reach both the terminal and
-  # the session file while the loop lets the invocation finish (CV-FAIL-1).
-  # The same choice keeps tail alive in attach.
-  ( main_body ) 2>&1 | ( trap '' INT TERM; exec tee "$SESSION_OUT" )
+  # Keep the loop in this process so its signal traps also handle a signal
+  # sent to the foreground command. tee exits when the loop closes its pipe.
+  main_body > >(tee "$SESSION_OUT") 2>&1
   exit $?
 fi
 main_body
