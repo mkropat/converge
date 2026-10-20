@@ -2587,6 +2587,10 @@ RETAINED_CODE=$(jq 'length' <<<"$RETAINED_CODE_JSON" 2>/dev/null)
 RETAINED_SPEC=$(jq 'length' <<<"$RETAINED_SPEC_JSON" 2>/dev/null)
 is_number "$RETAINED_CODE" || RETAINED_CODE=0
 is_number "$RETAINED_SPEC" || RETAINED_SPEC=0
+MERGE_OUTCOME_KNOWN=0
+if ((MERGE_RAN && !MERGE_FAILED && !RETAINED_FAILED)); then
+  MERGE_OUTCOME_KNOWN=1
+fi
 # The coverage recording follows a complete review and merge phase
 # (RP-COV-2). A reviewer failure, a merge failure, an operator stop, a
 # failed capture, or a failed read-back prevents it (RP-COV-5).
@@ -2697,7 +2701,7 @@ findings_block() {
 # the read after the merge. When the merge succeeded, its read-back gives the
 # known current outcome for every finding, including a run that remains
 # incomplete because another phase failed (RP-OUT-6).
-if ((MERGE_RAN)) && ((MERGE_FAILED == 0)) && ((RETAINED_FAILED == 0)); then
+if ((MERGE_OUTCOME_KNOWN)); then
   FINDINGS_JSON=$RETAINED
 fi
 AVAILABLE_COUNT=$(jq -r 'length' <<<"$FINDINGS_JSON" 2>/dev/null)
@@ -2730,7 +2734,7 @@ elif ((COMPLETE == 0)); then
       else
         heading "$YELLOW" "findings of this panel run" "read after the merge"
       fi
-      if ((MERGE_RAN)) && ((MERGE_FAILED == 0)) && ((RETAINED_FAILED == 0)); then
+      if ((MERGE_OUTCOME_KNOWN)); then
         findings_block "$RETAINED" "retained new"
       else
         findings_block "$FINDINGS_JSON" "known new"
