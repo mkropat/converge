@@ -2525,9 +2525,9 @@ else
   fi
 fi
 
-# The retained new bugs are the findings that the merge pass did not close
-# as duplicates (RP-OUT-3). Another concurrent writer may have moved one of
-# them to a terminal status too; the current status decides.
+# The retained new bugs are the findings that the merge pass did not dismiss
+# as duplicates (RP-OUT-3). A status change by another writer does not make
+# the merge pass dismiss a bug as a duplicate.
 RETAINED_FAILED=0
 RETAINED_JSON="[]"
 if ! retained_raw=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" list --panel-run "$PANEL_ID" --json 2>/dev/null); then
@@ -2547,7 +2547,7 @@ else
   fi
 fi
 RETAINED=$(jq -n --argjson prev "$FINDINGS_JSON" --argjson cur "$RETAINED_JSON" \
-  '[$cur[] | select(.status == "open") | select(.id as $i | ([$prev[].id] | index($i)))]' 2>/dev/null) || RETAINED_FAILED=1
+  '[$cur[] | select(.status != "wontfix") | select(.id as $i | ([$prev[].id] | index($i)))]' 2>/dev/null) || RETAINED_FAILED=1
 RETAINED_CODE_JSON=$(jq -c '[.[] | select(.kind == "code")]' <<<"$RETAINED" 2>/dev/null)
 RETAINED_SPEC_JSON=$(jq -c '[.[] | select(.kind == "spec")]' <<<"$RETAINED" 2>/dev/null)
 [[ $(jq -r 'type' <<<"$RETAINED_CODE_JSON" 2>/dev/null) == array ]] || RETAINED_CODE_JSON='[]'
