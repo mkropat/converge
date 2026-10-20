@@ -2165,7 +2165,7 @@ AGENT_PATH="$BIN_DIR:$PATH"
 if ((${#SCOPE[@]})); then
   SCOPE_SUMMARY=$(scope_list)
 else
-  SCOPE_SUMMARY="empty (the run directory)"
+  SCOPE_SUMMARY="from requirements lookup instructions"
 fi
 PANEL_ROWS=(
   "run dir|$(home_relative "$RUN_DIR")"
