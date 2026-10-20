@@ -2557,14 +2557,10 @@ else
   fi
 fi
 # A later note copies the status. Read the status change to find its author.
-DUPLICATE_IDS='[]'
-while IFS= read -r id; do
-  if ! audit=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" show "$id" --json 2>/dev/null); then
-    RETAINED_FAILED=1
-    warn "cbugs show #$id failed; the panel cannot check its duplicate status"
-    continue
-  fi
-  if jq -e --arg run "$PANEL_ID" '
+merge_dismissed_as_duplicate() {
+  local id=$1 audit
+  audit=$(CONVERGE_RUN_DIR="$RUN_DIR" "$BIN_DIR/cbugs" show "$id" --json 2>/dev/null) || return 1
+  jq -e --arg run "$PANEL_ID" '
     .hidden as $hidden |
     reduce (.revisions[] | select($hidden == 1 or $hidden == true or .visible == 1 or .visible == true)) as $revision
       ({status: null, duplicate: false};
@@ -2573,7 +2569,23 @@ while IFS= read -r id; do
        else . end |
        .status = $revision.status) |
     .duplicate
-  ' <<<"$audit" >/dev/null; then
+  ' <<<"$audit" >/dev/null
+  case $? in
+    0) return 0 ;;
+    1) return 2 ;;
+    *) return 1 ;;
+  esac
+}
+DUPLICATE_IDS='[]'
+while IFS= read -r id; do
+  merge_dismissed_as_duplicate "$id"
+  duplicate_status=$?
+  if ((duplicate_status == 1)); then
+    RETAINED_FAILED=1
+    warn "cbugs show #$id failed; the panel cannot check its duplicate status"
+    continue
+  fi
+  if ((duplicate_status == 0)); then
     DUPLICATE_IDS=$(jq --argjson id "$id" '. + [$id]' <<<"$DUPLICATE_IDS")
   fi
 done < <(jq -r '.[] | select(.status == "wontfix") | .id' <<<"$RETAINED_JSON")
