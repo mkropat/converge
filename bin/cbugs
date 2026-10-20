@@ -1798,7 +1798,7 @@ FROM (
 verb_search() {
   local text="" json=0 panel_run="" review_pass=""
   local -a kinds=() statuses=()
-  [[ ${1:-} == --help ]] && { usage_search; exit 0; }
+  [[ ${1:-} == --help || ${1:-} == -h ]] && { usage_search; exit 0; }
   need_tool python3 python
   [[ $# -ge 1 ]] || { usage_search; exit 2; }
   [[ ${1:-} == -- ]] && shift
