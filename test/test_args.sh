@@ -143,6 +143,7 @@ test_zero_max_iterations_stops_without_agents() {
 test_zero_coach_first_and_timeout_accepted() {
   run_converge --foreground --consensus 0 --coach-first 0 --timeout 0 docs/requirements.md
   assert_status 0
+  assert_output_contains '2147483647s for one invocation'
 }
 
 # Bash reads 08 as bad octal and 010 as eight. The values must read as

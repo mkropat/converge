@@ -150,6 +150,9 @@ fi
 # A leading zero reads as octal in bash arithmetic. Normalize here, before
 # any use of the value, so no leading zero ever reaches an arithmetic context.
 TIMEOUT=$((10#$TIMEOUT))
+if ((TIMEOUT == 0)); then
+  TIMEOUT=2147483647
+fi
 
 # The run directory is the current working directory of the operator, as it
 # is for converge (CV-INV-9). The script never changes its own working

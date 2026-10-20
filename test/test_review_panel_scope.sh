@@ -14,6 +14,16 @@ test_unscoped_panel_reports_lookup_scope() {
   assert_output_lacks "empty (the run directory)"
 }
 
+test_zero_timeout_selects_the_finite_limit() {
+  scenario reviewer MESSAGE='nothing found'
+  local output
+  output=$(CONVERGE_RUN_DIR="$WORK" "$REPO_ROOT/bin/review-panel" --timeout 0 docs/requirements.md 2>&1)
+  STATUS=$?
+  OUTPUT=$(sed -E $'s/\\x1b\\[[0-9;]*m//g' <<<"$output")
+  assert_eq "$STATUS" 0 "panel status"
+  assert_output_contains '2147483647s for one invocation'
+}
+
 test_opencode_effort_uses_one_model_option() {
   export CONVERGE_REVIEW_PANEL_PROFILE='opencode:provider/model:fast'
   scenario reviewer MESSAGE='nothing found'

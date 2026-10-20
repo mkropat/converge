@@ -401,6 +401,9 @@ validate_start_options() {
   REVIEW_AFTER=$((10#$REVIEW_AFTER))
   REFACTOR_AFTER=$((10#$REFACTOR_AFTER))
   TIMEOUT=$((10#$TIMEOUT))
+  if ((TIMEOUT == 0)); then
+    TIMEOUT=2147483647
+  fi
   # CV-INV-3.14: a cadence pass runs at N or more unreviewed commits, so N
   # must be a positive integer; zero would fire a pass on an empty backlog.
   if ((REVIEW_AFTER == 0)); then
