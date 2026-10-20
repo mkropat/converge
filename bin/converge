@@ -79,14 +79,14 @@ sources once. Each worker and reviewer uses the accepted lookup instructions
 to read the current requirements. They do not repeat discovery or select
 replacement sources.
 
-Each role -- worker, reviewer, coach -- selects its agents through an
-environment variable: CONVERGE_WORKER_PROFILE, CONVERGE_REVIEWER_PROFILE,
-CONVERGE_COACH_PROFILE. Each holds a comma-separated list of profiles of the
-form harness:model[:effort], where harness is claude, opencode, or codex. The role
-starts each scheduled run at its next profile. A nonzero exit starts the next
-profile at once. A timeout ends the run. Each attempt uses one profile.
-Unset, the worker defaults to claude:sonnet and the reviewer and coach
-default to claude:opus. converge accepts no --harness, --model,
+Workers and Refactor use CONVERGE_WORKER_PROFILE. Reviewers use
+CONVERGE_REVIEWER_PROFILE. Coaches use CONVERGE_COACH_PROFILE. Each variable
+holds a comma-separated list of profiles in the form harness:model[:effort].
+The harness must be claude, opencode, or codex. Each role has its own profile
+rotation. A nonzero exit starts the next profile at once. A timeout ends the
+run. Each attempt uses one profile. Refactor does not advance worker rotation.
+Unset, the worker defaults to claude:sonnet. The reviewer and coach default
+to claude:opus. converge accepts no --harness, --model,
 --coach-model, or --review-model option, and no arguments after --: it
 starts the harness command directly, with no passthrough.
 
@@ -1032,6 +1032,10 @@ pick_profile() {
       PICKED_PROFILE=${COACH_PROFILES[$COACH_PROFILE_IDX]}
       COACH_PROFILE_IDX=$(( (COACH_PROFILE_IDX + 1) % ${#COACH_PROFILES[@]} ))
       ;;
+    refactor)
+      PICKED_PROFILE=${WORKER_PROFILES[$REFACTOR_PROFILE_IDX]}
+      REFACTOR_PROFILE_IDX=$(( (REFACTOR_PROFILE_IDX + 1) % ${#WORKER_PROFILES[@]} ))
+      ;;
     fixer)
       if ((FIXER_PROFILE_SET)); then
         PICKED_PROFILE=${FIXER_PROFILES[$FIXER_PROFILE_IDX]}
@@ -1433,6 +1437,7 @@ parse_profile_list coach "$COACH_PROFILE_RAW" COACH_PROFILES
 WORKER_PROFILE_IDX=0
 REVIEWER_PROFILE_IDX=0
 COACH_PROFILE_IDX=0
+REFACTOR_PROFILE_IDX=0
 FIXER_PROFILE_IDX=0
 FIXER_PROFILE_SET=0
 if [[ -n ${CONVERGE_FIXER_PROFILE+x} ]]; then
@@ -1498,6 +1503,7 @@ fi
 # discovery, review, or any other agent can change HEAD.
 SESSION_START_COMMIT=$(git rev-parse HEAD 2>/dev/null) || SESSION_START_COMMIT=
 REFACTOR_COUNT_BASE=$SESSION_START_COMMIT
+REFACTOR_EXCLUDED_COMMITS=()
 # A --foreground run is a session too, with no separate client process. It
 # must still record its process id, become the current session, and report
 # its exit status, so that the next run's "last run" report is accurate. In
@@ -1685,6 +1691,7 @@ run_agent() {
     coach) glyph=$G_COACH ;;
     reviewer) glyph=$G_REVIEW ;;
     discovery) glyph=$G_REVIEW ;;
+    refactor) glyph=$G_EDIT ;;
   esac
   # CV-HARN-14: each role steps through its own list in round-robin order,
   # one entry per started invocation. CV-HARN-15: the invocation line and
@@ -1714,6 +1721,12 @@ run_agent() {
     '{type:"converge_event",event:"invocation",profile:$profile,harness:$harness,
       model:$model,effort:(if $effort == "" then null else $effort end)}' \
     >"$LOG_FILE"
+  if [[ $role == refactor ]]; then
+    jq -nc --arg session_start "$SESSION_START_COMMIT" \
+      --arg pass_start "$REFACTOR_PASS_START" \
+      '{type:"converge_event",event:"refactor_range",session_start:$session_start,pass_start:$pass_start}' \
+      >>"$LOG_FILE"
+  fi
 
   # The message stream does not hold the prompt. Keep it, so that a later
   # reader knows what this invocation was told, and which guidance was in
@@ -1872,6 +1885,7 @@ run_agent() {
     # consumes no round-robin turn. pick_profile already advanced once.
     case $role in
       worker) WORKER_PROFILE_IDX=$(( (WORKER_PROFILE_IDX + ${#WORKER_PROFILES[@]} - 1) % ${#WORKER_PROFILES[@]} )) ;;
+      refactor) REFACTOR_PROFILE_IDX=$(( (REFACTOR_PROFILE_IDX + ${#WORKER_PROFILES[@]} - 1) % ${#WORKER_PROFILES[@]} )) ;;
       reviewer) REVIEWER_PROFILE_IDX=$(( (REVIEWER_PROFILE_IDX + ${#REVIEWER_PROFILES[@]} - 1) % ${#REVIEWER_PROFILES[@]} )) ;;
       fixer) if ((FIXER_PROFILE_SET)); then FIXER_PROFILE_IDX=$(( (FIXER_PROFILE_IDX + ${#FIXER_PROFILES[@]} - 1) % ${#FIXER_PROFILES[@]} )); else WORKER_PROFILE_IDX=$(( (WORKER_PROFILE_IDX + ${#WORKER_PROFILES[@]} - 1) % ${#WORKER_PROFILES[@]} )); fi ;;
       coach) COACH_PROFILE_IDX=$(( (COACH_PROFILE_IDX + ${#COACH_PROFILES[@]} - 1) % ${#COACH_PROFILES[@]} )) ;;
@@ -1921,9 +1935,10 @@ run_discovery_chain() {
 # Sets CHAIN_LOGS to the logs of all attempts that started, and CHAIN_STARTED
 # when at least one attempt in the chain started.
 run_agent_chain() {
-  local role=$1 prompt=$2 attempts i
+  local role=$1 prompt=$2 attempts i attempt_head attempt_after dirty_status
   case $role in
     worker) attempts=${#WORKER_PROFILES[@]} ;;
+    refactor) attempts=${#WORKER_PROFILES[@]} ;;
     fixer) if ((FIXER_PROFILE_SET)); then attempts=${#FIXER_PROFILES[@]}; else attempts=${#WORKER_PROFILES[@]}; fi ;;
     reviewer) attempts=${#REVIEWER_PROFILES[@]} ;;
     coach) attempts=${#COACH_PROFILES[@]} ;;
@@ -1932,12 +1947,53 @@ run_agent_chain() {
   CHAIN_PRODUCED_OUTPUT=0
   CHAIN_STARTED=0
   CHAIN_LOGS=()
+  if [[ $role == refactor ]]; then
+    REFACTOR_SKIPPED=0
+    REFACTOR_CHANGED=0
+  fi
   for ((i = 0; i < attempts; i++)); do
     ((STOP_REQUESTED)) && return 0
+    if [[ $role == refactor ]]; then
+      if [[ -z $SESSION_START_COMMIT || -z $REFACTOR_PASS_START ]]; then
+        REFACTOR_SKIPPED=1
+        warn "Refactor skipped: the session or pass start commit is unavailable"
+        return 0
+      fi
+      attempt_head=$(git rev-parse HEAD 2>/dev/null) || attempt_head=
+      if [[ -z $attempt_head ]] || ! git merge-base --is-ancestor "$SESSION_START_COMMIT" "$REFACTOR_PASS_START" 2>/dev/null; then
+        REFACTOR_SKIPPED=1
+        warn "Refactor skipped: the session start commit is not an ancestor of the pass start commit"
+        return 0
+      fi
+      git diff --quiet "$attempt_head" -- 2>/dev/null
+      dirty_status=$?
+      if ((dirty_status == 1)); then
+        REFACTOR_SKIPPED=1
+        warn "Refactor skipped: tracked files have staged or unstaged changes"
+        return 0
+      elif ((dirty_status != 0)); then
+        REFACTOR_SKIPPED=1
+        warn "Refactor skipped: the tracked-file check failed"
+        return 0
+      fi
+    fi
     run_agent "$role" "$prompt"
     if ((!INVOCATION_SKIPPED)); then
       CHAIN_STARTED=1
       CHAIN_LOGS+=("$LOG_FILE")
+    fi
+    if [[ $role == refactor ]] && ((!INVOCATION_SKIPPED)); then
+      attempt_after=$(git rev-parse HEAD 2>/dev/null) || attempt_after=
+      report_changes "$attempt_head"
+      note_refactor_commits "$attempt_head" "$attempt_after"
+      if [[ -n $attempt_after && $attempt_after != "$attempt_head" ]]; then
+        REFACTOR_CHANGED=1
+      else
+        git diff --quiet "$attempt_head" -- 2>/dev/null
+        dirty_status=$?
+        ((dirty_status == 1)) && REFACTOR_CHANGED=1
+        ((dirty_status > 1)) && REFACTOR_CHANGED=1
+      fi
     fi
     if ((!INVOCATION_SKIPPED)) && produced_output "$LOG_FILE" "$INVOCATION_HARNESS"; then
       CHAIN_PRODUCED_OUTPUT=1
@@ -2073,6 +2129,54 @@ new_relevant_commit() {
   else
     git rev-list --full-history --count "$before..$after" -- ":(top,literal)$RUN_SUBPATH" 2>/dev/null | grep -q '[1-9]'
   fi
+}
+
+# refactor_commit_ids <base> <head>
+# Lists relevant commits after the base. The working directory is the run
+# directory, so the path filter matches the same run scope as review.
+refactor_commit_ids() {
+  local base=$1 head=$2
+  if [[ -z $RUN_SUBPATH ]]; then
+    git rev-list --full-history "$base..$head" 2>/dev/null
+  else
+    git rev-list --full-history "$base..$head" -- ":(top,literal)$RUN_SUBPATH" 2>/dev/null
+  fi
+}
+
+# refactor_count   Prints relevant commits since the last successful pass,
+# excluding commits observed during Refactor attempts. Return nonzero when
+# the session range is unavailable or invalid.
+refactor_count() {
+  local head ids id excluded seen count=0
+  [[ -n $SESSION_START_COMMIT && -n $REFACTOR_COUNT_BASE ]] || return 1
+  head=$(git rev-parse HEAD 2>/dev/null) || return 1
+  git merge-base --is-ancestor "$SESSION_START_COMMIT" "$head" 2>/dev/null || return 1
+  git merge-base --is-ancestor "$REFACTOR_COUNT_BASE" "$head" 2>/dev/null || return 1
+  ids=$(refactor_commit_ids "$REFACTOR_COUNT_BASE" "$head") || return 1
+  while IFS= read -r id; do
+    [[ -n $id ]] || continue
+    excluded=0
+    for seen in ${REFACTOR_EXCLUDED_COMMITS[@]+"${REFACTOR_EXCLUDED_COMMITS[@]}"}; do
+      [[ $id == "$seen" ]] && { excluded=1; break; }
+    done
+    ((excluded)) || ((++count))
+  done <<<"$ids"
+  printf '%s' "$count"
+}
+
+# note_refactor_commits <before> <after>
+# Keeps Refactor commits out of later cadence counts.
+note_refactor_commits() {
+  local before=$1 after=$2 id seen found
+  [[ -n $before && -n $after && $before != "$after" ]] || return 0
+  while IFS= read -r id; do
+    [[ -n $id ]] || continue
+    found=0
+    for seen in ${REFACTOR_EXCLUDED_COMMITS[@]+"${REFACTOR_EXCLUDED_COMMITS[@]}"}; do
+      [[ $id == "$seen" ]] && { found=1; break; }
+    done
+    ((found)) || REFACTOR_EXCLUDED_COMMITS+=("$id")
+  done < <(git rev-list "$before..$after" 2>/dev/null)
 }
 
 # --------------------------------------------------------------- transcript
@@ -2653,6 +2757,76 @@ vote_line="Do not vote while an open code bug or an open task exists. If you jud
   fi
 }
 
+# refactor_prompt <pass start commit>
+# Supplies the whole session difference and the current pass boundary.
+refactor_prompt() {
+  local pass_start=$1
+  cat <<EOF
+You are the Refactor agent for one session of converge.
+
+Session start commit: $SESSION_START_COMMIT
+Pass start commit: $pass_start
+Run directory: $RUN_DIR
+
+Read the commit list from the session start commit through the pass start
+commit. Read the intent of each relevant commit, including earlier Refactor
+commits. Select code that this session added or changed. Untracked files are
+not part of this range. Change surrounding code only when your selected
+refactor needs it. Leave unrelated code unchanged, including code in the same
+file. Do not add unrelated files to a commit.
+
+Read the applicable project instructions and the current requirements. The
+scope is: ${SCOPE_SUMMARY:-empty (the run directory)}
+EOF
+  if ((${#SCOPE[@]})); then
+    printf 'Read these requirements paths only: %s\n' "$(scope_list)"
+  elif [[ -n $LOOKUP_TEXT ]]; then
+    printf '\nUse the session lookup instructions below to read the current requirements. Do not repeat discovery or select replacement sources.\n\n%s\n' "$LOOKUP_TEXT"
+  else
+    printf '\nNo accepted requirements sources are available. Report this and make no changes.\n'
+  fi
+  cat <<'EOF'
+
+Make one small, useful refactor that improves code structure and preserves
+behavior. You may choose to make no change when no safe refactor has a clear
+benefit. Look for code this session made unnecessary, structure or names that
+make changed code hard to understand, and violations of documented coding
+standards. A coding standard can cover naming, structure, style, or language
+features. Each change needs a concrete benefit. Personal preference is not a
+reason. Cite the coding standard that supports each change. Requirements and
+feature requests do not justify Refactor work.
+
+Preserve public interfaces, outputs, errors, side effects, supported inputs,
+ordering, and resource use where the project depends on them. Before you
+remove code, check external callers, public entry points, configuration
+references, and runtime-selected calls. Leave code unchanged when safe removal
+is not clear.
+
+Do not add features, change behavior to fix a defect, upgrade dependencies, or
+make unrelated formatting changes. Do not edit requirements, project
+instructions, or coach guidance. Do not create plans or task lists. Do not
+reverse an earlier refactor without new evidence. Explain that evidence. Do
+not make a commit only to show progress.
+
+Use existing tests to check that behavior stays the same. Add or change tests
+only when needed to check affected behavior. Do not weaken checks or change
+expected results to accept a behavior change. Run the required project checks
+and the checks needed for your change. Inspect the final diff. Remove changes
+that are unnecessary or outside this scope. Commit logical changes with a
+clear message.
+
+Leave defects that need a behavior change for a worker. Before you record a
+defect, search cbugs for duplicates. Cite the original requirements source.
+Do not create tasks or record review coverage.
+
+Your final message must state the change, its concrete benefit, the session
+changes that justify it, each needed change outside the session difference,
+the check results, and the commit identifiers. If you make no change, say why.
+If a required source or the commit range is unavailable, report the problem
+and make no changes.
+EOF
+}
+
 coach_prompt() {
   local logs=$1 trigger=${2:-cadence} blocked_message=${3:-} stall_count=${4:-0}
   cat <<EOF
@@ -2940,6 +3114,65 @@ run_due_review() {
   fi
 }
 
+# run_refactor_pass <trigger>
+# Runs one Refactor chain with a fixed pass boundary. The chain does not
+# change worker, coach, vote, or stall scheduling state.
+run_refactor_pass() {
+  local trigger=$1
+  ((REFACTOR_ENABLED)) || return 0
+  ((STOP_REQUESTED)) && return 0
+  if [[ -z $SESSION_START_COMMIT ]]; then
+    warn "Refactor unavailable: this session had no start commit"
+    REFACTOR_SKIPPED=1
+    return 0
+  fi
+  REFACTOR_PASS_START=$(git rev-parse HEAD 2>/dev/null) || REFACTOR_PASS_START=
+  if [[ -z $REFACTOR_PASS_START ]] ||
+    ! git merge-base --is-ancestor "$SESSION_START_COMMIT" "$REFACTOR_PASS_START" 2>/dev/null; then
+    warn "Refactor skipped: the session start commit is not an ancestor of HEAD"
+    REFACTOR_SKIPPED=1
+    return 0
+  fi
+  heading "$YELLOW" "Refactor ($trigger)" "$(date '+%H:%M:%S')"
+  note "Refactor pass: trigger=$trigger session-start=$SESSION_START_COMMIT pass-start=$REFACTOR_PASS_START"
+  run_agent_chain refactor "$(refactor_prompt "$REFACTOR_PASS_START")"
+  if ((CHAIN_STARTED && RUN_STATUS != 0 && !CHAIN_PRODUCED_OUTPUT && !STOP_REQUESTED)); then
+    REFACTOR_WAIT_PENDING=1
+    REFACTOR_WAIT_OUTPUT=$CHAIN_PRODUCED_OUTPUT
+    REFACTOR_WAIT_STATUS=$RUN_STATUS
+  fi
+  if ((REFACTOR_CHANGED)); then
+    CONVERGED_VOTES=0
+    BLOCKED_VOTES=0
+    PANEL_DUE=0
+    warn "Refactor changed tracked files; done and blocked votes reset"
+    note "Refactor tracked changes: vote counts reset and pending vote panel cancelled"
+  fi
+  if ((CHAIN_STARTED && RUN_STATUS == 0 && !REFACTOR_SKIPPED)); then
+    REFACTOR_COUNT_BASE=$REFACTOR_PASS_START
+    good "Refactor pass completed; cadence count reset"
+    note "Refactor pass completed at $REFACTOR_PASS_START; cadence count reset"
+    REFACTOR_PASSED=1
+  else
+    REFACTOR_PASSED=0
+    note "Refactor pass did not complete; cadence work remains due"
+  fi
+}
+
+# run_due_refactor   Runs at most one cadence pass when relevant commits meet
+# the threshold. An unavailable range is reported and never gets a new base.
+run_due_refactor() {
+  ((REFACTOR_ENABLED)) || return 0
+  ((STOP_REQUESTED)) && return 0
+  local count
+  if ! count=$(refactor_count); then
+    warn "Refactor count unavailable: the session commit range cannot be established"
+    return 0
+  fi
+  note "Refactor cadence count: $count of $REFACTOR_AFTER relevant commits"
+  ((count >= REFACTOR_AFTER)) && run_refactor_pass cadence
+}
+
 # run_vote_panel   Runs one vote panel when the consecutive vote count
 # changed from zero to one (CV-CONV-23). The panel reviews the whole live
 # working tree of the run directory in parallel and merges duplicate
@@ -3077,8 +3310,8 @@ print_cost_summary() {
     }
     END {
       OFS = "\t"
-      split("worker reviewer coach discovery fixer", RL, " ")
-      for (i = 1; i <= 5; i++) {
+      split("worker reviewer coach discovery fixer refactor", RL, " ")
+      for (i = 1; i <= 6; i++) {
         rr = RL[i]
         print "ROLE", rr, srn[rr] + 0, \
           (srn[rr] > 0 ? sprintf("%.6f", srp[rr] / srn[rr]) : "0"), \
@@ -3107,7 +3340,7 @@ print_cost_summary() {
   labels+=("Total spend")
   left+=("$(cell "$stn" "$stv")")
   right+=("$(cell "$ctn" "$ctv")")
-  for role in worker reviewer coach fixer; do
+  for role in worker reviewer coach fixer refactor; do
     labels+=("Average per $role invocation")
     left+=("$(cell "${srps[$role]:-0}" "${srp[$role]:-0}")")
     right+=("$(cell "${crps[$role]:-0}" "${crp[$role]:-0}")")
@@ -3150,6 +3383,11 @@ LAST_BLOCKED_MESSAGE=""
 FIXER_PENDING=0
 FIXER_ITERATION=0
 PANEL_DUE=0
+REFACTOR_DONE_TRIGGER_HANDLED=0
+REFACTOR_DONE_TRIGGER_RAN=0
+REFACTOR_WAIT_PENDING=0
+REFACTOR_WAIT_OUTPUT=0
+REFACTOR_WAIT_STATUS=0
 PANEL_PID=""
 FAIL_WAIT=0
 PENDING_LOGS=()
@@ -3214,11 +3452,25 @@ fi
 if ((DISCOVERY_FAILED == 0)); then
 while true; do
   # Step 3 (CV-CONV-24): stop on an operator signal otherwise, then run the
-  # vote panel if the count changed from zero to one. The panel runs before
+  # vote panel if the count changed from zero to one. A done-vote Refactor
+  # already ran at the prior worker boundary. The panel runs before
   # the convergence or the limit stop of step 4, so a first vote on the
   # last permitted worker iteration still gets its panel.
-  run_vote_panel
+  if ((!REFACTOR_DONE_TRIGGER_RAN)); then
+    run_vote_panel
+  else
+    REFACTOR_DONE_TRIGGER_RAN=0
+  fi
   stop_due && break
+  if ((REFACTOR_WAIT_PENDING)); then
+    REFACTOR_WAIT_PENDING=0
+    if ((!REFACTOR_DONE_TRIGGER_RAN)) &&
+      ((!CONVERGED_VOTES || CONVERGED_VOTES < CONSENSUS)) &&
+      { [[ -z $MAX_ITERATIONS ]] || ((ITERATION < MAX_ITERATIONS)); }; then
+      handle_chain_wait "$REFACTOR_WAIT_OUTPUT" "$REFACTOR_WAIT_STATUS"
+      stop_due && break
+    fi
+  fi
 
   # Step 5: a due cadence pass, then a due coach, then the next worker.
   run_due_review
@@ -3280,6 +3532,22 @@ while true; do
     # Stop here so the signal cannot schedule a worker that never starts.
     ((STOP_REQUESTED)) && break
   fi
+
+  # CV-CONV-34: cadence Refactor follows review, coach, and stalled
+  # notification. A done-vote pass from the prior worker already handled
+  # both Refactor triggers at that scheduling point.
+  if ((REFACTOR_ENABLED && !REFACTOR_DONE_TRIGGER_HANDLED && !REFACTOR_DONE_TRIGGER_RAN)); then
+    run_due_refactor
+    stop_due && break
+    if ((REFACTOR_WAIT_PENDING)); then
+      REFACTOR_WAIT_PENDING=0
+      handle_chain_wait "$REFACTOR_WAIT_OUTPUT" "$REFACTOR_WAIT_STATUS"
+      stop_due && break
+    fi
+    run_due_review
+    stop_due && break
+  fi
+  REFACTOR_DONE_TRIGGER_HANDLED=0
 
   ((++ITERATION))
   FIXER_ITERATION=$FIXER_PENDING
@@ -3375,6 +3643,18 @@ while true; do
       if ((FIXER_ITERATION)); then STALL_FIXER_RAN=1; fi
       note "stalled chains: $STALL_COUNT"
       note "stall streak: $STALL_STREAK"
+    fi
+  fi
+  if ((WORKER_DONE_VOTE && REFACTOR_ENABLED && !STOP_REQUESTED)); then
+    run_refactor_pass "done vote"
+    REFACTOR_DONE_TRIGGER_HANDLED=1
+    REFACTOR_DONE_TRIGGER_RAN=$REFACTOR_CHANGED
+  fi
+  if ((REFACTOR_WAIT_PENDING)); then
+    REFACTOR_WAIT_PENDING=0
+    if ((!REFACTOR_DONE_TRIGGER_RAN && !STOP_REQUESTED)) &&
+      { [[ -z $MAX_ITERATIONS ]] || ((ITERATION < MAX_ITERATIONS)); }; then
+      handle_chain_wait "$REFACTOR_WAIT_OUTPUT" "$REFACTOR_WAIT_STATUS"
     fi
   fi
   # A failure on the last permitted iteration has no next iteration to delay,

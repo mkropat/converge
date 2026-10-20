@@ -97,7 +97,7 @@ test_bugs_logged_by_a_pass_are_reported() {
 test_first_done_vote_runs_a_vote_panel() {
   scenario worker MESSAGE=CONVERGED
   scenario reviewer MESSAGE="nothing found" COST=0.5
-  run_converge --foreground --no-coach --review-after 100 --consensus 1 docs/requirements.md
+  run_converge --foreground --no-coach --no-refactor --review-after 100 --consensus 1 docs/requirements.md
   assert_status 0
   assert_eq "$(roles)" "worker@1 reviewer@unset" "call order"
   assert_output_contains "the vote panel read the live working tree and reported no error"
@@ -113,7 +113,7 @@ test_one_panel_per_vote_streak() {
   scenario worker MESSAGE=CONVERGED
   scenario reviewer MESSAGE="nothing found"
   scenario worker MESSAGE=CONVERGED
-  run_converge --foreground --no-coach --review-after 100 --consensus 2 docs/requirements.md
+  run_converge --foreground --no-coach --no-refactor --review-after 100 --consensus 2 docs/requirements.md
   assert_status 0
   assert_eq "$(roles)" "worker@1 reviewer@unset worker@2" "call order"
 }
@@ -124,7 +124,7 @@ test_panel_findings_do_not_block_convergence() {
   scenario worker MESSAGE=CONVERGED
   scenario_script reviewer 'MESSAGE=found; cbugs add --kind code --title "Late defect" --cite docs/requirements.md:T-1 >/dev/null'
   scenario merge MESSAGE="no duplicates"
-  run_converge --foreground --no-coach --review-after 100 --consensus 1 docs/requirements.md
+  run_converge --foreground --no-coach --no-refactor --review-after 100 --consensus 1 docs/requirements.md
   assert_status 0
   assert_eq "$(roles)" "worker@1 reviewer@unset merge@unset" "call order"
   assert_eq "$(call_field 3 model)" merger "merge model"
@@ -136,7 +136,7 @@ test_panel_reports_new_bug_closed_outside_duplicate_merge() {
   scenario worker MESSAGE=CONVERGED
   scenario_script reviewer 'MESSAGE=found; id=$(cbugs add --kind code --title "Closed during panel" --note x); cbugs close "$id" --note "closed during the run" >/dev/null'
   scenario merge MESSAGE="no duplicates"
-  run_converge --foreground --no-coach --review-after 100 --consensus 1 docs/requirements.md
+  run_converge --foreground --no-coach --no-refactor --review-after 100 --consensus 1 docs/requirements.md
   assert_status 0
   assert_output_contains "retained new code bugs"
   assert_output_contains "Closed during panel"
@@ -150,7 +150,7 @@ test_panel_merge_prompt_uses_creation_title_for_hidden_bug() {
   scenario worker MESSAGE=CONVERGED
   scenario_script reviewer 'MESSAGE=found; git checkout -q side; id=$(cbugs add --kind code --title "Original hidden title" --commit side --note x); cbugs note "$id" --title "Unreachable revised title" --note x --commit side; git checkout -q main'
   scenario merge MESSAGE="no duplicates"
-  run_converge --foreground --no-coach --review-after 100 --consensus 1 docs/requirements.md
+  run_converge --foreground --no-coach --no-refactor --review-after 100 --consensus 1 docs/requirements.md
   assert_status 0
   local prompt
   prompt=$(find "$(state_dir)/logs" -name '*-merge.prompt.md' -print -quit)
@@ -163,7 +163,7 @@ test_panel_merge_prompt_uses_creation_title_for_hidden_bug() {
 
 test_no_review_disables_the_vote_panel() {
   scenario worker MESSAGE=CONVERGED
-  run_converge --foreground --no-coach --no-review --consensus 1 docs/requirements.md
+  run_converge --foreground --no-coach --no-review --no-refactor --consensus 1 docs/requirements.md
   assert_status 0
   assert_calls 0 "role=reviewer"
 }
@@ -183,7 +183,7 @@ test_review_pass_id_reaches_only_the_cadence_reviewer() {
   scenario_script coach "MESSAGE=ok; $(env_line)"
   scenario_script worker "MESSAGE=CONVERGED; $(env_line)"
   scenario_script reviewer "MESSAGE='nothing found'; $(env_line)"
-  run_converge --foreground --review-after 1 --coach-first 0 --consensus 1 docs/requirements.md
+  run_converge --foreground --no-refactor --review-after 1 --coach-first 0 --consensus 1 docs/requirements.md
   assert_status 0
   local session
   session=$(cat "$(state_dir)/current")

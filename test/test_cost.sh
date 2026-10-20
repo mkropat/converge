@@ -1,6 +1,8 @@
 # The cost ledger and the cost summary (CV-COST-1 through CV-COST-10).
 
-LOOP_ARGS=(--foreground --no-coach --no-review)
+# These tests cover cost accounting for the named role. Refactor has its own
+# cost row and is tested by its scheduling tests.
+LOOP_ARGS=(--foreground --no-coach --no-review --no-refactor)
 
 ledger() {
   cat "$(state_dir)/cost-history.tsv"

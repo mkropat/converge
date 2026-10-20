@@ -1,7 +1,8 @@
 # Done votes, blocked votes, and the iteration limit (CV-CONV-26 through
 # CV-CONV-29). The coach and the reviewer are off, so only workers run.
 
-LOOP_ARGS=(--foreground --no-coach --no-review)
+# These tests cover worker vote counts. Refactor has its own behavior tests.
+LOOP_ARGS=(--foreground --no-coach --no-review --no-refactor)
 
 test_consensus_of_consecutive_votes_converges() {
   scenario worker MESSAGE=CONVERGED
