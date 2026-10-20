@@ -741,7 +741,8 @@ next, and the help text does not tell it which bugs are open.
     option must be repeatable, so that a caller can ask for the closed bugs and
     the dismissed bugs together.
   - **CB-LIST-2.3**: `--visibility visible|hidden|all`: select bugs by visibility.
-    The option must occur at most once. Without it, the value is `visible`.
+    The option must occur at most once. Without it, the value is `visible`,
+    except for the run filters under **CB-LIST-10** and **CB-LIST-11**.
 - **CB-LIST-3**: Retired. Required all stored bugs without an audit option.
   **CB-LIST-6** and **CB-LIST-7** replace it.
 - **CB-LIST-4**: Retired. Ordered by the newest stored revision. **CB-LIST-8**
@@ -770,9 +771,21 @@ next, and the help text does not tell it which bugs are open.
     **CB-LIST-9**. A pass therefore cannot lose a bug that it created when
     `HEAD` moves.
   - **CB-LIST-10.2**: The kind and status options must further restrict the
-    selection. `--visibility hidden` must restrict it to the hidden bugs.
+    selection. An explicit `--visibility visible` must restrict it to visible
+    bugs. An explicit `--visibility hidden` must restrict it to hidden bugs.
+    An explicit `--visibility all` must include visible and hidden bugs.
   - **CB-LIST-10.3**: The command must reject an empty id under **CB-ERR-5**.
     It must write nothing and print no row.
+- **CB-LIST-11**: `cbugs list` must accept `--panel-run <id>`. It must then
+  print only the bugs whose first revision holds that panel run id. A bug that
+  the panel only changed must not be printed. Without `--visibility`, the
+  selection must include visible and hidden bugs. An explicit
+  `--visibility visible` must restrict it to visible bugs. An explicit
+  `--visibility hidden` must restrict it to hidden bugs. An explicit
+  `--visibility all` must include visible and hidden bugs. The kind and status
+  options must further restrict the selection. Hidden rows must follow
+  **CB-LIST-9**. The command must reject an empty id under **CB-ERR-5**. It
+  must write nothing and print no row for an empty id.
 
 ### show
 
