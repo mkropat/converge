@@ -96,9 +96,21 @@ due, but a worker runs before the next pass. A successful pass resets the
 commit count even when it makes no changes. Refactor commits do not count
 toward the next pass. A new session starts a new scope and count.
 
-Due review and coach work run before Refactor. Stop conditions take priority.
-Refactor changes clear done and blocked counts. Refactor commits enter normal
-review history. Refactor does not count as a worker iteration or supply votes.
+Due review and coach work run before cadence Refactor passes. Stop conditions
+take priority over those passes.
+
+Each worker done vote also triggers Refactor before the vote panel and before
+convergence or the worker-limit check. This applies even below the commit
+threshold and with review disabled. Run one pass when both triggers are due.
+If Refactor changes tracked code, clear done and blocked counts and cancel the
+pending vote panel. This includes uncommitted changes left after a failure or
+timeout. Return to a worker if the worker limit permits it.
+
+If Refactor makes no tracked code changes, keep the vote. Run the vote panel
+if due, then apply normal stop rules. Refactor failure, timeout, or skipping
+does not block this path. With `--no-refactor`, use the existing vote and panel
+behavior. Refactor commits enter normal review history. Refactor does not
+count as a worker iteration or supply votes.
 
 By default, cadence passes run when at least five unreviewed commits affect
 the run directory. `cbugs reviewed pending` selects these commits from the
