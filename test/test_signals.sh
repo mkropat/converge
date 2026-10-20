@@ -48,11 +48,6 @@ test_sigterm_to_the_loop_stops_it_with_143() {
 # The process that an operator or a supervisor starts is the converge
 # wrapper itself, so SIGTERM reaches that process first.
 #
-# KNOWN BUG: in --foreground, the loop runs in a subshell of a pipeline
-# into tee (bin/converge, the "( main_body ) 2>&1 | tee" line at the end).
-# The wrapper sets no TERM trap, so SIGTERM kills the wrapper alone: the
-# caller sees 143, but the loop subshell and its agent keep running, with
-# no terminal and the loop lock still held.
 test_sigterm_to_the_foreground_process_stops_the_agent() {
   scenario worker SLEEP=60
   start_converge --foreground "${LOOP_ARGS[@]}" docs/requirements.md
@@ -63,7 +58,7 @@ test_sigterm_to_the_foreground_process_stops_the_agent() {
   finish_converge
   assert_status 143
   agent_stopped() { wait_for 5 is_dead "$agent"; }
-  known_failure "SIGTERM to a --foreground converge leaves the loop and agent running" agent_stopped
+  agent_stopped || fail "SIGTERM did not stop the foreground worker"
 }
 
 # The first stop request lets the running invocation finish, then stops

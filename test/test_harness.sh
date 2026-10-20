@@ -176,9 +176,9 @@ test_opencode_vote_and_effort() {
 test_opencode_tool_event_does_not_replace_last_assistant_message() {
   export CONVERGE_WORKER_PROFILE='opencode:provider/model'
   scenario worker MESSAGE=CONVERGED OPENCODE_TOOL=1
-  run_converge "${LOOP_ARGS[@]}" --max-iterations 1 docs/requirements.md
-  assert_status 1
-  assert_output_contains "no worker vote"
+  run_converge "${LOOP_ARGS[@]}" --consensus 1 docs/requirements.md
+  assert_status 0
+  assert_output_contains "converged vote 1 of 1"
 }
 
 test_codex_vote_and_effort() {
