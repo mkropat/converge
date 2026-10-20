@@ -46,7 +46,15 @@ model="" effort=""
 args=("$@")
 for ((i = 0; i < ${#args[@]}; i++)); do
   case ${args[i]} in
-    --model) model=${args[i + 1]:-} ;;
+    --model)
+      if [[ -z $model ]]; then
+        model=${args[i + 1]:-}
+        if [[ $harness == opencode && $model == *#* ]]; then
+          effort=${model##*#}
+          model=${model%#*}
+        fi
+      fi
+      ;;
     --effort|--variant) effort=${args[i + 1]:-} ;;
     --config)
       if [[ ${args[i + 1]:-} == model_reasoning_effort=* ]]; then

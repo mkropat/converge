@@ -13,3 +13,13 @@ test_unscoped_panel_reports_lookup_scope() {
   assert_output_contains "from requirements lookup instructions"
   assert_output_lacks "empty (the run directory)"
 }
+
+test_opencode_effort_uses_one_model_option() {
+  export CONVERGE_REVIEW_PANEL_PROFILE='opencode:provider/model:fast'
+  scenario reviewer MESSAGE='nothing found'
+  (cd "$WORK" && CONVERGE_RUN_DIR="$WORK" \
+    "$REPO_ROOT/bin/review-panel" docs/requirements.md) >/dev/null 2>&1 ||
+    fail "review-panel failed"
+  assert_eq "$(call_field 1 model)" 'provider/model' "OpenCode model"
+  assert_eq "$(call_field 1 effort)" fast "OpenCode effort"
+}

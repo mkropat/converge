@@ -673,8 +673,9 @@ harness_argv() {
       ARGV+=("$prompt")
       ;;
     opencode)
-      ARGV=(opencode run --format json --model "$model" --auto)
-      [[ -z $effort ]] || ARGV+=(--model "${model}#${effort}")
+      local opencode_model=$model
+      [[ -z $effort ]] || opencode_model+="#${effort}"
+      ARGV=(opencode run --format json --model "$opencode_model" --auto)
       ARGV+=("$prompt")
       ;;
     codex)
