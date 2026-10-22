@@ -104,7 +104,7 @@ The requirements paths that the operator names on the command line. An empty sco
 _Avoid_: targets, inputs
 
 **Coach**:
-The agent that reads recent worker logs and writes guidance. The loop starts it on a cadence, after a blocked vote, or after a stall.
+The agent that reads recent worker logs and commits and writes guidance. The loop starts it on a cadence, after a blocked vote, or after a stall.
 _Avoid_: supervisor, mentor, manager
 
 **Guidance file**:

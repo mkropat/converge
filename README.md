@@ -8,7 +8,7 @@ changes; they do not keep a stored implementation plan or edit the
 requirements.
 
 A separate reviewer checks the code and files bugs in `cbugs`. A coach reads
-session history and writes guidance for later workers. Bugs, coverage, coach
+session history and recent commits and writes guidance for later workers. Bugs, coverage, coach
 guidance, and logs persist between sessions.
 
 ## Setup
@@ -171,7 +171,9 @@ Reviews and coaching do not change either count. With `--no-coach`, blocked
 votes still stop the loop.
 
 The coach checks whether a blocker needs operator action or whether a worker
-can do the work with better guidance. A successful coach chain can emit
+can do the work with better guidance. It also checks whether the work on an
+open bug stays within the requirements the bug cites, and tells workers to
+close a bug that has grown past its citations. A successful coach chain can emit
 `ESCALATE` alone on a line in its final message. This schedules one fixer
 iteration on `CONVERGE_FIXER_PROFILE`, or on the worker list if that variable
 is unset.

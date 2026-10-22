@@ -77,7 +77,7 @@ These are the section codes.
 - **Unreviewed commit**: a commit in the considered history that no review pass has recorded in the bug database.
 - **Coverage**: the records of the bug tracker that name the commits that a review read. A review pass or a panel run records coverage only when it succeeds. Coverage says what was read; it approves nothing.
 - **Directory HEAD**: the newest relevant commit. A run directory with no relevant commit has no directory HEAD.
-- **Coach**: an agent that the loop starts on a fixed cadence, after a blocked vote, or after a stall, to review recent worker logs and to write guidance.
+- **Coach**: an agent that the loop starts on a fixed cadence, after a blocked vote, or after a stall, to review recent worker logs and commits and to write guidance.
 - **Done vote**: the final message of a successful worker that holds the token `CONVERGED` alone on a line.
 - **Blocked vote**: the final message of a successful worker that holds the token `BLOCKED` alone on a line.
 - **Blocker**: an open spec bug, or a tool or resource that no worker can reach, that stops a piece of work.
@@ -332,6 +332,7 @@ The operator starts a session over a connection that can break, and the session 
   - **CV-ITER-3.12**: Not work on a spec bug, and not wait for one. The operator resolves a spec bug.
   - **CV-ITER-3.13**: When a commit fails because another process holds a lock of git, wait and try the commit again. A second loop can run in a second run directory of the same repository, as **CV-BG-11** gives.
   - **CV-ITER-3.14**: Read the current requirements selected by explicit scope paths or the session's lookup instructions. Apply **CV-SCOPE-10** through **CV-SCOPE-15**.
+  - **CV-ITER-3.15**: Close a bug when the code meets the requirements that its citations name. A gap that the worker finds while it fixes a bug, and that the citations do not name, is a new bug: log it with its own citation, and do not keep the first bug open for it. A bug that stays open for work its citations do not name has no end.
 - **CV-ITER-4**: The worker prompt must tell the worker that it may log a bug with `cbugs add`, and must not urge it to. A worker that finds a defect it will not fix in this iteration has somewhere to put it. A worker that hunts for defects is not doing the work of a worker.
 - **CV-ITER-5**: Retired. Described citations with local path syntax only. **CV-ITER-9** replaces this requirement.
 - **CV-ITER-6**: If the guidance file exists and is not empty, the loop must include its content in the worker prompt.
@@ -552,7 +553,7 @@ The worker builds. The reviewer reads what the worker built. One agent cannot do
 
 - **CV-COACH-1**: Retired. Required a coach after every `K` iterations without stop checks. **CV-COACH-8** replaces this behavior.
 - **CV-COACH-2**: The coach runs as a non-interactive harness invocation with permission prompts disabled, on the coach model.
-- **CV-COACH-3**: The coach prompt must give the coach the paths to the log directory, the journal, and the guidance file.
+- **CV-COACH-3**: The coach prompt must give the coach the paths to the log directory, the journal, and the guidance file. It must also give the commit range since the coach's previous run: from the repository HEAD at the start of the previous coach chain, or the session start commit when no coach chain has started in this session, to the current HEAD. When the loop cannot read HEAD, the prompt must say so.
 - **CV-COACH-4**: The coach prompt must instruct the coach to:
   - **CV-COACH-4.1**: Read the worker logs since its previous run.
   - **CV-COACH-4.2**: Identify recurring problems across iterations. Examples: a wrong tool call that every worker makes before it recovers, or a trap that a sequence of iterations circles without escaping.
@@ -560,7 +561,10 @@ The worker builds. The reviewer reads what the worker built. One agent cannot do
   - **CV-COACH-4.4**: Rewrite the guidance file. Keep it short. Each entry must be a concrete, corrective instruction for future workers.
   - **CV-COACH-4.5**: Read the bug history with `cbugs list` and `cbugs search`, and look for a pattern in it: a defect that the workers keep making, or a bug that a worker closed and a later pass reopened. A pattern in the bugs is evidence about the process, which is what the coach writes about.
   - **CV-COACH-4.6**: Append one journal entry that records what it observed, what it changed, and what result it expects.
-- **CV-COACH-5**: The coach prompt must tell the coach that it may log a bug with `cbugs add`, and must not urge it to. The coach reads logs, not code, and the reviewer is the role that looks for defects. The coach must not log a task, for the reason that the reviewer must not.
+  - **CV-COACH-4.7**: Read the commit list of the range that **CV-COACH-3** gives, and read the diff of at least two of those commits. A run of commits with near-identical messages, each adding one check and one test, is a pattern. The coach must decide whether that pattern is required work or a trap that the iterations circle.
+  - **CV-COACH-4.8**: For each open code bug that a worker worked on in that range, read the bug's first note and every requirement its citations name, in full, and judge whether the cited text requires the work that the commits did. A requirement means what it says. Work that a requirement does not name is not required by it. When workers extend a bug past its citations, the guidance must name the requirement that workers over-read, state what it does require, and tell workers to close the bug and to log each real remaining gap as a new bug with its own citation.
+  - **CV-COACH-4.9**: Not copy a worker's list of remaining work into the guidance. A worker's list of remaining work is a claim, not a fact. The coach must check each item against the cited requirement before it repeats the item.
+- **CV-COACH-5**: The coach prompt must tell the coach that it may log a bug with `cbugs add`, and must not urge it to. The coach reads logs and commits to judge the process. It does not hunt for defects in code; the reviewer is the role that looks for defects. The coach must not log a task, for the reason that the reviewer must not.
 - **CV-COACH-6**: The coach must write only the guidance file, the journal, and a bug. The coach must not edit code, must not edit requirements documents, and must not stop the loop.
 - **CV-COACH-7**: The loop must log coach output the same way it logs worker output.
 
