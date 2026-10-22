@@ -65,6 +65,35 @@ test_coach_prompt_lists_the_pending_worker_logs() {
     fail "the coach prompt does not list both worker logs:"$'\n'"$prompt"
 }
 
+# The coach sees the commit range since its previous run (CV-COACH-3) and the
+# instructions to read those commits and to check bug work against its
+# citations (CV-COACH-4.7 through CV-COACH-4.9).
+test_coach_prompt_gives_the_commit_range_since_its_previous_run() {
+  local start first second
+  start=$(git rev-parse HEAD)
+  work_commit
+  scenario coach MESSAGE=ok
+  work_commit
+  scenario coach MESSAGE=ok
+  work_commit
+  run_converge --foreground --no-review --coach-first 1 --coach-every 1 --max-iterations 3 docs/requirements.md
+  assert_status 1
+  assert_eq "$(roles)" "worker@1 coach@1 worker@2 coach@2 worker@3" "call order"
+  first=$(call_prompt 2)
+  second=$(call_prompt 4)
+  [[ $first == *"Commits since your previous run: $start..$(git rev-parse HEAD~2)"* ]] ||
+    fail "the first coach prompt does not give the range from the session start:"$'\n'"$first"
+  [[ $second == *"Commits since your previous run: $(git rev-parse HEAD~2)..$(git rev-parse HEAD~1)"* ]] ||
+    fail "the second coach prompt does not start where the first coach ran:"$'\n'"$second"
+  grep -qF "Read the commit list of the range above" <<<"$first" ||
+    fail "the coach prompt does not tell the coach to read the commits"
+  grep -qF "Judge whether the cited text requires the work" <<<"$first" ||
+    fail "the coach prompt does not tell the coach to check bug work against its citations"
+  grep -qF "Do not copy a worker's list of remaining work" <<<"$first" ||
+    fail "the coach prompt does not forbid copying a worker's remaining-work list"
+  assert_output_contains "coach (cadence)"
+}
+
 test_guidance_reaches_the_next_worker() {
   local guidance
   guidance="$("$CONVERGE" --init-state)/guidance.md"
